@@ -1,0 +1,1077 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OMNI ICT — Autonomous Trading Dashboard</title>
+
+<!-- React + Babel (no build step) -->
+<script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Sora:wght@300;400;600;700&display=swap" rel="stylesheet" />
+
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:     #07090c;
+  --card:   #0c0f14;
+  --card2:  #111720;
+  --border: #1c2535;
+  --gold:   #d4a843;
+  --gold2:  #f0c040;
+  --silver: #a8b8c8;
+  --red:    #e84545;
+  --green:  #2ecc71;
+  --blue:   #3b82f6;
+  --purple: #8b5cf6;
+  --text:   #dde4ef;
+  --muted:  #4a5a72;
+  --mono:   'JetBrains Mono', monospace;
+  --sans:   'Sora', sans-serif;
+}
+
+html, body, #root { height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 13px; overflow: hidden; }
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: var(--card); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Layout */
+.layout { display: grid; grid-template-rows: 52px 1fr; height: 100vh; }
+.main   { display: grid; grid-template-columns: 220px 1fr 280px; gap: 1px; background: var(--border); overflow: hidden; }
+.col    { background: var(--bg); display: flex; flex-direction: column; overflow: hidden; }
+
+/* Header */
+.header {
+  background: var(--card); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 16px; gap: 16px;
+  font-family: var(--mono);
+}
+.logo { color: var(--gold); font-weight: 700; font-size: 16px; letter-spacing: 0.1em; flex-shrink: 0; }
+.logo span { color: var(--silver); font-weight: 300; font-size: 11px; margin-left: 8px; letter-spacing: 0.05em; }
+.hstat { display: flex; flex-direction: column; gap: 1px; padding: 0 12px; border-left: 1px solid var(--border); }
+.hstat-label { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.1em; }
+.hstat-value { font-size: 12px; font-weight: 600; }
+.spacer { flex: 1; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+.dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot-red   { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.dot-gold  { background: var(--gold); box-shadow: 0 0 6px var(--gold); }
+
+/* Account tabs */
+.acc-tabs { display: flex; gap: 4px; }
+.acc-tab {
+  padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 11px;
+  border: 1px solid var(--border); color: var(--muted); background: transparent;
+  font-family: var(--mono); transition: all 0.15s;
+}
+.acc-tab.active { background: var(--gold); color: #000; border-color: var(--gold); font-weight: 700; }
+.acc-tab:hover:not(.active) { border-color: var(--gold); color: var(--gold); }
+
+/* Cards */
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; margin: 6px; padding: 10px; }
+.card-title {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.12em;
+  color: var(--gold); font-family: var(--mono); font-weight: 700;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border); margin-bottom: 8px;
+}
+
+/* Metric grid */
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.metric { background: var(--card2); border: 1px solid var(--border); border-radius: 4px; padding: 8px; }
+.metric-label { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; font-family: var(--mono); }
+.metric-value { font-size: 15px; font-weight: 700; margin-top: 2px; font-family: var(--mono); }
+.metric-sub   { font-size: 9px; color: var(--muted); margin-top: 1px; font-family: var(--mono); }
+
+/* Scanner table */
+.scanner-wrap { flex: 1; overflow-y: auto; }
+table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
+th { background: var(--card2); color: var(--gold); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 1; }
+td { padding: 5px 8px; border-bottom: 1px solid var(--border); cursor: pointer; }
+tr:hover td { background: var(--card2); }
+tr.selected td { background: #d4a84318; }
+
+/* Badges */
+.badge {
+  display: inline-block; padding: 2px 6px; border-radius: 3px;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.06em; font-family: var(--mono);
+}
+.badge-buy    { background: #2ecc7122; color: var(--green); border: 1px solid #2ecc7144; }
+.badge-sell   { background: #e8454522; color: var(--red);   border: 1px solid #e8454544; }
+.badge-gold   { background: #d4a84322; color: var(--gold);  border: 1px solid #d4a84344; }
+.badge-blue   { background: #3b82f622; color: var(--blue);  border: 1px solid #3b82f644; }
+.badge-purple { background: #8b5cf622; color: var(--purple);border: 1px solid #8b5cf644; }
+.badge-muted  { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+
+/* Confidence bar */
+.conf-bar { height: 3px; border-radius: 2px; background: var(--border); margin-top: 3px; }
+.conf-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
+
+/* Bot feed */
+.bot-feed {
+  flex: 1; overflow-y: auto; font-family: var(--mono); font-size: 10px;
+  color: var(--silver); padding: 6px; display: flex; flex-direction: column; gap: 1px;
+}
+.log-line { padding: 2px 4px; border-radius: 2px; line-height: 1.5; word-break: break-all; }
+.log-line.info  { color: var(--silver); }
+.log-line.warn  { color: var(--gold); background: #d4a84308; }
+.log-line.error { color: var(--red); background: #e8454508; }
+.log-line.trade { color: var(--green); background: #2ecc7110; font-weight: 700; }
+.log-line.setup { color: var(--blue); background: #3b82f610; }
+
+/* Analysis panel */
+.analysis-scroll { flex: 1; overflow-y: auto; }
+.kv-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #1c253520; font-family: var(--mono); font-size: 11px; }
+.kv-key { color: var(--muted); }
+.kv-val { color: var(--text); font-weight: 600; text-align: right; }
+
+/* Reason list */
+.reasons-list { display: flex; flex-direction: column; gap: 3px; }
+.reason-item {
+  font-family: var(--mono); font-size: 10px; color: var(--silver);
+  padding: 4px 6px; background: var(--card2); border-radius: 3px;
+  border-left: 2px solid var(--gold);
+}
+
+/* Positions */
+.position-card {
+  background: var(--card2); border: 1px solid var(--border); border-radius: 5px;
+  padding: 8px; margin-bottom: 6px; font-family: var(--mono); font-size: 11px;
+}
+.position-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.position-sym { font-weight: 700; font-size: 13px; }
+.position-pnl { font-weight: 700; font-size: 14px; }
+
+/* Progress bar (SL-entry-TP) */
+.price-bar { position: relative; height: 6px; background: var(--border); border-radius: 3px; margin: 6px 0; }
+.price-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 3px; transition: width 0.5s; }
+
+/* Memory panel */
+.mem-table { width: 100%; font-family: var(--mono); font-size: 10px; }
+.mem-table td { padding: 3px 6px; border-bottom: 1px solid #1c253520; }
+.mem-table tr:nth-child(even) td { background: #ffffff04; }
+
+/* Tabs */
+.tabs { display: flex; border-bottom: 1px solid var(--border); padding: 0 6px; }
+.tab {
+  padding: 7px 12px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--muted); cursor: pointer; font-family: var(--mono); border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+}
+.tab.active { color: var(--gold); border-bottom-color: var(--gold); }
+.tab:hover:not(.active) { color: var(--text); }
+
+/* Learned rules */
+.rule-card {
+  background: var(--card2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 8px; margin-bottom: 5px; font-family: var(--mono); font-size: 10px;
+}
+.rule-title { color: var(--gold); font-weight: 700; margin-bottom: 3px; }
+.rule-evidence { color: var(--muted); font-size: 9px; }
+.rule-action { color: var(--green); margin-top: 3px; }
+
+/* Quarter display */
+.quarter-bar { display: flex; height: 20px; border-radius: 4px; overflow: hidden; margin: 6px 0; position: relative; }
+.q-seg { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; font-family: var(--mono); }
+.q-marker { position: absolute; top: 0; bottom: 0; width: 2px; background: white; transform: translateX(-50%); }
+
+/* Session colors */
+.sess-ASIA    { color: var(--blue); }
+.sess-LONDON  { color: var(--gold); }
+.sess-NEW_YORK { color: var(--green); }
+.sess-NY_CLOSE { color: var(--purple); }
+.sess-CLOSED  { color: var(--muted); }
+
+/* Pulse animation */
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.pulse { animation: pulse 2s ease-in-out infinite; }
+
+/* Scrollable panels */
+.scroll-y { overflow-y: auto; flex: 1; }
+
+/* Grid for center column */
+.center-col { display: grid; grid-template-rows: auto 1fr; overflow: hidden; }
+.center-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); overflow: hidden; }
+.center-half { background: var(--bg); overflow: hidden; display: flex; flex-direction: column; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── Constants ──────────────────────────────────────────────────────────────────
+const WS_URL  = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/";
+const API_URL = location.origin + "/api/";
+
+const SESS_COLORS = {
+  ASIA: "#3b82f6", LONDON: "#d4a843", NEW_YORK: "#2ecc71",
+  NY_CLOSE: "#8b5cf6", CLOSED: "#4a5a72",
+};
+
+const AMD_COLORS = {
+  ACCUMULATION: "#3b82f6", MANIPULATION: "#d4a843",
+  DISTRIBUTION: "#2ecc71", UNKNOWN: "#4a5a72",
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const fmt = (n, d=5) => typeof n==="number" ? n.toFixed(d) : "—";
+const fmtPnl = n => (n>=0 ? "+" : "") + "$" + (n||0).toFixed(2);
+const fmtR = n => (n>=0 ? "+" : "") + (n||0).toFixed(2) + "R";
+const confColor = c => c>=75 ? "#2ecc71" : c>=60 ? "#d4a843" : c>=45 ? "#f97316" : "#4a5a72";
+const dirColor  = d => d==="BUY" ? "#2ecc71" : d==="SELL" ? "#e84545" : "#4a5a72";
+
+function ConfBar({ value }) {
+  const color = confColor(value);
+  return (
+    <div style={{height:3,background:"#1c2535",borderRadius:2,marginTop:3}}>
+      <div style={{height:"100%",width:value+"%",background:color,borderRadius:2,transition:"width 0.3s"}}/>
+    </div>
+  );
+}
+
+function KV({ label, value, color }) {
+  return (
+    <div className="kv-row">
+      <span className="kv-key">{label}</span>
+      <span className="kv-val" style={color ? {color} : {}}>{value}</span>
+    </div>
+  );
+}
+
+function QuarterBar({ quarter, pct }) {
+  const qColors = { Q1:"#3b82f640", Q2:"#2ecc7140", Q3:"#f9731640", Q4:"#e8454540" };
+  const qBorder = { Q1:"#3b82f6", Q2:"#2ecc71", Q3:"#f97316", Q4:"#e84545" };
+  const markerPct = typeof pct === "number" ? pct : 50;
+
+  return (
+    <div style={{position:"relative"}}>
+      <div style={{display:"flex",height:18,borderRadius:4,overflow:"hidden",border:"1px solid #1c2535"}}>
+        {["Q1","Q2","Q3","Q4"].map(q => (
+          <div key={q} style={{flex:1,background:qColors[q],display:"flex",alignItems:"center",
+            justifyContent:"center",fontSize:8,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",
+            color:qBorder[q],borderRight:q!=="Q4"?"1px solid #1c253580":"none"}}>
+            {q}
+          </div>
+        ))}
+      </div>
+      <div style={{position:"absolute",top:0,bottom:0,left:markerPct+"%",
+        width:2,background:"white",transform:"translateX(-50%)",opacity:0.9}}/>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:8,color:"#4a5a72",
+        fontFamily:"'JetBrains Mono',monospace",marginTop:2}}>
+        <span>Discount</span><span>EQ</span><span>Premium</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Header ────────────────────────────────────────────────────────────────────
+function Header({ accounts, activeAccount, setActiveAccount, session, amdPhase, gmtTime, connected, botStatus }) {
+  const wr = botStatus.total_trades > 0
+    ? ((botStatus.winning_trades / botStatus.total_trades) * 100).toFixed(0) + "%"
+    : "—";
+
+  return (
+    <div className="header">
+      <div className="logo">
+        OMNI <span style={{color:"#d4a843"}}>ICT</span>
+        <span>AUTONOMOUS TRADER</span>
+      </div>
+
+      <div className="hstat">
+        <div className="hstat-label">Status</div>
+        <div className="hstat-value">
+          <span className={"dot " + (connected ? "dot-green" : "dot-red")} />
+          {connected ? "LIVE" : "OFFLINE"}
+          {botStatus.trading_halted && <span style={{color:"#e84545",marginLeft:8}}>HALTED</span>}
+        </div>
+      </div>
+
+      <div className="hstat">
+        <div className="hstat-label">Session</div>
+        <div className="hstat-value" style={{color: SESS_COLORS[session] || "#4a5a72"}}>{session || "—"}</div>
+      </div>
+
+      <div className="hstat">
+        <div className="hstat-label">AMD Phase</div>
+        <div className="hstat-value" style={{color: AMD_COLORS[amdPhase] || "#4a5a72"}}>{amdPhase || "—"}</div>
+      </div>
+
+      <div className="hstat">
+        <div className="hstat-label">GMT</div>
+        <div className="hstat-value" style={{fontSize:11}}>{gmtTime ? gmtTime.slice(11,19) : "—"}</div>
+      </div>
+
+      <div className="hstat">
+        <div className="hstat-label">Win Rate</div>
+        <div className="hstat-value" style={{color:"#2ecc71"}}>{wr}</div>
+      </div>
+
+      <div className="hstat">
+        <div className="hstat-label">Streak</div>
+        <div className="hstat-value">
+          {botStatus.win_streak > 0
+            ? <span style={{color:"#2ecc71"}}>{botStatus.win_streak}W</span>
+            : botStatus.loss_streak > 0
+            ? <span style={{color:"#e84545"}}>{botStatus.loss_streak}L</span>
+            : <span style={{color:"#4a5a72"}}>—</span>}
+        </div>
+      </div>
+
+      <div className="hstat">
+        <div className="hstat-label">Risk</div>
+        <div className="hstat-value" style={{color:"#d4a843"}}>{botStatus.current_risk?.toFixed(2) || "—"}%</div>
+      </div>
+
+      <div className="spacer" />
+
+      <div className="acc-tabs">
+        {accounts.map(a => (
+          <button key={a.id} className={"acc-tab" + (a.id===activeAccount?" active":"")}
+            onClick={() => setActiveAccount(a.id)}>
+            {a.type==="live" ? "●" : "○"} {a.name}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Account Summary (left column) ─────────────────────────────────────────────
+function AccountSummary({ accountInfo, botStatus }) {
+  const balance  = accountInfo?.balance  || 0;
+  const equity   = accountInfo?.equity   || 0;
+  const profit   = accountInfo?.profit   || 0;
+  const wr = botStatus.total_trades > 0
+    ? (botStatus.winning_trades / botStatus.total_trades * 100).toFixed(1)
+    : 0;
+
+  return (
+    <div className="card">
+      <div className="card-title">Account</div>
+      <div className="metrics">
+        <div className="metric">
+          <div className="metric-label">Balance</div>
+          <div className="metric-value" style={{color:"#d4a843"}}>${balance.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+        </div>
+        <div className="metric">
+          <div className="metric-label">Equity</div>
+          <div className="metric-value">${equity.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+        </div>
+        <div className="metric">
+          <div className="metric-label">Float P&L</div>
+          <div className="metric-value" style={{color:profit>=0?"#2ecc71":"#e84545"}}>{fmtPnl(profit)}</div>
+        </div>
+        <div className="metric">
+          <div className="metric-label">Total P&L</div>
+          <div className="metric-value" style={{color:botStatus.total_profit>=0?"#2ecc71":"#e84545"}}>{fmtPnl(botStatus.total_profit)}</div>
+        </div>
+        <div className="metric">
+          <div className="metric-label">Win Rate</div>
+          <div className="metric-value" style={{color:"#2ecc71"}}>{wr}%</div>
+          <div className="metric-sub">{botStatus.winning_trades}W / {botStatus.losing_trades}L</div>
+        </div>
+        <div className="metric">
+          <div className="metric-label">Max DD</div>
+          <div className="metric-value" style={{color:botStatus.peak_drawdown>5?"#e84545":"#a8b8c8"}}>
+            {(botStatus.peak_drawdown||0).toFixed(1)}%
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Open Positions ─────────────────────────────────────────────────────────────
+function Positions({ positions }) {
+  if (!positions.length) return (
+    <div className="card">
+      <div className="card-title">Open Positions (0)</div>
+      <div style={{color:"#4a5a72",fontFamily:"var(--mono)",fontSize:11,textAlign:"center",padding:"16px 0"}}>
+        No open positions
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="card" style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column"}}>
+      <div className="card-title">Open Positions ({positions.length})</div>
+      <div style={{flex:1,overflowY:"auto"}}>
+        {positions.map((p, i) => {
+          const dir     = p.type || "";
+          const profit  = p.profit || 0;
+          const entry   = p.open_price || 0;
+          const current = p.current_price || 0;
+          const sl      = p.sl || 0;
+          const tp      = p.tp || 0;
+
+          // Progress: 0 = at SL, 100 = at TP
+          let progress = 50;
+          if (dir==="BUY" && tp>sl && tp>entry) {
+            progress = Math.max(0,Math.min(100,((current-sl)/(tp-sl))*100));
+          } else if (dir==="SELL" && sl>tp) {
+            progress = Math.max(0,Math.min(100,((sl-current)/(sl-tp))*100));
+          }
+
+          return (
+            <div key={i} className="position-card">
+              <div className="position-header">
+                <div>
+                  <span className="position-sym">{p.symbol}</span>
+                  <span className={"badge " + (dir==="BUY"?"badge-buy":"badge-sell")} style={{marginLeft:6}}>{dir}</span>
+                </div>
+                <div className="position-pnl" style={{color:profit>=0?"#2ecc71":"#e84545"}}>
+                  {fmtPnl(profit)}
+                </div>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,fontSize:10,fontFamily:"var(--mono)"}}>
+                <span style={{color:"#4a5a72"}}>Entry: <span style={{color:"#dde4ef"}}>{fmt(entry,2)}</span></span>
+                <span style={{color:"#4a5a72"}}>Now: <span style={{color:"#d4a843"}}>{fmt(current,2)}</span></span>
+                <span style={{color:"#e84545"}}>SL: {fmt(sl,2)}</span>
+                <span style={{color:"#2ecc71"}}>TP: {fmt(tp,2)}</span>
+              </div>
+              <div style={{height:4,background:"#1c2535",borderRadius:2,marginTop:6,position:"relative"}}>
+                <div style={{height:"100%",width:progress+"%",
+                  background:profit>=0?"#2ecc71":"#e84545",borderRadius:2,transition:"width 0.5s"}}/>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:"#4a5a72",
+                fontFamily:"var(--mono)",marginTop:2}}>
+                <span>SL</span><span>Entry</span><span>TP</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Market Scanner ─────────────────────────────────────────────────────────────
+function MarketScanner({ setups, prices, onSelect, selectedSymbol, symbolAnalysis }) {
+  const [sort, setSort] = useState("confidence");
+
+  // Merge prices into a lookup
+  const priceMap = Object.fromEntries((prices||[]).map(p => [p.symbol, p]));
+
+  // Build rows: setups + any prices not in setups
+  const setupSymbols = new Set((setups||[]).map(s => s.symbol));
+  const allRows = [
+    ...(setups||[]).map(s => ({...s, _has_setup: true})),
+    ...(prices||[]).filter(p => !setupSymbols.has(p.symbol)).map(p => ({
+      symbol: p.symbol,
+      direction: "—",
+      entry_type: "—",
+      confidence: p.rsi>50 ? Math.round(30 + p.rsi*0.2) : Math.round(30 + (100-p.rsi)*0.2),
+      rr_ratio: 0,
+      entry_price: p.bid,
+      _has_setup: false,
+      bias: p.bias,
+      structure: p.structure,
+    })),
+  ];
+
+  const sorted = [...allRows].sort((a,b) => b.confidence - a.confidence);
+
+  return (
+    <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      <div style={{padding:"6px 6px 0",display:"flex",alignItems:"center",gap:8}}>
+        <div style={{fontSize:9,textTransform:"uppercase",letterSpacing:"0.12em",color:"#d4a843",
+          fontFamily:"var(--mono)",fontWeight:700}}>
+          Market Scanner — {sorted.length} symbols
+        </div>
+        <div style={{flex:1}}/>
+        <div style={{fontSize:9,color:"#4a5a72",fontFamily:"var(--mono)"}}>
+          {(setups||[]).length} setups detected
+        </div>
+      </div>
+      <div style={{flex:1,overflowY:"auto",margin:"4px 6px"}}>
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Price</th>
+              <th>Bias</th>
+              <th>Structure</th>
+              <th>Setup</th>
+              <th>Dir</th>
+              <th style={{width:90}}>Confidence</th>
+              <th>R:R</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((row, i) => {
+              const px = priceMap[row.symbol] || {};
+              const analysis = (symbolAnalysis||{})[row.symbol] || {};
+              const structure = analysis.h4_structure || px.structure || "—";
+              const bias = analysis.d1_bias || px.bias || "—";
+              const isSelected = row.symbol === selectedSymbol;
+              return (
+                <tr key={i} className={isSelected?"selected":""} onClick={() => onSelect(row)}>
+                  <td style={{fontWeight:700,color:"#dde4ef"}}>{row.symbol}</td>
+                  <td style={{color:"#d4a843",fontFamily:"var(--mono)"}}>{fmt(px.bid||row.entry_price,row.symbol?.includes("JPY")?3:row.symbol?.includes("XAU")||row.symbol?.includes("XAG")?2:5)}</td>
+                  <td>
+                    <span style={{color:bias==="BULLISH"?"#2ecc71":bias==="BEARISH"?"#e84545":"#4a5a72",fontFamily:"var(--mono)",fontSize:10}}>
+                      {bias}
+                    </span>
+                  </td>
+                  <td style={{fontFamily:"var(--mono)",fontSize:10,color:"#a8b8c8"}}>{structure}</td>
+                  <td style={{fontFamily:"var(--mono)",fontSize:10,color:"#d4a843"}}>{row._has_setup ? row.entry_type : "—"}</td>
+                  <td>
+                    {row._has_setup && row.direction !== "—" ? (
+                      <span className={"badge " + (row.direction==="BUY"?"badge-buy":"badge-sell")}>{row.direction}</span>
+                    ) : <span style={{color:"#4a5a72"}}>—</span>}
+                  </td>
+                  <td>
+                    <div style={{fontSize:11,fontWeight:700,color:confColor(row.confidence),fontFamily:"var(--mono)"}}>
+                      {row.confidence}/100
+                    </div>
+                    <ConfBar value={row.confidence} />
+                  </td>
+                  <td style={{fontFamily:"var(--mono)",color:row.rr_ratio>=2?"#2ecc71":"#4a5a72"}}>
+                    {row.rr_ratio>0 ? row.rr_ratio.toFixed(1)+":1" : "—"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── ICT Analysis Detail ────────────────────────────────────────────────────────
+function AnalysisDetail({ selectedSetup, symbolAnalysis }) {
+  if (!selectedSetup) return (
+    <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",
+      color:"#4a5a72",fontFamily:"var(--mono)",fontSize:11}}>
+      Click a symbol to see ICT analysis
+    </div>
+  );
+
+  const sym = selectedSetup.symbol;
+  const analysis = (symbolAnalysis||{})[sym] || {};
+  const qt = analysis.quarter || {};
+  const pe = analysis.push_exhaustion || {};
+  const sr = analysis.support_resistance || {};
+  const patterns = analysis.patterns || [];
+
+  return (
+    <div style={{flex:1,overflowY:"auto",padding:"0 6px 6px"}}>
+      {/* Header */}
+      <div style={{padding:"8px 0 6px",borderBottom:"1px solid #1c2535",marginBottom:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:16,fontWeight:700,color:"#dde4ef"}}>{sym}</span>
+          {selectedSetup.direction && selectedSetup.direction !== "—" && (
+            <span className={"badge " + (selectedSetup.direction==="BUY"?"badge-buy":"badge-sell")}>
+              {selectedSetup.direction}
+            </span>
+          )}
+          {selectedSetup._has_setup && (
+            <span className="badge badge-gold">{selectedSetup.confidence}/100</span>
+          )}
+        </div>
+        <div style={{fontSize:10,color:"#4a5a72",fontFamily:"var(--mono)",marginTop:3}}>
+          {selectedSetup.entry_type || "Monitoring"}
+          {selectedSetup.tf_bias && " · " + selectedSetup.tf_bias + " D1"}
+        </div>
+      </div>
+
+      {/* Quarter Theory */}
+      {qt.quarter && (
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:9,textTransform:"uppercase",letterSpacing:"0.1em",color:"#d4a843",
+            fontFamily:"var(--mono)",fontWeight:700,marginBottom:5}}>
+            Quarter Theory
+          </div>
+          <QuarterBar quarter={qt.quarter} pct={qt.pct} />
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:10,fontFamily:"var(--mono)",marginTop:4}}>
+            <span style={{color:"#4a5a72"}}>Position:</span>
+            <span style={{fontWeight:700,color: qt.is_discount?"#2ecc71":"#e84545"}}>
+              {qt.quarter} — {qt.pct}% {qt.is_discount?"(Discount)":"(Premium)"}
+            </span>
+          </div>
+          {qt.ote_low > 0 && (
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:10,fontFamily:"var(--mono)"}}>
+              <span style={{color:"#4a5a72"}}>OTE Zone:</span>
+              <span style={{color:"#3b82f6"}}>{fmt(qt.ote_low,2)} – {fmt(qt.ote_high,2)}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Structure */}
+      <div style={{marginBottom:10}}>
+        <div style={{fontSize:9,textTransform:"uppercase",letterSpacing:"0.1em",color:"#d4a843",
+          fontFamily:"var(--mono)",fontWeight:700,marginBottom:5}}>
+          Market Structure
+        </div>
+        <KV label="D1 Bias"     value={analysis.d1_bias || "—"} color={analysis.d1_bias==="BULLISH"?"#2ecc71":analysis.d1_bias==="BEARISH"?"#e84545":"#4a5a72"} />
+        <KV label="H4 Structure" value={analysis.h4_structure || "—"} />
+        {selectedSetup._has_setup && selectedSetup.session && <KV label="Session" value={selectedSetup.session} color={SESS_COLORS[selectedSetup.session]} />}
+        {selectedSetup._has_setup && selectedSetup.amd_phase && <KV label="AMD Phase" value={selectedSetup.amd_phase} color={AMD_COLORS[selectedSetup.amd_phase]} />}
+      </div>
+
+      {/* OB / FVG */}
+      {(analysis.ob_high > 0 || analysis.fvg_high > 0) && (
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:9,textTransform:"uppercase",letterSpacing:"0.1em",color:"#d4a843",
+            fontFamily:"var(--mono)",fontWeight:700,marginBottom:5}}>
+            Key Levels
+          </div>
+          {analysis.ob_high > 0 && <KV label={analysis.ob_type || "Order Block"} value={fmt(analysis.ob_low,2)+" – "+fmt(analysis.ob_high,2)} color="#d4a843" />}
+          {analysis.fvg_high > 0 && <KV label={analysis.fvg_type || "FVG"} value={fmt(analysis.fvg_low,2)+" – "+fmt(analysis.fvg_high,2)} color="#3b82f6" />}
+          {sr.nearest_support > 0 && <KV label="Nearest Support" value={fmt(sr.nearest_support,2)} color="#2ecc71" />}
+          {sr.nearest_resistance > 0 && <KV label="Nearest Resistance" value={fmt(sr.nearest_resistance,2)} color="#e84545" />}
+          {sr.phase_at_support && <KV label="Support Phase" value={sr.phase_at_support} />}
+          {sr.phase_at_resistance && <KV label="Resistance Phase" value={sr.phase_at_resistance} />}
+        </div>
+      )}
+
+      {/* Push/Exhaustion */}
+      {pe.phase && pe.phase !== "NEUTRAL" && (
+        <div style={{marginBottom:10,padding:8,background:"#1c253540",borderRadius:4,
+          borderLeft:"3px solid " + (pe.phase==="EXHAUSTION"?"#d4a843":"#3b82f6")}}>
+          <div style={{fontSize:10,fontFamily:"var(--mono)",color: pe.phase==="EXHAUSTION"?"#d4a843":"#3b82f6",fontWeight:700}}>
+            {pe.phase} PHASE
+          </div>
+          <div style={{fontSize:9,color:"#a8b8c8",fontFamily:"var(--mono)",marginTop:2}}>
+            {pe.signal}
+          </div>
+        </div>
+      )}
+
+      {/* Detected Patterns */}
+      {patterns.length > 0 && (
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:9,textTransform:"uppercase",letterSpacing:"0.1em",color:"#d4a843",
+            fontFamily:"var(--mono)",fontWeight:700,marginBottom:5}}>
+            Technical Patterns
+          </div>
+          {patterns.map((p, i) => (
+            <div key={i} style={{padding:"6px 8px",background:"#8b5cf620",border:"1px solid #8b5cf640",
+              borderRadius:4,marginBottom:4,fontSize:10,fontFamily:"var(--mono)"}}>
+              <div style={{color:"#8b5cf6",fontWeight:700}}>{p.pattern}</div>
+              <div style={{color:"#a8b8c8",marginTop:2}}>{p.reason}</div>
+              {p.target > 0 && <div style={{color:"#2ecc71",marginTop:1}}>Target: {fmt(p.target,2)}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Entry levels */}
+      {selectedSetup._has_setup && selectedSetup.entry_price > 0 && (
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:9,textTransform:"uppercase",letterSpacing:"0.1em",color:"#d4a843",
+            fontFamily:"var(--mono)",fontWeight:700,marginBottom:5}}>
+            Trade Levels
+          </div>
+          <KV label="Entry" value={fmt(selectedSetup.entry_price, 2)} color="#d4a843" />
+          <KV label="Stop Loss" value={fmt(selectedSetup.sl_price, 2)} color="#e84545" />
+          <KV label="TP1 (50%)" value={fmt(selectedSetup.tp1_price, 2)} color="#2ecc71" />
+          <KV label="TP2 (30%)" value={fmt(selectedSetup.tp2_price, 2)} color="#2ecc71" />
+          <KV label="TP3 Runner" value={fmt(selectedSetup.tp3_price, 2)} color="#2ecc71" />
+          <KV label="R:R" value={selectedSetup.rr_ratio?.toFixed(2)+":1"} color={selectedSetup.rr_ratio>=2?"#2ecc71":"#e84545"} />
+        </div>
+      )}
+
+      {/* Confluence reasons */}
+      {selectedSetup._has_setup && (selectedSetup.reasons||[]).length > 0 && (
+        <div>
+          <div style={{fontSize:9,textTransform:"uppercase",letterSpacing:"0.1em",color:"#d4a843",
+            fontFamily:"var(--mono)",fontWeight:700,marginBottom:5}}>
+            Why This Trade ({selectedSetup.reasons.length} factors)
+          </div>
+          <div className="reasons-list">
+            {selectedSetup.reasons.map((r, i) => (
+              <div key={i} className="reason-item">{i+1}. {r}</div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Bot Activity Feed ──────────────────────────────────────────────────────────
+function BotFeed({ logLines }) {
+  const endRef = useRef(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logLines]);
+
+  function classifyLine(line) {
+    const l = line.toLowerCase();
+    if (l.includes("trade") && (l.includes("win") || l.includes("close") || l.includes("open"))) return "trade";
+    if (l.includes("setup") || l.includes("ict") || l.includes("ob ") || l.includes("fvg")) return "setup";
+    if (l.includes("error") || l.includes("halt") || l.includes("stop")) return "error";
+    if (l.includes("warn") || l.includes("risk") || l.includes("streak")) return "warn";
+    return "info";
+  }
+
+  return (
+    <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      <div style={{padding:"6px 8px 4px",borderBottom:"1px solid #1c2535",display:"flex",alignItems:"center",gap:6}}>
+        <span style={{fontSize:9,textTransform:"uppercase",letterSpacing:"0.12em",color:"#d4a843",fontFamily:"var(--mono)",fontWeight:700}}>
+          Bot Activity Feed
+        </span>
+        <span className="dot dot-green pulse" style={{width:6,height:6}}/>
+        <span style={{fontSize:9,color:"#4a5a72",fontFamily:"var(--mono)"}}>{logLines.length} lines</span>
+      </div>
+      <div className="bot-feed">
+        {logLines.map((line, i) => (
+          <div key={i} className={"log-line " + classifyLine(line)}>
+            {line}
+          </div>
+        ))}
+        <div ref={endRef} />
+      </div>
+    </div>
+  );
+}
+
+// ── Trade History ──────────────────────────────────────────────────────────────
+function TradeHistory({ memory }) {
+  const trades = memory?.recent_trades || [];
+  if (!trades.length) return (
+    <div style={{padding:12,color:"#4a5a72",fontFamily:"var(--mono)",fontSize:11,textAlign:"center"}}>
+      No trade history yet
+    </div>
+  );
+
+  return (
+    <div style={{flex:1,overflowY:"auto"}}>
+      <table>
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Dir</th>
+            <th>Type</th>
+            <th>Session</th>
+            <th>Quarter</th>
+            <th>Conf</th>
+            <th>Result</th>
+            <th>R</th>
+            <th>P&L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {trades.map((t, i) => (
+            <tr key={i}>
+              <td style={{fontWeight:700}}>{t.symbol}</td>
+              <td><span className={"badge " + (t.direction==="BUY"?"badge-buy":"badge-sell")}>{t.direction}</span></td>
+              <td style={{fontSize:9,color:"#d4a843",fontFamily:"var(--mono)"}}>{t.entry_type}</td>
+              <td style={{color:SESS_COLORS[t.session]||"#4a5a72",fontFamily:"var(--mono)",fontSize:10}}>{t.session||"—"}</td>
+              <td style={{fontFamily:"var(--mono)",fontSize:10,color:t.quarter==="Q1"||t.quarter==="Q2"?"#2ecc71":"#e84545"}}>{t.quarter||"—"}</td>
+              <td><div style={{color:confColor(t.confidence),fontFamily:"var(--mono)",fontSize:10,fontWeight:700}}>{t.confidence}</div></td>
+              <td><span className={"badge " + (t.status==="WIN"?"badge-buy":t.status==="LOSS"?"badge-sell":"badge-muted")}>{t.status}</span></td>
+              <td style={{fontFamily:"var(--mono)",fontWeight:700,color:t.r_multiple>0?"#2ecc71":t.r_multiple<0?"#e84545":"#4a5a72"}}>{fmtR(t.r_multiple)}</td>
+              <td style={{fontFamily:"var(--mono)",color:t.profit_usd>=0?"#2ecc71":"#e84545"}}>{fmtPnl(t.profit_usd)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── AI Memory Panel ────────────────────────────────────────────────────────────
+function MemoryPanel({ memory }) {
+  const [tab, setTab] = useState("performance");
+  if (!memory || memory.error) return (
+    <div style={{padding:12,color:"#4a5a72",fontFamily:"var(--mono)",fontSize:11}}>
+      {memory?.error || "Trade memory not available"}
+    </div>
+  );
+
+  return (
+    <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      <div className="tabs">
+        {["performance","by-type","by-session","rules"].map(t => (
+          <div key={t} className={"tab"+(tab===t?" active":"")} onClick={() => setTab(t)}>
+            {t.replace("-"," ")}
+          </div>
+        ))}
+      </div>
+
+      <div style={{flex:1,overflowY:"auto",padding:8}}>
+        {tab === "performance" && (
+          <div>
+            <div className="metrics" style={{marginBottom:8}}>
+              <div className="metric">
+                <div className="metric-label">Total Trades</div>
+                <div className="metric-value">{memory.total_trades || 0}</div>
+              </div>
+              <div className="metric">
+                <div className="metric-label">Win Rate</div>
+                <div className="metric-value" style={{color:"#2ecc71"}}>{memory.win_rate || 0}%</div>
+                <div className="metric-sub">{memory.wins}W / {memory.losses}L</div>
+              </div>
+              <div className="metric">
+                <div className="metric-label">Total R</div>
+                <div className="metric-value" style={{color:memory.total_r>=0?"#2ecc71":"#e84545"}}>{fmtR(memory.total_r)}</div>
+              </div>
+              <div className="metric">
+                <div className="metric-label">Total P&L</div>
+                <div className="metric-value" style={{color:memory.total_pnl>=0?"#2ecc71":"#e84545"}}>{fmtPnl(memory.total_pnl)}</div>
+              </div>
+            </div>
+            <div style={{fontSize:9,color:"#4a5a72",fontFamily:"var(--mono)",textAlign:"center",padding:"8px 0"}}>
+              By Quarter (ICT Quarter Theory)
+            </div>
+            {Object.entries(memory.by_quarter||{}).map(([q,v]) => (
+              <div key={q} style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+                <span style={{width:24,color:q==="Q1"||q==="Q2"?"#2ecc71":"#e84545",fontFamily:"var(--mono)",fontSize:10,fontWeight:700}}>{q}</span>
+                <div style={{flex:1,height:4,background:"#1c2535",borderRadius:2}}>
+                  <div style={{height:"100%",width:v.win_rate+"%",background:q==="Q1"||q==="Q2"?"#2ecc71":"#e84545",borderRadius:2}}/>
+                </div>
+                <span style={{width:42,textAlign:"right",fontFamily:"var(--mono)",fontSize:10,color:"#dde4ef"}}>{v.win_rate}%</span>
+                <span style={{width:30,textAlign:"right",fontFamily:"var(--mono)",fontSize:10,color:"#4a5a72"}}>{v.wins}W</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === "by-type" && (
+          <div>
+            {Object.entries(memory.by_type||{}).length === 0 && (
+              <div style={{color:"#4a5a72",fontFamily:"var(--mono)",fontSize:11}}>Need 8+ trades per type to show stats</div>
+            )}
+            {Object.entries(memory.by_type||{}).map(([type, v]) => (
+              <div key={type} style={{marginBottom:8,padding:8,background:"#111720",borderRadius:4,border:"1px solid #1c2535"}}>
+                <div style={{display:"flex",justifyContent:"space-between",fontFamily:"var(--mono)",fontSize:11}}>
+                  <span style={{color:"#d4a843",fontWeight:700}}>{type}</span>
+                  <span style={{color:v.win_rate>=60?"#2ecc71":"#e84545",fontWeight:700}}>{v.win_rate}% WR</span>
+                </div>
+                <div style={{height:3,background:"#1c2535",borderRadius:2,margin:"4px 0"}}>
+                  <div style={{height:"100%",width:v.win_rate+"%",background:v.win_rate>=60?"#2ecc71":"#e84545",borderRadius:2}}/>
+                </div>
+                <div style={{display:"flex",gap:12,fontSize:9,fontFamily:"var(--mono)",color:"#4a5a72"}}>
+                  <span>{v.wins}W / {v.losses}L</span>
+                  <span>avg R: {v.avg_r}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === "by-session" && (
+          <div>
+            {["ASIA","LONDON","NEW_YORK","NY_CLOSE"].map(sess => {
+              const v = (memory.by_session||{})[sess];
+              if (!v) return null;
+              return (
+                <div key={sess} style={{marginBottom:8,padding:8,background:"#111720",borderRadius:4,border:"1px solid #1c2535"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontFamily:"var(--mono)",fontSize:11}}>
+                    <span style={{color:SESS_COLORS[sess],fontWeight:700}}>{sess}</span>
+                    <span style={{color:v.win_rate>=60?"#2ecc71":"#e84545",fontWeight:700}}>{v.win_rate}% WR</span>
+                  </div>
+                  <div style={{height:3,background:"#1c2535",borderRadius:2,margin:"4px 0"}}>
+                    <div style={{height:"100%",width:v.win_rate+"%",background:v.win_rate>=60?"#2ecc71":"#e84545",borderRadius:2}}/>
+                  </div>
+                  <div style={{fontSize:9,fontFamily:"var(--mono)",color:"#4a5a72"}}>{v.wins}W / {v.losses}L</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {tab === "rules" && (
+          <div>
+            {(memory.learned_rules||[]).length === 0 ? (
+              <div style={{color:"#4a5a72",fontFamily:"var(--mono)",fontSize:11}}>
+                Need 8+ trades per category to generate learned rules
+              </div>
+            ) : (memory.learned_rules||[]).map((r, i) => (
+              <div key={i} className="rule-card">
+                <div className="rule-title">{r.rule}</div>
+                <div className="rule-evidence">{r.evidence}</div>
+                <div className="rule-action">{r.action}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────────
+function App() {
+  const [accounts, setAccounts]       = useState([]);
+  const [activeAccount, setActiveAccount] = useState(null);
+  const [snapshot, setSnapshot]       = useState(null);
+  const [logLines, setLogLines]       = useState([]);
+  const [selectedSetup, setSelectedSetup] = useState(null);
+  const [rightTab, setRightTab]       = useState("analysis");
+  const [bottomTab, setBottomTab]     = useState("history");
+  const wsRef = useRef(null);
+
+  // Load accounts list on mount
+  useEffect(() => {
+    fetch(API_URL + "accounts")
+      .then(r => r.json())
+      .then(data => {
+        setAccounts(data);
+        if (data.length > 0) setActiveAccount(data[0].id);
+      })
+      .catch(() => {
+        // Fallback: single primary account
+        setAccounts([{id:"primary",name:"Primary",type:"live"}]);
+        setActiveAccount("primary");
+      });
+  }, []);
+
+  // WebSocket connection
+  useEffect(() => {
+    if (!activeAccount) return;
+
+    const connect = () => {
+      const ws = new WebSocket(WS_URL + activeAccount);
+      wsRef.current = ws;
+
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+
+          if (msg.type === "snapshot") {
+            setSnapshot(msg);
+            if (msg.log_lines) setLogLines(msg.log_lines.slice(-LOG_MAX));
+          } else if (msg.type === "update") {
+            setSnapshot(prev => prev ? {
+              ...prev,
+              connected:    msg.connected,
+              session:      msg.session,
+              amd_phase:    msg.amd_phase,
+              gmt_time:     msg.gmt_time,
+              account_info: msg.account_info || prev.account_info,
+              prices:       msg.prices.length ? msg.prices : prev.prices,
+              positions:    msg.positions,
+              setups:       msg.setups.length ? msg.setups : prev.setups,
+              bot_status:   {...(prev.bot_status||{}), ...msg.bot_status},
+            } : prev);
+
+            if (msg.new_log_lines?.length) {
+              setLogLines(prev => {
+                const next = [...prev, ...msg.new_log_lines];
+                return next.slice(-LOG_MAX);
+              });
+            }
+          }
+        } catch(e) { console.error("WS parse error", e); }
+      };
+
+      ws.onclose = () => {
+        setTimeout(connect, 3000); // Reconnect after 3s
+      };
+
+      ws.onerror = () => ws.close();
+    };
+
+    connect();
+    return () => { wsRef.current?.close(); };
+  }, [activeAccount]);
+
+  const LOG_MAX = 500;
+
+  const handleSelectSetup = useCallback((setup) => {
+    setSelectedSetup(setup);
+    setRightTab("analysis");
+  }, []);
+
+  const session   = snapshot?.session   || "—";
+  const amdPhase  = snapshot?.amd_phase || "—";
+  const gmtTime   = snapshot?.gmt_time  || "—";
+  const connected = snapshot?.connected || false;
+  const botStatus = snapshot?.bot_status || {};
+  const prices    = snapshot?.prices     || [];
+  const positions = snapshot?.positions  || [];
+  const setups    = snapshot?.setups     || [];
+  const memory    = snapshot?.memory     || null;
+  const symbolAnalysis = snapshot?.symbol_analysis || {};
+
+  return (
+    <div className="layout">
+      <Header
+        accounts={accounts}
+        activeAccount={activeAccount}
+        setActiveAccount={setActiveAccount}
+        session={session}
+        amdPhase={amdPhase}
+        gmtTime={gmtTime}
+        connected={connected}
+        botStatus={botStatus}
+      />
+
+      <div className="main">
+        {/* LEFT: Account summary + positions */}
+        <div className="col" style={{overflowY:"auto"}}>
+          <AccountSummary accountInfo={snapshot?.account_info} botStatus={botStatus} />
+          <Positions positions={positions} />
+        </div>
+
+        {/* CENTER: Scanner + bottom panels */}
+        <div className="col">
+          <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",borderBottom:"1px solid #1c2535"}}>
+            <MarketScanner
+              setups={setups}
+              prices={prices}
+              onSelect={handleSelectSetup}
+              selectedSymbol={selectedSetup?.symbol}
+              symbolAnalysis={symbolAnalysis}
+            />
+          </div>
+
+          {/* Bottom half: history OR memory */}
+          <div style={{height:"38%",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+            <div className="tabs">
+              <div className={"tab"+(bottomTab==="history"?" active":"")} onClick={()=>setBottomTab("history")}>
+                Trade History
+              </div>
+              <div className={"tab"+(bottomTab==="memory"?" active":"")} onClick={()=>setBottomTab("memory")}>
+                AI Memory
+              </div>
+            </div>
+            {bottomTab === "history" ? (
+              <TradeHistory memory={memory} />
+            ) : (
+              <MemoryPanel memory={memory} />
+            )}
+          </div>
+        </div>
+
+        {/* RIGHT: Analysis + Bot Feed */}
+        <div className="col">
+          <div className="tabs">
+            <div className={"tab"+(rightTab==="analysis"?" active":"")} onClick={()=>setRightTab("analysis")}>
+              ICT Analysis
+            </div>
+            <div className={"tab"+(rightTab==="feed"?" active":"")} onClick={()=>setRightTab("feed")}>
+              Bot Feed
+            </div>
+          </div>
+
+          {rightTab === "analysis" ? (
+            <AnalysisDetail selectedSetup={selectedSetup} symbolAnalysis={symbolAnalysis} />
+          ) : (
+            <BotFeed logLines={logLines} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Mount ─────────────────────────────────────────────────────────────────────
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

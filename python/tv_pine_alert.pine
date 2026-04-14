@@ -1,0 +1,178 @@
+// ============================================================================
+// OMNI ICT Alert — Pine Script v5
+// ============================================================================
+// Sends structured ICT analysis data to your tradingview_connector.py
+// webhook server via TradingView's alert webhook feature.
+//
+// SETUP:
+//   1. Add this indicator to your TradingView chart
+//   2. Create an Alert → Condition: "OMNI ICT Alert"
+//   3. In "Notifications" tab → Webhook URL: http://YOUR_SERVER_IP:5555/alert
+//   4. Message: (leave as-is, the script builds the JSON)
+//   5. Repeat for each symbol in your watchlist
+//
+// For LOCAL testing (no public IP):
+//   Use ngrok:  ngrok http 5555
+//   Then use the ngrok URL as the webhook address.
+// ============================================================================
+
+//@version=5
+indicator("OMNI ICT Alert", overlay=true, max_bars_back=500)
+
+// ── Inputs ──────────────────────────────────────────────────────────────────
+tf          = input.timeframe("60",  title="Timeframe (minutes)")
+atr_len     = input.int(14,          title="ATR Length")
+rsi_len     = input.int(14,          title="RSI Length")
+ob_lookback = input.int(10,          title="Order Block Lookback")
+fvg_lookback= input.int(5,           title="FVG Lookback")
+send_alerts = input.bool(true,       title="Enable Webhook Alerts")
+
+// ── Price data ───────────────────────────────────────────────────────────────
+_atr   = ta.atr(atr_len)
+_rsi   = ta.rsi(close, rsi_len)
+_ma20  = ta.sma(close, 20)
+_ma50  = ta.sma(close, 50)
+
+// ── Structure Detection (BOS / CHoCH) ────────────────────────────────────────
+swingHigh    = ta.highest(high,  20)
+swingLow     = ta.lowest(low,    20)
+prevHigh     = ta.highest(high[20], 20)
+prevLow      = ta.lowest(low[20],   20)
+
+var string structure = "RANGING"
+if close > prevHigh
+    structure := "BOS_BULLISH"
+else if close < prevLow
+    structure := "BOS_BEARISH"
+else if close > swingHigh * 0.999 and structure != "BOS_BULLISH"
+    structure := "CHOCH_BULL"
+else if close < swingLow  * 1.001 and structure != "BOS_BEARISH"
+    structure := "CHOCH_BEAR"
+
+// ── Bias ─────────────────────────────────────────────────────────────────────
+bias = close > _ma20 and _ma20 > _ma50 ? "BULLISH" :
+       close < _ma20 and _ma20 < _ma50 ? "BEARISH" : "NEUTRAL"
+
+// ── Fair Value Gap Detection ──────────────────────────────────────────────────
+var float fvg_high  = 0.0
+var float fvg_low   = 0.0
+var string fvg_type = "NONE"
+
+for i = 1 to fvg_lookback
+    b0 = low[i+1]
+    b2 = high[i-1]
+    if b0 > b2
+        fvg_type := "BULLISH"
+        fvg_high := b0
+        fvg_low  := b2
+        break
+    b0h = high[i+1]
+    b2l = low[i-1]
+    if b0h < b2l
+        fvg_type := "BEARISH"
+        fvg_high := b2l
+        fvg_low  := b0h
+        break
+
+// ── Order Block Detection ────────────────────────────────────────────────────
+var float ob_high  = 0.0
+var float ob_low   = 0.0
+var string ob_type = "NONE"
+
+for i = 1 to ob_lookback
+    if close[i] < open[i] and close[i-1] > open[i-1]
+        if (close[i-1] - open[i-1]) / (high[i-1] - low[i-1]) > 0.6
+            ob_type := "BULLISH_OB"
+            ob_high := high[i]
+            ob_low  := low[i]
+            break
+    if close[i] > open[i] and close[i-1] < open[i-1]
+        if (open[i-1] - close[i-1]) / (high[i-1] - low[i-1]) > 0.6
+            ob_type := "BEARISH_OB"
+            ob_high := high[i]
+            ob_low  := low[i]
+            break
+
+// ── Plot visual cues ─────────────────────────────────────────────────────────
+plotshape(structure == "BOS_BULLISH",  title="BOS Bull",  style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.small)
+plotshape(structure == "BOS_BEARISH",  title="BOS Bear",  style=shape.triangledown, location=location.abovebar, color=color.red,   size=size.small)
+plotshape(structure == "CHOCH_BULL",   title="CHoCH Bull",style=shape.circle,        location=location.belowbar, color=color.lime,  size=size.tiny)
+plotshape(structure == "CHOCH_BEAR",   title="CHoCH Bear",style=shape.circle,        location=location.abovebar, color=color.orange,size=size.tiny)
+
+// FVG boxes
+var box fvg_box = na
+if fvg_type != "NONE"
+    box.delete(fvg_box)
+    fvg_col = fvg_type == "BULLISH" ? color.new(color.green, 80) : color.new(color.red, 80)
+    fvg_box := box.new(bar_index - fvg_lookback, fvg_high, bar_index + 10, fvg_low,
+                       border_color=fvg_col, bgcolor=fvg_col)
+
+// OB boxes
+var box ob_box = na
+if ob_type != "NONE"
+    box.delete(ob_box)
+    ob_col = ob_type == "BULLISH_OB" ? color.new(color.teal, 70) : color.new(color.maroon, 70)
+    ob_box := box.new(bar_index - ob_lookback, ob_high, bar_index + 10, ob_low,
+                      border_color=ob_col, bgcolor=ob_col)
+
+// ── Webhook Alert Payload ─────────────────────────────────────────────────────
+// Fires on every bar close — TradingView will POST this JSON to your server.
+// In TradingView alert settings, set "Message" to: {{strategy.order.alert_message}}
+// Or leave the message blank and use the alertcondition below.
+
+alert_payload = '{'
+    + '"symbol":"'    + syminfo.ticker  + '",'
+    + '"timeframe":"' + tf              + '",'
+    + '"close":'      + str.tostring(close,  "#.#####") + ','
+    + '"open":'       + str.tostring(open,   "#.#####") + ','
+    + '"high":'       + str.tostring(high,   "#.#####") + ','
+    + '"low":'        + str.tostring(low,    "#.#####") + ','
+    + '"bid":'        + str.tostring(close,  "#.#####") + ','
+    + '"ask":'        + str.tostring(close + _atr * 0.02, "#.#####") + ','
+    + '"volume":'     + str.tostring(volume)             + ','
+    + '"atr":'        + str.tostring(_atr,   "#.#####")  + ','
+    + '"rsi":'        + str.tostring(_rsi,   "#.##")     + ','
+    + '"structure":"' + structure   + '",'
+    + '"bias":"'      + bias        + '",'
+    + '"fvg_type":"'  + fvg_type   + '",'
+    + '"fvg_high":'   + str.tostring(fvg_high, "#.#####") + ','
+    + '"fvg_low":'    + str.tostring(fvg_low,  "#.#####") + ','
+    + '"ob_type":"'   + ob_type    + '",'
+    + '"ob_high":'    + str.tostring(ob_high,  "#.#####") + ','
+    + '"ob_low":'     + str.tostring(ob_low,   "#.#####")
+    + '}'
+
+// Alert condition — fires on bar close
+alertcondition(send_alerts and barstate.isconfirmed, title="OMNI ICT Alert", message=alert_payload)
+
+// Also fire immediately on structure changes
+alertcondition(
+    send_alerts and (
+        ta.cross(close, _ma20) or
+        structure != structure[1]
+    ),
+    title="OMNI ICT Structure Change",
+    message=alert_payload
+)
+
+// ── Info table ───────────────────────────────────────────────────────────────
+var table info = table.new(position.top_right, 2, 6,
+    bgcolor=color.new(color.black, 80), border_color=color.gray, border_width=1)
+
+if barstate.islast
+    table.cell(info, 0, 0, "OMNI ICT",   text_color=color.gold,  text_size=size.small)
+    table.cell(info, 1, 0, syminfo.ticker, text_color=color.white, text_size=size.small)
+    table.cell(info, 0, 1, "Structure",  text_color=color.gray,  text_size=size.tiny)
+    table.cell(info, 1, 1, structure,
+        text_color = structure == "BOS_BULLISH" or structure == "CHOCH_BULL" ? color.green : color.red,
+        text_size = size.tiny)
+    table.cell(info, 0, 2, "Bias",       text_color=color.gray,  text_size=size.tiny)
+    table.cell(info, 1, 2, bias,
+        text_color = bias == "BULLISH" ? color.green : bias == "BEARISH" ? color.red : color.gray,
+        text_size = size.tiny)
+    table.cell(info, 0, 3, "FVG",        text_color=color.gray,  text_size=size.tiny)
+    table.cell(info, 1, 3, fvg_type,     text_color=color.teal,  text_size=size.tiny)
+    table.cell(info, 0, 4, "OB",         text_color=color.gray,  text_size=size.tiny)
+    table.cell(info, 1, 4, ob_type,      text_color=color.orange, text_size=size.tiny)
+    table.cell(info, 0, 5, "RSI",        text_color=color.gray,  text_size=size.tiny)
+    table.cell(info, 1, 5, str.tostring(_rsi, "#.#"), text_color=color.white, text_size=size.tiny)

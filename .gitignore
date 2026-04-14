@@ -1,0 +1,42 @@
+# ── Live config (contains real file paths / account IDs) ──────────────────────
+config.json
+
+# ── Python runtime artifacts ──────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.env
+*.egg-info/
+dist/
+build/
+
+# ── Bot state & memory (auto-generated at runtime) ───────────────────────────
+python/trader_state*.json
+python/trade_memory*.json
+python/trade_journal*.log
+python/trader*.log
+python/tv_data.json
+
+# ── MT5 live data feed files ──────────────────────────────────────────────────
+omni_data.json
+omni_cmd.txt
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+
+# ── Database ──────────────────────────────────────────────────────────────────
+database/
+*.db
+*.sqlite3

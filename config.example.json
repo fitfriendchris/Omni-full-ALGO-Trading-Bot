@@ -1,0 +1,40 @@
+{
+  "accounts": [
+    {
+      "id": "midas",
+      "name": "Midas Live",
+      "type": "live",
+      "data_path": "/Users/owner/AppData/Roaming/MetaQuotes/Terminal/YOUR_MIDAS_TERMINAL_ID/MQL5/Files/omni_data.json",
+      "cmd_path": "/Users/owner/AppData/Roaming/MetaQuotes/Terminal/YOUR_MIDAS_TERMINAL_ID/MQL5/Files/omni_cmd.txt",
+      "state_path": "/Users/owner/Desktop/omni-ict/python/trader_state_midas.json",
+      "log_path": "/Users/owner/Desktop/omni-ict/python/trader_midas.log",
+      "memory_path": "/Users/owner/Desktop/omni-ict/python/trade_memory_midas.json",
+      "journal_path": "/Users/owner/Desktop/omni-ict/python/trade_journal_midas.log"
+    },
+    {
+      "id": "demo",
+      "name": "Demo Account",
+      "type": "demo",
+      "data_path": "/Users/owner/AppData/Roaming/MetaQuotes/Terminal/YOUR_DEMO_TERMINAL_ID/MQL5/Files/omni_data.json",
+      "cmd_path": "/Users/owner/AppData/Roaming/MetaQuotes/Terminal/YOUR_DEMO_TERMINAL_ID/MQL5/Files/omni_cmd.txt",
+      "state_path": "/Users/owner/Desktop/omni-ict/python/trader_state_demo.json",
+      "log_path": "/Users/owner/Desktop/omni-ict/python/trader_demo.log",
+      "memory_path": "/Users/owner/Desktop/omni-ict/python/trade_memory_demo.json",
+      "journal_path": "/Users/owner/Desktop/omni-ict/python/trade_journal_demo.log"
+    }
+  ],
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000
+  },
+  "watchlist": [
+    "XAUUSD",
+    "EURUSD",
+    "GBPUSD",
+    "USDJPY",
+    "GBPJPY",
+    "NAS100",
+    "US30",
+    "BTCUSD"
+  ]
+}

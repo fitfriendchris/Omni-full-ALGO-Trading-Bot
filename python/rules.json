@@ -1,0 +1,426 @@
+{
+  "_comment": "OMNI ICT Strategy Rules — v2.0 | All-session autonomous trading",
+  "_version": "2.0",
+  "_last_updated": "2026-04-13",
+
+  "watchlist": [
+    "XAUUSD",
+    "XAGUSD",
+    "EURUSD",
+    "GBPUSD",
+    "USDJPY",
+    "GBPJPY",
+    "AUDUSD",
+    "NAS100",
+    "US30"
+  ],
+
+  "timeframes": ["D1", "H4", "H1", "M15", "M5"],
+
+  "bias_rules": {
+    "description": "Conditions that define directional bias — D1 must agree with H4 before executing on H1/M15",
+    "bullish_conditions": [
+      "BOS_BULLISH",
+      "CHOCH_BULL",
+      "price_above_weekly_open",
+      "rsi_above_50",
+      "price_in_Q1_or_Q2_of_daily_range"
+    ],
+    "bearish_conditions": [
+      "BOS_BEARISH",
+      "CHOCH_BEAR",
+      "price_below_weekly_open",
+      "rsi_below_50",
+      "price_in_Q3_or_Q4_of_daily_range"
+    ],
+    "neutral_conditions": [
+      "RANGING",
+      "rsi_between_45_55"
+    ],
+    "htf_alignment_required": true,
+    "notes": "D1 bias must align with H4 before entering on H1 or M15. Exception: ultra-high confidence (>85) setups with pattern + OB + sweep confluence."
+  },
+
+  "quarter_theory": {
+    "_comment": "ICT Quarter Theory divides ANY price range into 4 equal quarters",
+    "description": "Price ranges (daily, weekly, session) split into 4 quarters. Institutions buy in discount (Q1-Q2), sell in premium (Q3-Q4).",
+    "quarters": {
+      "Q1": { "range_pct": "0-25",   "label": "Deep Discount",     "long_bias": true,  "short_bias": false, "confidence_bonus_long": 20, "confidence_penalty_short": 12 },
+      "Q2": { "range_pct": "25-50",  "label": "Discount",          "long_bias": true,  "short_bias": false, "confidence_bonus_long": 12, "confidence_penalty_short": 5 },
+      "Q3": { "range_pct": "50-75",  "label": "Premium",           "long_bias": false, "short_bias": true,  "confidence_bonus_short": 12, "confidence_penalty_long": 5 },
+      "Q4": { "range_pct": "75-100", "label": "Deep Premium",      "long_bias": false, "short_bias": true,  "confidence_bonus_short": 20, "confidence_penalty_long": 12 }
+    },
+    "equilibrium": {
+      "level": "50pct_of_range",
+      "significance": "Key reversal and decision point — price respects this often",
+      "notes": "If price is at equilibrium, wait for a clear BOS or CHoCH before entering"
+    },
+    "ote_fibonacci": {
+      "description": "Optimal Trade Entry — most precise entry within a discount/premium",
+      "buy_ote_zone":  "62-79% retracement INTO the discount (21-38% of daily range from low)",
+      "sell_ote_zone": "62-79% retracement INTO the premium (62-79% of daily range from low)",
+      "notes": "Entering at OTE gives tightest SL, best R:R, and highest probability fills"
+    },
+    "rules": [
+      "Never buy in Q4 (premium) unless extreme reversal setup with 3+ confluence factors",
+      "Never sell in Q1 (deep discount) unless breakdown of major structure confirmed",
+      "Best long entries: Q1-Q2 with OB or FVG present + sweep confirmation",
+      "Best short entries: Q3-Q4 with bearish OB or FVG + sweep confirmation",
+      "At equilibrium (50%): wait for directional confirmation before entering"
+    ]
+  },
+
+  "ob_precision_entry": {
+    "description": "Pinpoint entry rules for Order Block retests",
+    "entry_levels": {
+      "ote_50_pct":   { "description": "50% midpoint of OB body — standard precision entry",    "priority": 1 },
+      "ote_62_pct":   { "description": "62% Fibonacci of OB range — deep OTE",                  "priority": 2 },
+      "ote_79_pct":   { "description": "79% Fibonacci of OB range — deepest OTE (tightest SL)", "priority": 3 },
+      "ob_open":      { "description": "OB candle open level — institutional reference price",   "priority": 4 }
+    },
+    "rules": [
+      "NEVER enter at OB extreme (high/low) — always enter at 50% or deeper",
+      "Use OTE 50% as default entry, OTE 79% for tightest stop when confident",
+      "If price tests OB but does not reach 50% level, DO NOT enter — wait",
+      "Confirm OB test with a displacement candle (strong close through OB midpoint)",
+      "OB is invalidated when price closes THROUGH it entirely — then look for next OB",
+      "Preferred: OB that originated from a liquidity sweep (strongest form)"
+    ],
+    "confirmation_required": [
+      "Rejection wick or engulfing candle within OB zone",
+      "RSI divergence at OB touch (lower high RSI on equal price high = bearish, vice versa)",
+      "Volume spike at OB touch confirms institutional activity"
+    ]
+  },
+
+  "entry_rules": {
+    "long": [
+      "price_returning_to_bullish_ob_and_within_50pct",
+      "price_filling_bullish_fvg_at_midpoint",
+      "liquidity_sweep_below_swing_low_with_reversal",
+      "inducement_taken_below_equal_lows",
+      "price_in_Q1_or_Q2_quarter",
+      "exhaustion_phase_after_downmove"
+    ],
+    "short": [
+      "price_returning_to_bearish_ob_and_within_50pct",
+      "price_filling_bearish_fvg_at_midpoint",
+      "liquidity_sweep_above_swing_high_with_reversal",
+      "inducement_taken_above_equal_highs",
+      "price_in_Q3_or_Q4_quarter",
+      "exhaustion_phase_after_upmove"
+    ],
+    "minimum_conditions_required": 2,
+    "high_confidence_conditions_required": 4,
+    "notes": "2 conditions = valid entry. 4+ conditions = scale full position. 6+ conditions = potential scale-in on winner."
+  },
+
+  "technical_pattern_rules": {
+    "description": "Technical patterns add confluence but are NOT standalone signals — must align with ICT structure",
+    "patterns": {
+      "double_top": {
+        "direction": "SELL",
+        "confidence_bonus": 15,
+        "entry": "neckline_break_or_retest",
+        "target": "neckline_minus_pattern_height",
+        "requires": ["bearish_bias_on_H4_or_D1", "OB_or_FVG_nearby_for_entry"],
+        "notes": "Strongest when second peak forms at a bearish OB or FVG in Q3-Q4"
+      },
+      "double_bottom": {
+        "direction": "BUY",
+        "confidence_bonus": 15,
+        "entry": "neckline_break_or_retest",
+        "target": "neckline_plus_pattern_height",
+        "requires": ["bullish_bias_on_H4_or_D1", "OB_or_FVG_nearby_for_entry"],
+        "notes": "Strongest when second bottom forms at a bullish OB or FVG in Q1-Q2"
+      },
+      "head_and_shoulders": {
+        "direction": "SELL",
+        "confidence_bonus": 18,
+        "entry": "neckline_break_retest",
+        "target": "neckline_minus_head_height",
+        "requires": ["bearish_H4_structure", "confirmation_candle_on_retest"],
+        "notes": "Right shoulder ideally forms at bearish OB — highest probability version"
+      },
+      "inverse_head_and_shoulders": {
+        "direction": "BUY",
+        "confidence_bonus": 18,
+        "entry": "neckline_break_retest",
+        "target": "neckline_plus_head_height",
+        "requires": ["bullish_H4_structure", "confirmation_candle_on_retest"]
+      },
+      "rising_wedge": {
+        "direction": "SELL",
+        "confidence_bonus": 12,
+        "entry": "lower_trendline_break",
+        "target": "wedge_origin",
+        "notes": "Rising wedge in uptrend = distribution. Sell break of lower trendline."
+      },
+      "falling_wedge": {
+        "direction": "BUY",
+        "confidence_bonus": 12,
+        "entry": "upper_trendline_break",
+        "target": "wedge_origin",
+        "notes": "Falling wedge in downtrend = accumulation. Buy break of upper trendline."
+      }
+    },
+    "rules": [
+      "Pattern alone is NOT enough — always require ICT OB/FVG confluence",
+      "Pattern confirmed only when price closes through neckline/trendline on the break candle",
+      "Pattern retest (pullback to broken neckline) = highest probability entry",
+      "Pattern target is minimum — TP3 can target next major liquidity level"
+    ]
+  },
+
+  "push_exhaustion_rules": {
+    "description": "Detects momentum phase: PUSH = continuation, EXHAUSTION = reversal imminent",
+    "push_phase": {
+      "definition": "3+ consecutive candles same direction with increasing body sizes, wicks decreasing",
+      "action": "Trade with momentum — avoid counter-trend entries during push phase",
+      "confidence_bonus_with_trend": 8,
+      "notes": "During push phase in trend direction = add to position or enter fresh with tight trail"
+    },
+    "exhaustion_phase": {
+      "definition": "3+ consecutive candles same direction but bodies shrinking and wicks growing",
+      "action": "Prepare for reversal — look for OB retest or FVG fill entry",
+      "confidence_bonus_reversal": 12,
+      "notes": "Exhaustion at a premium OB (Q3-Q4) = highest probability SELL signal. At discount FVG (Q1-Q2) = highest probability BUY signal."
+    },
+    "rules": [
+      "PUSH + trend direction: raise TP targets, tighten trail stop, do not exit early",
+      "EXHAUSTION at OB/FVG: high-confidence reversal entry signal",
+      "Candles: body must be > 40% of total range to count in push (no doji)",
+      "Count resets when a candle closes opposite direction"
+    ]
+  },
+
+  "support_resistance_rules": {
+    "description": "Key S/R levels and how to trade them",
+    "level_types": {
+      "swing_high_low":       { "priority": "HIGH",   "touches_required": 1,  "notes": "Single touch can be key if from a strong impulse" },
+      "equal_highs_lows":     { "priority": "VERY_HIGH", "touches_required": 2, "notes": "Two identical levels = liquidity pool, expect sweep" },
+      "session_highs_lows":   { "priority": "HIGH",   "notes": "Asia/London/NY session H/L = major intraday S/R" },
+      "previous_day_hl":      { "priority": "VERY_HIGH", "notes": "PDH/PDL = most respected intraday levels" },
+      "previous_week_hl":     { "priority": "HIGHEST",  "notes": "PWH/PWL = major swing targets, take profit here" },
+      "round_numbers":        { "priority": "MEDIUM",  "notes": "1.2000, 1850, 150.00 — psychological levels, expect reactions" },
+      "order_block_zones":    { "priority": "VERY_HIGH", "notes": "Active unmitigated OBs are the most precise S/R" }
+    },
+    "phase_interpretation": {
+      "TESTING_RESISTANCE": {
+        "action": "Wait for rejection candle or enter on confirmation",
+        "aggressive": "Sell limit at resistance if strong D1/H4 bias aligns"
+      },
+      "EXHAUSTING_AT_RESISTANCE": {
+        "action": "HIGH PROBABILITY SELL — enter on any bearish confirmation candle",
+        "notes": "Exhaustion + resistance + Q3-Q4 = best short setup"
+      },
+      "PUSHING_INTO_RESISTANCE": {
+        "action": "Do NOT sell yet — momentum could break through. Wait for reversal candle first.",
+        "notes": "False breakouts above resistance are common — they become liquidity sweeps"
+      },
+      "EXHAUSTING_AT_SUPPORT": {
+        "action": "HIGH PROBABILITY BUY — enter on any bullish confirmation candle",
+        "notes": "Exhaustion + support + Q1-Q2 = best long setup"
+      },
+      "PUSHING_THROUGH_SUPPORT": {
+        "action": "Do NOT buy. Wait for reclaim above support + confirmation.",
+        "notes": "Breakdown may continue to next S/R level — let it play out"
+      }
+    }
+  },
+
+  "amd_rules": {
+    "accumulation": {
+      "session": "ASIA",
+      "action": "IDENTIFY RANGE + VALID SETUPS",
+      "min_confidence_to_trade": 65,
+      "notes": "Asia session now TRADEABLE. Higher confidence threshold (65 vs 55) required due to lower liquidity. Mark Asia high/low as manipulation targets for London."
+    },
+    "manipulation": {
+      "session": "LONDON",
+      "action": "WATCH_FOR_SWEEP — primary entry session",
+      "min_confidence_to_trade": 55,
+      "notes": "London open (07-09 UTC) is highest priority. Expect liquidity sweep of Asia high or low. Enter on OB retest after sweep confirms direction."
+    },
+    "distribution": {
+      "session": "NEW_YORK",
+      "action": "ENTER_ON_RETEST + SCALE_IN",
+      "min_confidence_to_trade": 55,
+      "notes": "NY open (12-14 UTC) confirms direction set by London. Scale into winning trades if push momentum confirmed."
+    }
+  },
+
+  "session_rules": {
+    "description": "All sessions are now tradeable — session-specific rules apply",
+    "sessions": {
+      "ASIA": {
+        "enabled": true,
+        "min_confidence": 65,
+        "preferred_models": ["ob_retest_with_pattern", "equal_lows_sweep", "range_boundaries"],
+        "position_size_multiplier": 0.75,
+        "notes": "Lower liquidity — reduce size by 25%. Require extra confluence. Good for OB retests at clear levels."
+      },
+      "LONDON": {
+        "enabled": true,
+        "min_confidence": 55,
+        "preferred_models": ["sweep_and_reverse", "ob_retest", "fvg_fill"],
+        "position_size_multiplier": 1.0,
+        "notes": "Highest priority session. London open kill zone (07-09 UTC) = primary entry window."
+      },
+      "NEW_YORK": {
+        "enabled": true,
+        "min_confidence": 55,
+        "preferred_models": ["silver_bullet", "ob_retest", "continuation"],
+        "position_size_multiplier": 1.0,
+        "notes": "NY open kill zone (12-14 UTC). Silver Bullet setup (09:30-11:00 NY time) is prime."
+      },
+      "NY_CLOSE": {
+        "enabled": true,
+        "min_confidence": 65,
+        "preferred_models": ["fvg_fill", "position_management_only"],
+        "position_size_multiplier": 0.5,
+        "notes": "Low activity. Only high confidence setups. Prefer managing existing trades."
+      }
+    }
+  },
+
+  "kill_zone_rules": {
+    "london_open":  { "hours_utc": [7, 9],   "priority": "HIGHEST", "models": ["sweep_and_reverse", "ob_entry"], "confidence_bonus": 10 },
+    "london_close": { "hours_utc": [11, 13],  "priority": "MEDIUM",  "models": ["fvg_fill", "ob_retest"],         "confidence_bonus": 5  },
+    "ny_open":      { "hours_utc": [12, 14],  "priority": "HIGHEST", "models": ["silver_bullet", "ob_entry"],     "confidence_bonus": 10 },
+    "ny_close":     { "hours_utc": [19, 21],  "priority": "LOW",     "models": ["fvg_fill"],                      "confidence_bonus": 0  },
+    "asia_open":    { "hours_utc": [22, 0],   "priority": "MEDIUM",  "models": ["range_identification", "ob_retest"], "confidence_bonus": 3 }
+  },
+
+  "scale_in_rules": {
+    "description": "Scale into winning trades when push momentum is confirmed",
+    "enabled": true,
+    "trigger_conditions": [
+      "Trade is in profit by at least 1.0R",
+      "Initial SL already moved to break-even",
+      "Push phase confirmed on M15 (bodies growing in direction of trade)",
+      "No opposing BOS on H1 — structure intact",
+      "Original confluence factors still valid (OB not mitigated, bias unchanged)"
+    ],
+    "scale_in_rules": [
+      "Add 50% of original position size when 1R profit reached and push confirmed",
+      "Scale-in SL = same as current trailing SL (already at BE or better)",
+      "Scale-in TP = 1.5x original TP3 level (let the runner run)",
+      "Maximum 1 scale-in per trade — no pyramiding beyond 2 units",
+      "If original trade hits TP1 (50% closed) THEN push confirmed: scale-in with remaining runner"
+    ],
+    "reduce_on_exhaustion": true,
+    "notes": "Scale-in is only executed when momentum is clearly confirmed. Exhaustion phase = close partial, do NOT add."
+  },
+
+  "exit_rules": {
+    "tp1_method": "50pct_at_nearest_liquidity_or_1.5R",
+    "tp2_method": "30pct_at_session_high_or_low_or_2.5R",
+    "tp3_method": "20pct_runner_at_daily_high_or_low_or_4R",
+    "sl_method": "3_pips_below_ob_low_or_above_ob_high",
+    "trail_after_tp1": true,
+    "move_to_be_at_1R": true,
+    "trail_to_1R_at_2R": true,
+    "tight_trail_at_3R": true,
+    "close_on_opposing_bos": true,
+    "notes": "Move SL to breakeven after TP1 hit. Always leave runner (20%) for extended moves. Close runner if opposing BOS prints on H1."
+  },
+
+  "risk_rules": {
+    "max_risk_per_trade_pct": 1.0,
+    "base_risk_pct": 1.0,
+    "max_risk_pct": 2.0,
+    "min_risk_pct": 0.5,
+    "max_daily_loss_pct": 3.0,
+    "min_rr_ratio": 2.0,
+    "max_open_positions": 3,
+    "skip_sessions": [],
+    "require_kill_zone": false,
+    "reduce_size_on_consecutive_losses": true,
+    "max_consecutive_losses_before_pause": 3,
+    "asia_session_size_reduction_pct": 25,
+    "scale_up_on_win_streak": {
+      "enabled": true,
+      "streak_3_wins":  "+0.25pct_risk",
+      "streak_5_wins":  "+0.50pct_risk",
+      "cap": "max_risk_pct",
+      "notes": "Risk increases 0.25% after 3 wins, another 0.25% after 5 wins. Resets on any loss."
+    }
+  },
+
+  "filter_rules": {
+    "min_atr_pips": 5,
+    "max_spread_pips": 3.0,
+    "max_spread_xauusd_pips": 30,
+    "require_htf_alignment": true,
+    "avoid_news_minutes": 30,
+    "avoid_days": ["Friday_after_3pm_UTC"],
+    "require_displacement_candle_for_ob": true,
+    "require_at_least_2_confluence_factors": true
+  },
+
+  "confidence_thresholds": {
+    "minimum_to_consider": 45,
+    "minimum_to_trade": 55,
+    "minimum_asia_session": 65,
+    "high_confidence": 70,
+    "very_high_confidence": 80,
+    "scale_in_threshold": 70,
+    "notes": "Adaptive memory engine adjusts these per setup type based on live win rate data"
+  },
+
+  "ai_learning_rules": {
+    "description": "How the AI adapts its rules based on live performance",
+    "enabled": true,
+    "min_sample_for_adjustment": 8,
+    "adjustment_logic": {
+      "win_rate_above_70pct": "Add +10 confidence bonus to this setup type permanently",
+      "win_rate_above_60pct": "Add +5 confidence bonus",
+      "win_rate_below_35pct": "Apply -15 confidence penalty (or disable if < 30%)",
+      "win_rate_below_45pct": "Apply -8 confidence penalty",
+      "avg_r_above_2": "Additional +5 bonus (quality trades)",
+      "avg_r_below_0.8": "Additional -5 penalty (poor quality)"
+    },
+    "learning_sources": ["setup_type", "session", "amd_phase", "pattern", "quarter"],
+    "auto_generate_rules": true,
+    "report_on_startup": true,
+    "notes": "Every trade is logged with full context. System learns which confluence factors predict winners."
+  },
+
+  "symbol_overrides": {
+    "XAUUSD": {
+      "max_spread_pips": 30,
+      "min_atr_pips": 8,
+      "preferred_sessions": ["LONDON", "NEW_YORK", "ASIA"],
+      "asia_min_confidence": 60,
+      "round_number_step": 50,
+      "notes": "Gold is primary instrument. Asia sessions valid when clear OB present."
+    },
+    "NAS100": {
+      "preferred_sessions": ["NEW_YORK"],
+      "require_kill_zone": true,
+      "min_confidence": 70,
+      "notes": "NAS100 NY kill zone only — high volatility requires stricter rules"
+    },
+    "GBPJPY": {
+      "min_confidence": 70,
+      "notes": "Wide spreads + high volatility — require extra confluence"
+    }
+  },
+
+  "morning_brief_rules": {
+    "run_at_start": true,
+    "symbols_to_include": "watchlist",
+    "include_structure": true,
+    "include_bias": true,
+    "include_fvg": true,
+    "include_ob": true,
+    "include_rsi": true,
+    "include_quarter_position": true,
+    "include_pattern_detection": true,
+    "include_push_exhaustion": true,
+    "include_memory_report": true,
+    "alert_on_high_confidence": true,
+    "min_confidence_for_alert": 65
+  }
+}

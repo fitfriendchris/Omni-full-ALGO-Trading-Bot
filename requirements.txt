@@ -1,0 +1,18 @@
+# Core trading / data
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.11.0
+python-dotenv>=1.0.0
+
+# Dashboard (legacy Dash — kept for backwards compat)
+dash>=2.17.0
+plotly>=5.22.0
+
+# API server + real-time WebSocket dashboard
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+websockets>=12.0
+python-multipart>=0.0.9
+
+# MT5 integration (Windows only — skip on macOS/Linux dev machines)
+# MetaTrader5>=5.0.45

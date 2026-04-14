@@ -350,15 +350,40 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
     sr_info_h1  = find_key_levels(h1_bars)
     sr_info_h4  = find_key_levels(h4_bars, tolerance_pct=0.003)
 
+    # ── Step 2f: Opening Gaps (NDOG / NWOG) ─────────────────────────
+    opening_gaps = get_opening_gap_levels(sym_data)
+
+    # ── Step 2g: Breaker Blocks ──────────────────────────────────────
+    bull_breaker = find_bullish_breaker(h1_bars)
+    bear_breaker = find_bearish_breaker(h1_bars)
+
+    # ── Step 2h: All FVGs with CE levels ────────────────────────────
+    all_bull_fvgs = find_all_bullish_fvgs(h1_bars, max_fvgs=3)
+    all_bear_fvgs = find_all_bearish_fvgs(h1_bars, max_fvgs=3)
+
+    # ── Step 2i: GMT hour for Kill Zone / Silver Bullet ──────────────
+    try:
+        gmt_str  = data.get("gmt_time", "")
+        gmt_hour = int(gmt_str.split(" ")[1].split(":")[0]) if gmt_str else datetime.now(timezone.utc).hour
+        gmt_min  = int(gmt_str.split(" ")[1].split(":")[1]) if gmt_str else datetime.now(timezone.utc).minute
+    except Exception:
+        gmt_hour = datetime.now(timezone.utc).hour
+        gmt_min  = datetime.now(timezone.utc).minute
+
     # ── Step 3: Liquidity Levels ────────────────────────────────────
     h4_eq_highs = find_equal_highs(h4_bars, tolerance_pct=0.002)
     h4_eq_lows  = find_equal_lows(h4_bars,  tolerance_pct=0.002)
     h1_eq_highs = find_equal_highs(h1_bars, tolerance_pct=0.001)
     h1_eq_lows  = find_equal_lows(h1_bars,  tolerance_pct=0.001)
 
-    # Combine all key liquidity levels
-    liq_highs = sorted(set(h4_eq_highs + h1_eq_highs + [pdh, pwh, pmh]), reverse=True)
-    liq_lows  = sorted(set(h4_eq_lows  + h1_eq_lows  + [pdl, pwl, pml]))
+    # Include opening gap levels as liquidity targets
+    gap_highs = ([opening_gaps["ndog"]["high"]] if "ndog" in opening_gaps else []) + \
+                ([opening_gaps["nwog"]["high"]] if "nwog" in opening_gaps else [])
+    gap_lows  = ([opening_gaps["ndog"]["low"]]  if "ndog" in opening_gaps else []) + \
+                ([opening_gaps["nwog"]["low"]  ] if "nwog" in opening_gaps else [])
+
+    liq_highs = sorted(set(h4_eq_highs + h1_eq_highs + [pdh, pwh, pmh] + gap_highs), reverse=True)
+    liq_lows  = sorted(set(h4_eq_lows  + h1_eq_lows  + [pdl, pwl, pml] + gap_lows))
     liq_highs = [l for l in liq_highs if l > current_price * 0.99]
     liq_lows  = [l for l in liq_lows  if l < current_price * 1.01 and l > 0]
 
@@ -624,6 +649,150 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                             rr_ratio=round(rr, 2), tf_bias=d1_bias,
                             invalidation=round(sl * 1.001, 5),
                         ))
+
+    # ── Step 6: Breaker Block Setups ─────────────────────────────────
+    if bull_breaker and (d1_bias == "BULLISH" or h4_struct == "BOS_BULLISH"):
+        bb      = bull_breaker
+        entry   = bb["ce"]                        # Enter at 50% of old OB (CE)
+        sl      = bb["ob_low"] - (bb["ob_high"] - bb["ob_low"]) * 0.5
+        risk    = entry - sl
+        if risk > 0:
+            tp1 = entry + risk * 1.5
+            tp2 = entry + risk * 2.5
+            tp3 = entry + risk * 4.0
+            bb_q  = get_quarter_position(entry, d1_high, d1_low)
+            conf, extra_r = _score_buy_setup_full(
+                d1_bias, h4_struct, amd_phase, session, entry, pdl, pwl,
+                quarter_info=bb_q, patterns=detected_patterns,
+                sr_info=sr_info_h1, push_exh=push_exh,
+            )
+            conf += bb["confidence_bonus"]
+            conf = min(conf, 100)
+            rr = abs(tp1 - entry) / risk if risk > 0 else 0
+            setups.append(ICTSetup(
+                symbol=symbol, direction="BUY",
+                entry_type="BREAKER_BLOCK_BUY",
+                entry_price=round(entry, 5), sl_price=round(sl, 5),
+                tp1_price=round(tp1, 5), tp2_price=round(tp2, 5), tp3_price=round(tp3, 5),
+                confidence=conf,
+                reasons=[bb["reason"]] + extra_r,
+                session=session, amd_phase=amd_phase,
+                rr_ratio=round(rr, 2), tf_bias=d1_bias,
+                invalidation=round(sl * 0.999, 5),
+            ))
+
+    if bear_breaker and (d1_bias == "BEARISH" or h4_struct == "BOS_BEARISH"):
+        bb      = bear_breaker
+        entry   = bb["ce"]
+        sl      = bb["ob_high"] + (bb["ob_high"] - bb["ob_low"]) * 0.5
+        risk    = sl - entry
+        if risk > 0:
+            tp1 = entry - risk * 1.5
+            tp2 = entry - risk * 2.5
+            tp3 = entry - risk * 4.0
+            bb_q  = get_quarter_position(entry, d1_high, d1_low)
+            conf, extra_r = _score_sell_setup_full(
+                d1_bias, h4_struct, amd_phase, session, entry, pdh, pwh,
+                quarter_info=bb_q, patterns=detected_patterns,
+                sr_info=sr_info_h1, push_exh=push_exh,
+            )
+            conf += bb["confidence_bonus"]
+            conf = min(conf, 100)
+            rr = abs(entry - tp1) / risk if risk > 0 else 0
+            setups.append(ICTSetup(
+                symbol=symbol, direction="SELL",
+                entry_type="BREAKER_BLOCK_SELL",
+                entry_price=round(entry, 5), sl_price=round(sl, 5),
+                tp1_price=round(tp1, 5), tp2_price=round(tp2, 5), tp3_price=round(tp3, 5),
+                confidence=conf,
+                reasons=[bb["reason"]] + extra_r,
+                session=session, amd_phase=amd_phase,
+                rr_ratio=round(rr, 2), tf_bias=d1_bias,
+                invalidation=round(sl * 1.001, 5),
+            ))
+
+    # ── Step 7: Silver Bullet Model ───────────────────────────────────
+    # Only fires during 10-11 AM EST or 2-3 PM EST windows.
+    # Requires: identified draw on liquidity + MSS + first FVG in direction.
+    sb_window = is_silver_bullet_window(gmt_hour, gmt_min)
+    if sb_window:
+        sb_bonus, sb_reason = _score_silver_bullet_bonus(gmt_hour, gmt_min)
+
+        # Silver Bullet BUY: in SB window, D1/H4 bullish, first BISI FVG above current price
+        if (d1_bias == "BULLISH" or h4_struct == "BOS_BULLISH") and all_bull_fvgs:
+            for fvg in all_bull_fvgs[:2]:
+                if fvg["low"] < current_price:    # FVG is below — enter at CE on pullback
+                    entry = fvg["ce"]
+                    sl    = fvg["low"] - (fvg["high"] - fvg["low"]) * 1.0
+                    risk  = entry - sl
+                    if risk <= 0:
+                        continue
+                    tp1 = entry + risk * 1.5
+                    tp2 = entry + risk * 2.5
+                    tp3 = entry + risk * 4.0
+                    fvg_q  = get_quarter_position(entry, d1_high, d1_low)
+                    conf, extra_r = _score_buy_setup_full(
+                        d1_bias, h4_struct, amd_phase, session, fvg["low"], pdl, pwl,
+                        quarter_info=fvg_q, patterns=detected_patterns,
+                        sr_info=sr_info_h1, push_exh=push_exh,
+                    )
+                    conf = min(conf + sb_bonus, 100)
+                    rr = abs(tp1 - entry) / risk if risk > 0 else 0
+                    reasons = [
+                        sb_reason,
+                        f"BISI FVG: {fvg['low']:.5g}–{fvg['high']:.5g} | CE entry: {fvg['ce']:.5g}",
+                        f"D1 bias {d1_bias} | H4 {h4_struct}",
+                    ] + extra_r
+                    setups.append(ICTSetup(
+                        symbol=symbol, direction="BUY",
+                        entry_type=f"SILVER_BULLET_{sb_window}",
+                        entry_price=round(entry, 5), sl_price=round(sl, 5),
+                        tp1_price=round(tp1, 5), tp2_price=round(tp2, 5), tp3_price=round(tp3, 5),
+                        confidence=conf,
+                        reasons=reasons,
+                        session=session, amd_phase=amd_phase,
+                        rr_ratio=round(rr, 2), tf_bias=d1_bias,
+                        invalidation=round(sl * 0.999, 5),
+                    ))
+                    break   # Only take first qualifying FVG
+
+        # Silver Bullet SELL
+        if (d1_bias == "BEARISH" or h4_struct == "BOS_BEARISH") and all_bear_fvgs:
+            for fvg in all_bear_fvgs[:2]:
+                if fvg["high"] > current_price:   # FVG is above — enter at CE on rally
+                    entry = fvg["ce"]
+                    sl    = fvg["high"] + (fvg["high"] - fvg["low"]) * 1.0
+                    risk  = sl - entry
+                    if risk <= 0:
+                        continue
+                    tp1 = entry - risk * 1.5
+                    tp2 = entry - risk * 2.5
+                    tp3 = entry - risk * 4.0
+                    fvg_q  = get_quarter_position(entry, d1_high, d1_low)
+                    conf, extra_r = _score_sell_setup_full(
+                        d1_bias, h4_struct, amd_phase, session, fvg["high"], pdh, pwh,
+                        quarter_info=fvg_q, patterns=detected_patterns,
+                        sr_info=sr_info_h1, push_exh=push_exh,
+                    )
+                    conf = min(conf + sb_bonus, 100)
+                    rr = abs(entry - tp1) / risk if risk > 0 else 0
+                    reasons = [
+                        sb_reason,
+                        f"SIBI FVG: {fvg['low']:.5g}–{fvg['high']:.5g} | CE entry: {fvg['ce']:.5g}",
+                        f"D1 bias {d1_bias} | H4 {h4_struct}",
+                    ] + extra_r
+                    setups.append(ICTSetup(
+                        symbol=symbol, direction="SELL",
+                        entry_type=f"SILVER_BULLET_{sb_window}",
+                        entry_price=round(entry, 5), sl_price=round(sl, 5),
+                        tp1_price=round(tp1, 5), tp2_price=round(tp2, 5), tp3_price=round(tp3, 5),
+                        confidence=conf,
+                        reasons=reasons,
+                        session=session, amd_phase=amd_phase,
+                        rr_ratio=round(rr, 2), tf_bias=d1_bias,
+                        invalidation=round(sl * 1.001, 5),
+                    ))
+                    break
 
     # Sort by confidence
     setups.sort(key=lambda x: x.confidence, reverse=True)
@@ -1403,6 +1572,380 @@ def _score_sell_setup_full(d1_bias: str, h4_struct: str, amd: str, session: str,
         elif phase == "PUSH" and dirn == "UP":
             score -= 8
             reasons.append("Bullish PUSH — avoid SELL into momentum")
+
+    return min(score, 100), reasons
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSEQUENT ENCROACHMENT (CE) — 50% of any FVG or Gap
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def fvg_consequent_encroachment(fvg_low: float, fvg_high: float) -> float:
+    """
+    CE = the 50% midpoint of a Fair Value Gap.
+    ICT: price commonly retraces to the CE of an FVG before continuing.
+    This is the highest-precision entry point within an FVG.
+    """
+    return round((fvg_low + fvg_high) / 2, 5)
+
+
+def find_all_bullish_fvgs(bars: list[Bar], max_fvgs: int = 5) -> list[dict]:
+    """
+    Find all unmitigated bullish FVGs (BISI — Buyside Imbalance Sellside Inefficiency).
+    Returns list of dicts with low, high, ce (50%), and whether it's been partially filled.
+    """
+    fvgs = []
+    current_price = bars[0].c if bars else 0
+    for i in range(len(bars) - 2):
+        b0, b2 = bars[i], bars[i + 2]
+        if b0.l > b2.h:   # Gap: candle[i].low > candle[i+2].high
+            low  = b2.h
+            high = b0.l
+            ce   = fvg_consequent_encroachment(low, high)
+            # Skip if fully mitigated (price has traded through it)
+            if current_price > low:   # Price is above → still below FVG? No — if price above high, FVG filled
+                if current_price > high:
+                    continue   # Fully above — already mitigated
+            fvgs.append({
+                "type":        "BISI",
+                "direction":   "BUY",
+                "low":         round(low, 5),
+                "high":        round(high, 5),
+                "ce":          ce,
+                "size":        round(high - low, 5),
+                "bar_index":   i,
+                "mitigated":   current_price < low,   # Price hasn't returned yet
+            })
+        if len(fvgs) >= max_fvgs:
+            break
+    return fvgs
+
+
+def find_all_bearish_fvgs(bars: list[Bar], max_fvgs: int = 5) -> list[dict]:
+    """
+    Find all unmitigated bearish FVGs (SIBI — Sellside Imbalance Buyside Inefficiency).
+    """
+    fvgs = []
+    current_price = bars[0].c if bars else 0
+    for i in range(len(bars) - 2):
+        b0, b2 = bars[i], bars[i + 2]
+        if b0.h < b2.l:   # Gap: candle[i].high < candle[i+2].low
+            low  = b0.h
+            high = b2.l
+            ce   = fvg_consequent_encroachment(low, high)
+            if current_price < high:
+                if current_price < low:
+                    continue   # Fully below — already mitigated
+            fvgs.append({
+                "type":        "SIBI",
+                "direction":   "SELL",
+                "low":         round(low, 5),
+                "high":        round(high, 5),
+                "ce":          ce,
+                "size":        round(high - low, 5),
+                "bar_index":   i,
+                "mitigated":   current_price > high,
+            })
+        if len(fvgs) >= max_fvgs:
+            break
+    return fvgs
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BREAKER BLOCKS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def find_bullish_breaker(bars: list[Bar]) -> Optional[dict]:
+    """
+    Bullish Breaker: a bearish OB that price has closed ABOVE (breaking the OB).
+    The OB zone now acts as support — institutions re-enter longs here.
+
+    Logic:
+    1. Find a bearish OB (last bullish candle before bearish impulse)
+    2. Price then closed above the OB high (breaking out)
+    3. On retest of the OB zone from above = Breaker Block BUY entry
+    """
+    if len(bars) < 10:
+        return None
+
+    current_price = bars[0].c
+
+    # Look back for a bearish OB that has since been broken above
+    for i in range(2, min(20, len(bars) - 2)):
+        b = bars[i]
+        # Bearish OB = bullish candle before a bearish impulse
+        if not b.bullish:
+            continue
+        b_next = bars[i - 1]
+        if not b_next.bearish:
+            continue
+        impulse = b_next.body / (b.range + 0.0001)
+        if impulse < 0.5:
+            continue
+
+        ob_low  = b.l
+        ob_high = b.h
+
+        # Check if a more recent candle has closed above ob_high (breakout)
+        breakout_above = any(bars[j].c > ob_high for j in range(0, i - 1))
+        if not breakout_above:
+            continue
+
+        # Confirm price is currently retesting the OB zone from above
+        in_retest_zone = ob_low <= current_price <= ob_high * 1.002
+        if in_retest_zone:
+            return {
+                "type":       "BULLISH_BREAKER",
+                "direction":  "BUY",
+                "ob_low":     round(ob_low, 5),
+                "ob_high":    round(ob_high, 5),
+                "ce":         round((ob_low + ob_high) / 2, 5),
+                "bar_index":  i,
+                "reason":     f"Bullish Breaker Block retest: {ob_low:.5g}–{ob_high:.5g} (former bearish OB now support)",
+                "confidence_bonus": 14,
+            }
+    return None
+
+
+def find_bearish_breaker(bars: list[Bar]) -> Optional[dict]:
+    """
+    Bearish Breaker: a bullish OB that price has closed BELOW (breaking down).
+    The OB zone now acts as resistance — institutions re-enter shorts here.
+    """
+    if len(bars) < 10:
+        return None
+
+    current_price = bars[0].c
+
+    for i in range(2, min(20, len(bars) - 2)):
+        b = bars[i]
+        if not b.bearish:
+            continue
+        b_next = bars[i - 1]
+        if not b_next.bullish:
+            continue
+        impulse = b_next.body / (b.range + 0.0001)
+        if impulse < 0.5:
+            continue
+
+        ob_low  = b.l
+        ob_high = b.h
+
+        # Breakout below ob_low
+        breakout_below = any(bars[j].c < ob_low for j in range(0, i - 1))
+        if not breakout_below:
+            continue
+
+        in_retest_zone = ob_low * 0.998 <= current_price <= ob_high
+        if in_retest_zone:
+            return {
+                "type":       "BEARISH_BREAKER",
+                "direction":  "SELL",
+                "ob_low":     round(ob_low, 5),
+                "ob_high":    round(ob_high, 5),
+                "ce":         round((ob_low + ob_high) / 2, 5),
+                "bar_index":  i,
+                "reason":     f"Bearish Breaker Block retest: {ob_low:.5g}–{ob_high:.5g} (former bullish OB now resistance)",
+                "confidence_bonus": 14,
+            }
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OPENING GAPS (NDOG / NWOG)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_opening_gap_levels(sym_data: dict) -> dict:
+    """
+    Extract New Day Opening Gap (NDOG) and New Week Opening Gap (NWOG) from EA data.
+    These are powerful institutional reference points — price often returns to fill them.
+
+    A gap exists when today's open ≠ yesterday's close.
+    Gap filled = price trades through the gap zone.
+    CE of gap = 50% of the gap range.
+    """
+    ndog_close = sym_data.get("ndog_close", 0)
+    ndog_open  = sym_data.get("ndog_open",  0)
+    nwog_close = sym_data.get("nwog_close", 0)
+    nwog_open  = sym_data.get("nwog_open",  0)
+
+    result = {}
+
+    if ndog_close > 0 and ndog_open > 0 and abs(ndog_close - ndog_open) > 0:
+        gap_low  = min(ndog_close, ndog_open)
+        gap_high = max(ndog_close, ndog_open)
+        result["ndog"] = {
+            "low":       round(gap_low,  5),
+            "high":      round(gap_high, 5),
+            "ce":        round((gap_low + gap_high) / 2, 5),
+            "direction": "BUY" if ndog_open > ndog_close else "SELL",  # gap up = bullish fill target below
+            "size":      round(gap_high - gap_low, 5),
+        }
+
+    if nwog_close > 0 and nwog_open > 0 and abs(nwog_close - nwog_open) > 0:
+        gap_low  = min(nwog_close, nwog_open)
+        gap_high = max(nwog_close, nwog_open)
+        result["nwog"] = {
+            "low":       round(gap_low,  5),
+            "high":      round(gap_high, 5),
+            "ce":        round((gap_low + gap_high) / 2, 5),
+            "direction": "BUY" if nwog_open > nwog_close else "SELL",
+            "size":      round(gap_high - gap_low, 5),
+        }
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# KILL ZONE & SILVER BULLET TIME WINDOWS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_killzone(gmt_hour: int) -> str:
+    """
+    Returns the current ICT Kill Zone name, or '' if outside all kill zones.
+    All times UTC (GMT).
+    """
+    if 22 <= gmt_hour or gmt_hour < 1:
+        return "ASIA_KZ"
+    if 7 <= gmt_hour < 9:
+        return "LONDON_OPEN"
+    if 11 <= gmt_hour < 13:
+        return "LONDON_CLOSE"
+    if 12 <= gmt_hour < 15:
+        return "NY_OPEN"
+    if 19 <= gmt_hour < 21:
+        return "NY_CLOSE"
+    return ""
+
+
+def is_silver_bullet_window(gmt_hour: int, gmt_minute: int = 0) -> str:
+    """
+    ICT Silver Bullet — two specific time windows (New York local time):
+      • 10:00–11:00 AM EST  = UTC 15:00–16:00 (summer) / 16:00–17:00 (winter)
+      • 14:00–15:00 PM EST  = UTC 19:00–20:00 (summer) / 20:00–21:00 (winter)
+
+    We use a fixed 4-hour offset (UTC-4, EDT summer).  During winter (EST, UTC-5)
+    the windows shift one hour later — handle this by accepting a ±1 hour tolerance.
+
+    Returns: 'SB_AM' | 'SB_PM' | ''
+    """
+    # AM Silver Bullet: 10–11 AM EST = 14–16 UTC (EDT±1h tolerance)
+    if 14 <= gmt_hour < 16:
+        return "SB_AM"
+    # PM Silver Bullet: 14–15 PM EST = 18–20 UTC
+    if 18 <= gmt_hour < 20:
+        return "SB_PM"
+    return ""
+
+
+def _score_silver_bullet_bonus(gmt_hour: int, gmt_minute: int = 0) -> tuple[int, str]:
+    """Returns (confidence_bonus, reason) if in a Silver Bullet window."""
+    sb = is_silver_bullet_window(gmt_hour, gmt_minute)
+    if sb == "SB_AM":
+        return 15, "Silver Bullet AM window (10-11 AM EST) — highest precision entry"
+    if sb == "SB_PM":
+        return 12, "Silver Bullet PM window (2-3 PM EST) — high precision entry"
+    return 0, ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HIERARCHICAL CONFLUENCE GATE
+# Time > Liquidity > Inefficiency > Structure (per ICT's own priority order)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def hierarchical_confluence_score(
+    session: str,
+    gmt_hour: int,
+    liquidity_swept: bool,
+    has_fvg: bool,
+    has_ob: bool,
+    has_bos: bool,
+    amd_phase: str,
+    d1_bias_aligned: bool,
+    extras: list = None,
+) -> tuple[int, list[str]]:
+    """
+    Score a setup using ICT's own hierarchy:
+
+    Step 1 — Time (Kill Zone / Silver Bullet):
+        Outside kill zone = hard -20, no silver bullet = -5.
+        In Silver Bullet = +15.
+
+    Step 2 — Liquidity (External draw):
+        Liquidity swept = +25 (the trigger event — most important).
+        No sweep = setup is speculative only.
+
+    Step 3 — Inefficiency (FVG / Gap):
+        FVG present and aligned = +15, CE entry = additional +10.
+
+    Step 4 — Structure (BOS / CHoCH + OB):
+        BOS aligned = +15.
+        OB present = +10.
+        D1 bias aligned = +10.
+
+    AMD phase bonus: Manipulation/Distribution = +10.
+
+    Returns (score, reasons).
+    """
+    score   = 30   # base
+    reasons = []
+    extras  = extras or []
+
+    # ── Step 1: Time ─────────────────────────────────────────────────────
+    kz = get_killzone(gmt_hour)
+    if kz:
+        score += 12
+        reasons.append(f"Kill Zone: {kz} (+12)")
+    else:
+        score -= 20
+        reasons.append("Outside Kill Zone (-20) — lower probability")
+
+    sb_bonus, sb_reason = _score_silver_bullet_bonus(gmt_hour)
+    if sb_bonus:
+        score += sb_bonus
+        reasons.append(sb_reason)
+
+    # ── Step 2: Liquidity ─────────────────────────────────────────────────
+    if liquidity_swept:
+        score += 25
+        reasons.append("External liquidity swept — institutional trigger (+25)")
+    else:
+        reasons.append("No liquidity sweep — speculative entry (0)")
+
+    # ── Step 3: Inefficiency ──────────────────────────────────────────────
+    if has_fvg:
+        score += 15
+        reasons.append("FVG imbalance present (+15)")
+
+    # ── Step 4: Structure ─────────────────────────────────────────────────
+    if has_bos:
+        score += 15
+        reasons.append("BOS confirmed on execution TF (+15)")
+    if has_ob:
+        score += 10
+        reasons.append("Order Block aligned (+10)")
+    if d1_bias_aligned:
+        score += 10
+        reasons.append("D1 bias aligned with trade (+10)")
+
+    # AMD phase
+    if amd_phase == "MANIPULATION":
+        score += 10
+        reasons.append("AMD Manipulation phase — sweep expected (+10)")
+    elif amd_phase == "DISTRIBUTION":
+        score += 8
+        reasons.append("AMD Distribution phase — directional move expected (+8)")
+
+    # Session
+    if session in ("LONDON", "NEW_YORK"):
+        score += 5
+        reasons.append(f"{session} session — peak liquidity (+5)")
+
+    # Extras passed in (quarter, pattern bonuses, etc.)
+    for extra in extras:
+        if isinstance(extra, tuple) and len(extra) == 2:
+            score += extra[0]
+            reasons.append(extra[1])
 
     return min(score, 100), reasons
 

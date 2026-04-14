@@ -188,6 +188,36 @@ void ExportData()
       j += "      \"pmh\":"  + DoubleToString(iHigh(csym, PERIOD_MN1, 1), cdig) + ",\n";
       j += "      \"pml\":"  + DoubleToString(iLow(csym,  PERIOD_MN1, 1), cdig) + ",\n";
 
+      // ── Live bid/ask + spread (for spread guard in Python) ──────────────
+      double cbid2 = SymbolInfoDouble(csym, SYMBOL_BID);
+      double cask2 = SymbolInfoDouble(csym, SYMBOL_ASK);
+      double cpt   = SymbolInfoDouble(csym, SYMBOL_POINT);
+      int    csprd = (cpt > 0) ? (int)MathRound((cask2-cbid2)/cpt) : 0;
+      j += "      \"bid\":"    + DoubleToString(cbid2, cdig) + ",\n";
+      j += "      \"ask\":"    + DoubleToString(cask2, cdig) + ",\n";
+      j += "      \"spread\":" + IntegerToString(csprd)      + ",\n";
+
+      // ── New Day / New Week Opening Gaps (NDOG / NWOG) ───────────────────
+      // NDOG = close of last D1 bar vs open of current D1 bar (gap between sessions)
+      // NWOG = close of last W1 bar vs open of current W1 bar
+      MqlRates dRates[2], wRates[2];
+      double ndog_open  = 0, ndog_close = 0;
+      double nwog_open  = 0, nwog_close = 0;
+      if(CopyRates(csym, PERIOD_D1, 0, 2, dRates) == 2)
+        {
+         ndog_close = dRates[1].close;  // yesterday close
+         ndog_open  = dRates[0].open;   // today open
+        }
+      if(CopyRates(csym, PERIOD_W1, 0, 2, wRates) == 2)
+        {
+         nwog_close = wRates[1].close;  // last week close
+         nwog_open  = wRates[0].open;   // this week open
+        }
+      j += "      \"ndog_close\":" + DoubleToString(ndog_close, cdig) + ",\n";
+      j += "      \"ndog_open\":"  + DoubleToString(ndog_open,  cdig) + ",\n";
+      j += "      \"nwog_close\":" + DoubleToString(nwog_close, cdig) + ",\n";
+      j += "      \"nwog_open\":"  + DoubleToString(nwog_open,  cdig) + ",\n";
+
       // ── Contract spec (lot sizing in auto_trader) ────────────────────
       j += "      \"tick_size\":"  + DoubleToString(SymbolInfoDouble(csym, SYMBOL_TRADE_TICK_SIZE),  8) + ",\n";
       j += "      \"tick_value\":" + DoubleToString(SymbolInfoDouble(csym, SYMBOL_TRADE_TICK_VALUE), 8) + ",\n";

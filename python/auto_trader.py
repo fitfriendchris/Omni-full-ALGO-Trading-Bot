@@ -3,10 +3,12 @@ auto_trader.py — OMNI ICT Auto-Trading Engine
 Compounding 2% risk | Multi-TF ICT entries | Full trade management
 
 ⚠️  PAPER MODE IS ON BY DEFAULT
-    Set PAPER_MODE = False only when you are ready for live trading.
-    Test on a demo account first!
+    To enable live trading set OMNI_PAPER_MODE=false in your environment,
+    or set "paper_mode": false in config.json.
+    Always test on a demo account first!
 
-Kill switch: touch the file at KILL_SWITCH_PATH to halt trading instantly.
+Kill switch: touch the file at KILL_SWITCH_PATH (default: python/HALT) to
+halt trading instantly.  Remove the file to resume.
 
 Run: python auto_trader.py
 """
@@ -18,49 +20,48 @@ import time
 import re
 import math
 import logging
+import logging.handlers
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-PAPER_MODE       = True       # ⚠️  SET FALSE FOR LIVE TRADING (use demo first!)
-BASE_RISK_PCT    = 1.0        # Base risk per trade (%)
-MAX_RISK_PCT     = 2.0        # Max risk after win streak (scale up)
-MIN_RISK_PCT     = 0.5        # Min risk after loss streak
-MAX_OPEN_TRADES  = 3          # Maximum concurrent positions
-DAILY_LOSS_LIMIT = 3.0        # Stop trading if down X% in a day
-MAX_DD_FROM_PEAK = 10.0       # Stop trading if down X% from peak equity
-SCAN_INTERVAL    = 10         # Seconds between scans
-MIN_RR           = 2.0        # Minimum risk:reward ratio (ICT standard)
-MIN_CONFIDENCE   = 55         # Minimum setup confidence to trade
-MIN_CONFIDENCE_ASIA = 65      # Higher bar for Asia session (lower liquidity)
-MIN_SL_PIPS      = 10         # Minimum SL distance in pips (spread protection)
-OUR_MAGIC        = 20250411   # Magic number identifying OMNI-placed trades
+# ── Centralised config (paths, thresholds, paper/live toggle) ─────────────────
+from config import cfg
 
-# SESSION_FILTER = None means ALL sessions are tradeable
-# Asia session uses a higher MIN_CONFIDENCE threshold (MIN_CONFIDENCE_ASIA)
-SESSION_FILTER = None         # Trade all sessions — session-specific thresholds apply
+PAPER_MODE       = cfg.PAPER_MODE
+BASE_RISK_PCT    = cfg.BASE_RISK_PCT
+MAX_RISK_PCT     = cfg.MAX_RISK_PCT
+MIN_RISK_PCT     = cfg.MIN_RISK_PCT
+MAX_OPEN_TRADES  = cfg.MAX_OPEN_TRADES
+DAILY_LOSS_LIMIT = cfg.DAILY_LOSS_LIMIT
+MAX_DD_FROM_PEAK = cfg.MAX_DD_FROM_PEAK
+SCAN_INTERVAL    = cfg.SCAN_INTERVAL
+MIN_RR           = cfg.MIN_RR
+MIN_CONFIDENCE   = cfg.MIN_CONFIDENCE
+MIN_CONFIDENCE_ASIA = cfg.MIN_CONFIDENCE_ASIA
+MIN_SL_PIPS      = cfg.MIN_SL_PIPS
+OUR_MAGIC        = cfg.MAGIC
 
-# Symbols to trade (priority order)
-TRADE_SYMBOLS = ["XAUUSD", "XAGUSD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"]
+SESSION_FILTER   = None   # None = all sessions; session-specific thresholds in execute_setup
 
-# File paths
-JSON_PATH        = "/Users/owner/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/omni_data.json"
-CMD_PATH         = "/Users/owner/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/omni_cmd.txt"
-RESULT_PATH      = "/Users/owner/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/omni_result.txt"
-STATE_PATH       = "/Users/owner/Desktop/omni-ict/python/trader_state.json"
-LOG_PATH         = "/Users/owner/Desktop/omni-ict/python/trader.log"
-KILL_SWITCH_PATH = "/Users/owner/Desktop/omni-ict/python/HALT"  # Touch to halt instantly
+TRADE_SYMBOLS    = cfg.TRADE_SYMBOLS
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_PATH),
-        logging.StreamHandler(sys.stdout),
-    ]
+JSON_PATH        = cfg.JSON_PATH
+CMD_PATH         = cfg.CMD_PATH
+RESULT_PATH      = cfg.RESULT_PATH
+STATE_PATH       = cfg.STATE_PATH
+LOG_PATH         = cfg.LOG_PATH
+KILL_SWITCH_PATH = cfg.KILL_SWITCH_PATH
+
+# ── Logging (with rotation — max 10 MB, keep 5 files) ────────────────────────
+_file_handler = logging.handlers.RotatingFileHandler(
+    LOG_PATH, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
 )
+_file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+_stream_handler = logging.StreamHandler(sys.stdout)
+_stream_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
 log = logging.getLogger("OMNI")
 
 # ── State ─────────────────────────────────────────────────────────────────────
@@ -349,9 +350,16 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
             profit = trade.get("last_profit", 0)
 
         entry_price   = trade.get("entry", 0)
-        close_price   = history_by_ticket.get(ticket, {}).get("close", 0) if ticket in history_by_ticket else 0
-        risk_distance = abs(entry_price - trade.get("tp1", entry_price)) / 1.5 if entry_price > 0 else 1
-        r_multiple    = (profit / (risk_distance * 1.0)) if risk_distance > 0 else 0
+        sl_price      = trade.get("sl", 0)
+        close_price   = history_by_ticket.get(ticket, {}).get("price", 0) if ticket in history_by_ticket else 0
+        # R-multiple = profit / (risk per unit × lot size).  Use SL distance for risk.
+        risk_distance = abs(entry_price - sl_price) if (entry_price > 0 and sl_price > 0) else 1
+        risk_usd_per_r = risk_distance   # approximate; memory records full USD via lot size
+        r_multiple    = round(profit / (risk_distance * 10000), 2) if risk_distance > 0 else 0
+        # Simpler meaningful R: sign follows profit, magnitude is pips gained / pips risked
+        if entry_price > 0 and sl_price > 0 and risk_distance > 0 and close_price > 0:
+            pips_gained = abs(close_price - entry_price)
+            r_multiple  = round((pips_gained / risk_distance) * (1 if profit >= 0 else -1), 2)
 
         # Determine exit level
         tp1 = trade.get("tp1", 0)
@@ -779,6 +787,25 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
         log.debug(f"{symbol}: SL too tight ({sl_distance:.5g} < {MIN_SL_PIPS} pips), skipping")
         return False
 
+    # ── Spread guard — skip trade if spread is abnormally wide ────────────
+    # Spread in the prices array is in points; convert to pips for comparison.
+    live_spread_pts = sym_info.get("spread", 0)
+    live_spread_pips = live_spread_pts * sym_info.get("point", 0.0001) / pip_size * live_spread_pts
+    # Simpler: spread field from OmniExport is already in points (integer ticks)
+    # 1 pip = 10 points for most symbols; for XAUUSD 1 pip = 1 point
+    point = sym_info.get("point", 0.0001)
+    if live_spread_pts > 0:
+        if "XAU" in symbol or "GOLD" in symbol:
+            max_spread = cfg.MAX_SPREAD_XAUUSD_PIPS
+        elif any(idx in symbol for idx in ("US30", "NAS", "DAX", "SPX")):
+            max_spread = cfg.MAX_SPREAD_INDEX_PIPS
+        else:
+            max_spread = cfg.MAX_SPREAD_FOREX_PIPS
+        spread_in_pips = live_spread_pts * point / pip_size if pip_size > 0 else live_spread_pts
+        if spread_in_pips > max_spread:
+            log.info(f"{symbol}: spread {spread_in_pips:.1f} pips > max {max_spread} — skipping (wide spread)")
+            return False
+
     # Calculate lot size with compounding
     lot_size = calculate_lot_size(
         equity=equity,
@@ -874,6 +901,7 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
             "symbol":          symbol,
             "direction":       direction,
             "entry":           entry,
+            "sl":              sl,           # ← stored for accurate R-multiple calculation
             "tp1":             setup.tp1_price,
             "tp2":             setup.tp2_price,
             "tp3":             setup.tp3_price,
@@ -985,6 +1013,31 @@ def main():
     log.info(f"Trader started | Paper={PAPER_MODE} | Risk={state.current_risk_pct}%")
     log.info(f"State loaded: {state.total_trades} trades, P&L: ${state.total_profit:.2f}")
 
+    # ── Startup reconciliation: sync active_trades with real MT5 positions ─
+    # If the bot was restarted, positions may have closed while it was down.
+    # Purge any tracked tickets that are no longer open in MT5.
+    _startup_data = load_mt5_data()
+    if _startup_data:
+        _live_tickets = {
+            str(p.get("ticket"))
+            for p in _startup_data.get("positions", [])
+        }
+        _stale = [t for t in list(state.active_trades.keys())
+                  if not t.startswith("PAPER_") and t not in _live_tickets]
+        if _stale:
+            log.warning(
+                f"Reconciliation: removing {len(_stale)} stale trades "
+                f"no longer open in MT5: {_stale}"
+            )
+            for t in _stale:
+                state.active_trades.pop(t, None)
+        _tracked = len(state.active_trades)
+        _live    = len(_live_tickets)
+        log.info(f"Reconciliation complete: {_tracked} tracked / {_live} live MT5 positions")
+        save_state(state)
+    else:
+        log.warning("Could not load MT5 data at startup — skipping reconciliation")
+
     scan_count     = 0
     data_fail_count = 0
 
@@ -1007,12 +1060,26 @@ def main():
             data = load_mt5_data()
             if not data:
                 data_fail_count += 1
-                if data_fail_count % 6 == 0:  # Escalate after 1 minute of failures
-                    log.error(f"MT5 data missing for {data_fail_count * SCAN_INTERVAL}s — is the EA running?")
+                if data_fail_count % 6 == 0:
+                    log.error(f"MT5 data missing for {data_fail_count * SCAN_INTERVAL}s — is OmniExport EA running?")
                 else:
-                    log.warning("No MT5 data — is the EA running?")
+                    log.warning("No MT5 data — waiting for EA...")
                 time.sleep(SCAN_INTERVAL)
                 continue
+
+            # ── Staleness guard — abort if data file is too old ────────
+            try:
+                data_age = time.time() - os.path.getmtime(JSON_PATH)
+                if data_age > cfg.MAX_DATA_AGE_SECS:
+                    log.error(
+                        f"MT5 data stale ({data_age:.0f}s old, max {cfg.MAX_DATA_AGE_SECS}s) — "
+                        f"is OmniExport EA running? Trading paused."
+                    )
+                    time.sleep(SCAN_INTERVAL)
+                    continue
+            except OSError:
+                pass  # File may not exist yet; already handled above
+
             data_fail_count = 0
 
             account   = get_account(data)

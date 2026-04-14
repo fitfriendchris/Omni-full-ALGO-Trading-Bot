@@ -13,8 +13,11 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Optional
 
-
-JSON_PATH = "/Users/owner/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/omni_data.json"
+try:
+    from config import cfg
+    JSON_PATH = cfg.JSON_PATH
+except ImportError:
+    JSON_PATH = "/Users/owner/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/omni_data.json"
 
 
 @dataclass
@@ -67,6 +70,20 @@ def _load():
     except Exception as e:
         print(f"[ICT] Load error: {e}")
         return {}
+
+
+def _blended_rr(risk: float, tp1: float, tp2: float, tp3: float, entry: float) -> float:
+    """
+    Compute expected R-multiple weighted by partial-exit allocation:
+      50% exits at TP1 (1.5R), 30% at TP2 (2.5R), 20% at TP3 (4.0R)
+    Returns blended expected R so that MIN_RR checks reflect full trade value.
+    """
+    if risk <= 0:
+        return 0.0
+    r1 = abs(tp1 - entry) / risk
+    r2 = abs(tp2 - entry) / risk
+    r3 = abs(tp3 - entry) / risk
+    return round(0.5 * r1 + 0.3 * r2 + 0.2 * r3, 2)
 
 
 def _parse_bars(bars_data: list) -> list[Bar]:
@@ -450,7 +467,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                     elif level == pmh:
                         reasons.insert(0, "Previous Month High swept")
 
-                    rr = abs(tp1 - entry) / abs(sl - entry) if abs(sl - entry) > 0 else 0
+                    rr = _blended_rr(abs(sl - entry), tp1, tp2, tp3, entry)
                     setups.append(ICTSetup(
                         symbol=symbol, direction="SELL",
                         entry_type="SWEEP_HIGH_OB",
@@ -526,7 +543,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                     elif level == pml:
                         reasons.insert(0, "Previous Month Low swept")
 
-                    rr = abs(tp1 - entry) / abs(entry - sl) if abs(entry - sl) > 0 else 0
+                    rr = _blended_rr(abs(entry - sl), tp1, tp2, tp3, entry)
                     setups.append(ICTSetup(
                         symbol=symbol, direction="BUY",
                         entry_type="SWEEP_LOW_OB",
@@ -570,7 +587,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                     confidence = max(40, confidence - 5)
 
                     if confidence >= 45:
-                        rr = abs(tp1 - entry) / abs(entry - sl) if abs(entry - sl) > 0 else 0
+                        rr = _blended_rr(abs(entry - sl), tp1, tp2, tp3, entry)
                         pat_names = [p.get("pattern","") for p in detected_patterns if p.get("direction")=="BUY"]
                         reasons = [
                             f"Bullish FVG (imbalance): {fvg_low:.5g}—{fvg_high:.5g}",
@@ -621,7 +638,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                     confidence = max(40, confidence - 5)
 
                     if confidence >= 45:
-                        rr = abs(entry - tp1) / abs(sl - entry) if abs(sl - entry) > 0 else 0
+                        rr = _blended_rr(abs(sl - entry), tp1, tp2, tp3, entry)
                         pat_names = [p.get("pattern","") for p in detected_patterns if p.get("direction")=="SELL"]
                         reasons = [
                             f"Bearish FVG (imbalance): {fvg_low:.5g}—{fvg_high:.5g}",
@@ -668,7 +685,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
             )
             conf += bb["confidence_bonus"]
             conf = min(conf, 100)
-            rr = abs(tp1 - entry) / risk if risk > 0 else 0
+            rr = _blended_rr(risk, tp1, tp2, tp3, entry)
             setups.append(ICTSetup(
                 symbol=symbol, direction="BUY",
                 entry_type="BREAKER_BLOCK_BUY",
@@ -698,7 +715,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
             )
             conf += bb["confidence_bonus"]
             conf = min(conf, 100)
-            rr = abs(entry - tp1) / risk if risk > 0 else 0
+            rr = _blended_rr(risk, tp1, tp2, tp3, entry)
             setups.append(ICTSetup(
                 symbol=symbol, direction="SELL",
                 entry_type="BREAKER_BLOCK_SELL",
@@ -737,7 +754,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                         sr_info=sr_info_h1, push_exh=push_exh,
                     )
                     conf = min(conf + sb_bonus, 100)
-                    rr = abs(tp1 - entry) / risk if risk > 0 else 0
+                    rr = _blended_rr(risk, tp1, tp2, tp3, entry)
                     reasons = [
                         sb_reason,
                         f"BISI FVG: {fvg['low']:.5g}–{fvg['high']:.5g} | CE entry: {fvg['ce']:.5g}",
@@ -775,7 +792,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                         sr_info=sr_info_h1, push_exh=push_exh,
                     )
                     conf = min(conf + sb_bonus, 100)
-                    rr = abs(entry - tp1) / risk if risk > 0 else 0
+                    rr = _blended_rr(risk, tp1, tp2, tp3, entry)
                     reasons = [
                         sb_reason,
                         f"SIBI FVG: {fvg['low']:.5g}–{fvg['high']:.5g} | CE entry: {fvg['ce']:.5g}",

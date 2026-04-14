@@ -9,7 +9,11 @@ import os
 import pandas as pd
 from datetime import datetime
 
-JSON_PATH = "/Users/owner/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/omni_data.json"
+try:
+    from config import cfg
+    JSON_PATH = cfg.JSON_PATH
+except ImportError:
+    JSON_PATH = "/Users/owner/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/omni_data.json"
 
 # ── SMT Correlation pairs ─────────────────────────────────────────────────────
 # If correlated pairs diverge at a key level = SMT signal

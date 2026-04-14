@@ -8,13 +8,18 @@ Or import:      from backtester import run_backtest
 """
 
 import json, re, os, math, random
+from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Optional
 
 # ── Config ────────────────────────────────────────────────────────────────────
-JSON_PATH = "/Users/owner/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/omni_data.json"
-RESULTS_PATH = "/Users/owner/Desktop/omni-ict/python/backtest_results.json"
+try:
+    from config import cfg
+    JSON_PATH = cfg.JSON_PATH
+except ImportError:
+    JSON_PATH = "/Users/owner/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/omni_data.json"
+RESULTS_PATH = str(Path(__file__).parent / "backtest_results.json")
 
 # ── Data structures ───────────────────────────────────────────────────────────
 @dataclass

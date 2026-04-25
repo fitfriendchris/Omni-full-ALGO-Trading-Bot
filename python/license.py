@@ -20,7 +20,7 @@ from pathlib import Path
 log = logging.getLogger("license")
 
 LICENSE_KEY    = os.getenv("OMNI_LICENSE_KEY", "")
-LICENSE_SERVER = os.getenv("OMNI_LICENSE_SERVER", "https://license.omni-ict.com")
+LICENSE_SERVER = os.getenv("OMNI_LICENSE_SERVER", "https://omni-full-algo-trading-bot-production.up.railway.app")
 CACHE_FILE     = Path(__file__).resolve().parent.parent / "logs" / "license_cache.json"
 RECHECK_HOURS  = 24
 OWNER_BYPASS   = "OWNER_BYPASS"

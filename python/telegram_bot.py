@@ -96,8 +96,49 @@ def _api(method: str, **params) -> dict:
         return {}
 
 
-def send(chat_id, text: str, parse_mode: str = "HTML") -> None:
-    _api("sendMessage", chat_id=chat_id, text=text, parse_mode=parse_mode)
+def send(chat_id, text: str, parse_mode: str = "HTML",
+         reply_markup: dict | None = None) -> None:
+    params: dict = dict(chat_id=chat_id, text=text, parse_mode=parse_mode)
+    if reply_markup:
+        params["reply_markup"] = json.dumps(reply_markup)
+    _api("sendMessage", **params)
+
+
+def _sales_page(chat_id: int) -> None:
+    """Send full sales pitch with inline buy buttons to any stranger."""
+    text = (
+        "🤖 <b>OMNI-ICT — Automated MT5 Trading Bot</b>\n\n"
+        "Trade ICT / Smart Money Concepts 24/5 — fully automated.\n\n"
+        "<b>What you get:</b>\n"
+        "📊 ICT pattern detection (OB, FVG, BOS, sweeps)\n"
+        "📈 Smart compounding &amp; pyramid sizing\n"
+        "🛡️ Drawdown protection &amp; smart trailing stops\n"
+        "🤖 AI market regime detection (Claude)\n"
+        "📱 Full Telegram control center\n"
+        "🔁 Self-healing, auto-restarts, crash recovery\n\n"
+        "<b>Choose your plan:</b>"
+    )
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {"text": "🥉 Starter — $49/mo", "url": "https://buy.stripe.com/dRm7sK5U22048aZePc7Re05"},
+            ],
+            [
+                {"text": "🥈 Pro — $99/mo ⭐ Popular", "url": "https://buy.stripe.com/00wdR8eqyeMQ2QF0Ym7Re06"},
+            ],
+            [
+                {"text": "🥇 Elite — $199/mo", "url": "https://buy.stripe.com/5kQ8wO6Y6eMQ62R0Ym7Re07"},
+            ],
+            [
+                {"text": "📖 Setup Guide", "url": "https://github.com/fitfriendchris/Omni-full-ALGO-Trading-Bot/blob/main/STARTUP_GUIDE.md"},
+                {"text": "🏦 Open MT5 Account", "url": "https://www.midasfx.com/?ib=1128101"},
+            ],
+            [
+                {"text": "🌐 Visit Website", "url": "https://fitfriendchris.github.io/Omni-full-ALGO-Trading-Bot/"},
+            ],
+        ]
+    }
+    send(chat_id, text, reply_markup=keyboard)
 
 
 def get_updates(offset: int, timeout: int = POLL_TIMEOUT) -> list[dict]:
@@ -1203,12 +1244,13 @@ def main() -> None:
                 elif from_id == chat_id:
                     send(chat_id, "✅ Already registered.\n" + cmd_help())
                 else:
-                    send(from_id, "❌ This bot is private.")
+                    # Not the owner — show the public sales page
+                    _sales_page(from_id)
                 continue
 
             if from_id != chat_id:
-                send(from_id, "❌ Unauthorized." if chat_id else
-                     "Send /start first to register.")
+                # Any command from a non-owner gets the sales page
+                _sales_page(from_id)
                 continue
 
             # Route /cancel to setup handler if pending

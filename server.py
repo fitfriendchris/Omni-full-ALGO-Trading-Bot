@@ -99,7 +99,7 @@ def load_config() -> dict:
                 "journal_path": str(SCRIPT_DIR / "python" / "trade_journal.log"),
             }
         ],
-        "server": {"host": "0.0.0.0", "port": 8000},
+        "server": {"host": "0.0.0.0", "port": 8787},
     }
 
 CONFIG = load_config()
@@ -113,13 +113,53 @@ _log_buffers: dict[str, deque] = {
 
 # ── Data readers ───────────────────────────────────────────────────────────────
 
+_MT5_CACHE: dict = {"data": {}, "mtime": 0.0}
+
+# Use orjson for fast parsing (10× faster than stdlib for large files)
+try:
+    import orjson as _orjson
+    def _json_loads(raw_bytes: bytes) -> dict:
+        try:
+            return _orjson.loads(raw_bytes)
+        except Exception:
+            # Fall back to stdlib with trailing-comma strip
+            text = raw_bytes.decode("utf-8", errors="replace")
+            return json.loads(re.sub(r',\s*([\]}])', r'\1', text))
+except ImportError:
+    _orjson = None  # type: ignore
+    def _json_loads(raw_bytes: bytes) -> dict:
+        text = raw_bytes.decode("utf-8", errors="replace")
+        return json.loads(re.sub(r',\s*([\]}])', r'\1', text))
+
+
 def _load_json(path: str) -> dict:
-    try:
-        with open(path, encoding="utf-8") as f:
-            raw = re.sub(r',\s*([\]}])', r'\1', f.read())
-        return json.loads(raw)
-    except Exception:
-        return {}
+    """Load MT5 JSON with mtime-based cache — avoids re-parsing 55MB file on every tick."""
+    # Pick freshest between .json and .tmp
+    tmp = path + ".tmp"
+    best_path, best_mtime = path, 0.0
+    for p in (path, tmp):
+        try:
+            m = os.path.getmtime(p)
+            if m > best_mtime:
+                best_mtime, best_path = m, p
+        except OSError:
+            pass
+    if not best_mtime:
+        return _MT5_CACHE["data"] or {}
+    if best_mtime == _MT5_CACHE["mtime"]:
+        return _MT5_CACHE["data"]
+    # New data — try freshest file, fall back to the other on parse error
+    for p in (best_path, path if best_path == tmp else tmp):
+        try:
+            with open(p, "rb") as f:
+                raw = f.read()
+            data = _json_loads(raw)
+            _MT5_CACHE["data"]  = data
+            _MT5_CACHE["mtime"] = best_mtime
+            return data
+        except Exception:
+            continue
+    return _MT5_CACHE["data"] or {}
 
 
 def _load_json_clean(path: str) -> dict:
@@ -131,8 +171,13 @@ def _load_json_clean(path: str) -> dict:
 
 
 def _data_age_secs(path: str) -> float:
+    """Return age in seconds of path, also checking path+'.tmp' (EA writes .tmp then renames)."""
     try:
-        return time.time() - os.path.getmtime(path)
+        best = max(
+            os.path.getmtime(path) if os.path.exists(path) else 0,
+            os.path.getmtime(path + ".tmp") if os.path.exists(path + ".tmp") else 0,
+        )
+        return time.time() - best if best else 9999.0
     except Exception:
         return 9999.0
 
@@ -179,13 +224,19 @@ def build_account_snapshot(account_id: str) -> dict:
     # ── Trader state ─────────────────────────────────────────────────
     state = _load_json_clean(state_path)
 
-    # ── ICT Scanner ──────────────────────────────────────────────────
+    # ── ICT Scanner — use cached results, skip on cold start ─────────
     setups = []
     scan_error = None
     if ICT_AVAILABLE and connected and mt5:
         try:
-            raw_setups = ict.scan_all_primary_symbols()
-            for s in raw_setups[:20]:   # cap at 20
+            # Only scan if cache is warm (mtime matches) — avoids blocking
+            # the initial snapshot on a cold 55MB parse
+            from ict_precision import _SCAN_CACHE, _DATA_CACHE
+            if _SCAN_CACHE.get("mtime") and _SCAN_CACHE["mtime"] == _DATA_CACHE.get("mtime"):
+                raw_setups = _SCAN_CACHE.get("result", [])
+            else:
+                raw_setups = ict.scan_all_primary_symbols()
+            for s in raw_setups[:50]:
                 setups.append({
                     "symbol":      s.symbol,
                     "direction":   s.direction,
@@ -201,17 +252,22 @@ def build_account_snapshot(account_id: str) -> dict:
                     "session":     s.session,
                     "amd_phase":   s.amd_phase,
                     "tf_bias":     s.tf_bias,
-                    "rr_ratio":    s.rr_ratio,
+                    "kill_zone":   getattr(s, "kill_zone", None),
                     "invalidation": getattr(s, "invalidation", 0),
                 })
         except Exception as e:
             scan_error = str(e)
 
-    # Per-symbol analysis (quarter theory, patterns, push/exhaustion)
+    # Per-symbol analysis — only for configured watchlist, not all 28 charts
     symbol_analysis = {}
     if ICT_AVAILABLE and connected and mt5:
         charts = mt5.get("charts", {})
-        for sym, sym_data in charts.items():
+        try:
+            from config import cfg as _cfg
+            _watchlist = set(_cfg.TRADE_SYMBOLS)
+        except Exception:
+            _watchlist = set(CONFIG.get("watchlist", ["XAUUSD","XAGUSD","EURUSD","GBPUSD","USDJPY","GBPJPY","AUDUSD","USDCAD"]))
+        for sym, sym_data in {k: v for k, v in charts.items() if k in _watchlist}.items():
             try:
                 h1_bars  = ict._parse_bars(sym_data.get("H1",  []))
                 h4_bars  = ict._parse_bars(sym_data.get("H4",  []))
@@ -319,6 +375,13 @@ def build_account_snapshot(account_id: str) -> dict:
     log_lines = _tail_log(log_path, 100)
 
     # ── Bot status ───────────────────────────────────────────────────
+    # Kill zone (local UTC fallback)
+    try:
+        from ict_precision import get_killzone
+        _kz = get_killzone()
+    except Exception:
+        _kz = None
+
     bot_status = {
         "running":       bool(state),
         "paper_mode":    state.get("current_risk_pct") is not None,
@@ -334,6 +397,12 @@ def build_account_snapshot(account_id: str) -> dict:
         "peak_equity":   state.get("peak_equity", 0),
         "peak_drawdown": state.get("peak_drawdown", 0),
         "last_scan":     state.get("last_scan", ""),
+        "risk_mode":     state.get("risk_mode", ""),
+        "freq_mode":     state.get("freq_mode", ""),
+        "base_risk":     state.get("base_risk", 0),
+        "max_dd":        state.get("max_dd", 0),
+        "daily_limit":   state.get("daily_limit", 0),
+        "kill_zone":     _kz,
     }
 
     return {
@@ -383,6 +452,12 @@ async def serve_dashboard():
     return FileResponse(str(WEBAPP_DIR / "index.html"))
 
 
+@app.get("/smart-trail", include_in_schema=False)
+async def serve_smart_trail_dashboard():
+    """Smart Trail dev dashboard — paper-mode visibility into trail proposals."""
+    return FileResponse(str(WEBAPP_DIR / "smart_trail.html"))
+
+
 # ── REST API ───────────────────────────────────────────────────────────────────
 
 @app.get("/api/accounts")
@@ -409,6 +484,56 @@ async def get_rules():
     return {}
 
 
+@app.get("/api/smart_trail/{account_id}")
+async def get_smart_trail(account_id: str):
+    """
+    Telemetry for the smart trailing stop engine.
+    Returns:
+      - config:     rules.json → smart_trail block
+      - enabled:    top-level flag
+      - proposals:  state.last_trail_proposals (per-ticket proposal snapshot)
+      - context:    state.last_scan_context (per-symbol SMC scan context)
+      - positions:  open positions with entry/sl/tp/current for side-by-side viewing
+    """
+    if account_id not in ACCOUNTS:
+        raise HTTPException(404, f"Account '{account_id}' not found")
+    acc = ACCOUNTS[account_id]
+
+    rules_path = SCRIPT_DIR / "python" / "rules.json"
+    rules = _load_json_clean(str(rules_path)) if rules_path.exists() else {}
+    smart_trail_cfg = rules.get("smart_trail", {}) or {}
+
+    state = _load_json_clean(acc.get("state_path", ""))
+    data  = _load_json(acc.get("data_path", ""))
+
+    proposals = state.get("last_trail_proposals", {}) or {}
+    scan_ctx  = state.get("last_scan_context", {}) or {}
+    positions = [
+        {
+            "ticket":        str(p.get("ticket", "")),
+            "symbol":        p.get("symbol", ""),
+            "type":          p.get("type", ""),
+            "volume":        p.get("volume", 0),
+            "open_price":    p.get("open_price", 0),
+            "sl":            p.get("sl", 0),
+            "tp":            p.get("tp", 0),
+            "current_price": p.get("current_price", 0),
+            "profit":        p.get("profit", 0),
+        }
+        for p in (data.get("positions", []) or [])
+    ]
+
+    return JSONResponse({
+        "enabled":   bool(smart_trail_cfg.get("enabled", False)),
+        "config":    smart_trail_cfg,
+        "proposals": proposals,
+        "context":   scan_ctx,
+        "positions": positions,
+        "state_age_secs": _data_age_secs(acc.get("state_path", "")),
+        "data_age_secs":  _data_age_secs(acc.get("data_path", "")),
+    })
+
+
 @app.get("/api/status")
 async def get_status():
     return {
@@ -425,6 +550,7 @@ async def get_status():
         "ict_scanner":   ICT_AVAILABLE,
         "trade_memory":  MEMORY_AVAILABLE,
     }
+
 
 
 # ── WebSocket (per account) ────────────────────────────────────────────────────
@@ -515,40 +641,112 @@ async def websocket_endpoint(ws: WebSocket, account_id: str):
             pass
 
     try:
-        # Send initial full snapshot
-        snapshot = build_account_snapshot(account_id)
-        await ws.send_json({"type": "snapshot", **snapshot})
+        loop = asyncio.get_event_loop()
+
+        # ── Fast minimal snapshot — sent immediately so the dashboard goes "online" ──
+        # Skips all per-symbol ICT analysis and trade-memory (those take 5-30 s on cold
+        # start).  The update loop populates setups / symbol_analysis in the next tick.
+        def _fast_snapshot():
+            a    = ACCOUNTS[account_id]
+            mt5  = _load_json(a.get("data_path", ""))
+            st   = _load_json_clean(a.get("state_path", ""))
+            age  = _data_age_secs(a.get("data_path", ""))
+            return {
+                "account_id":      account_id,
+                "account_name":    a.get("name", account_id),
+                "account_type":    a.get("type", "unknown"),
+                "connected":       age < 30,
+                "data_age_secs":   round(age, 1),
+                "timestamp":       mt5.get("timestamp", "—"),
+                "gmt_time":        mt5.get("gmt_time", "—"),
+                "session":         mt5.get("session", "—"),
+                "amd_phase":       mt5.get("amd_phase", "—"),
+                "account_info":    mt5.get("account", {}),
+                "prices":          mt5.get("prices", []),
+                "positions":       mt5.get("positions", []),
+                "history":         mt5.get("history", [])[-50:],
+                "setups": [
+                    {
+                        "symbol":      s.get("symbol", ""),
+                        "direction":   s.get("direction", ""),
+                        "entry_type":  s.get("entry_type", ""),
+                        "confidence":  s.get("confidence", 0),
+                        "rr_ratio":    s.get("rr_ratio", 0),
+                        "entry_price": s.get("entry_price", 0),
+                        "sl_price":    s.get("sl_price", 0),
+                        "tp1_price":   s.get("tp1_price", 0),
+                        "tp2_price":   s.get("tp2_price", 0),
+                        "tp3_price":   s.get("tp3_price", 0),
+                        "reasons":     s.get("reasons", []),
+                        "session":     s.get("session", ""),
+                        "tf_bias":     s.get("tf_bias", ""),
+                        "amd_phase":   s.get("amd_phase", ""),
+                        "grade":       s.get("grade", ""),
+                        "invalidation": s.get("invalidation", 0),
+                    }
+                    for s in st.get("top_setups", [])[:15]
+                ],
+                "scan_error":      None,
+                "symbol_analysis": {},
+                "memory":          {},
+                "bot_status": {
+                    "running":        bool(st),
+                    "trading_halted": st.get("trading_halted", False),
+                    "halt_reason":    st.get("halt_reason", ""),
+                    "win_streak":     st.get("win_streak", 0),
+                    "loss_streak":    st.get("loss_streak", 0),
+                    "current_risk":   st.get("current_risk_pct", 0),
+                    "total_trades":   st.get("total_trades", 0),
+                    "winning_trades": st.get("winning_trades", 0),
+                    "losing_trades":  st.get("losing_trades", 0),
+                    "total_profit":   st.get("total_profit", 0),
+                    "peak_equity":    st.get("peak_equity", 0),
+                    "peak_drawdown":  st.get("peak_drawdown", 0),
+                    "last_scan":      st.get("last_scan", ""),
+                    "paper_mode":     st.get("current_risk_pct") is not None,
+                },
+                "log_lines": _tail_log(a.get("log_path", ""), 100),
+            }
+
+        fast = await loop.run_in_executor(None, _fast_snapshot)
+        await ws.send_json({"type": "snapshot", **fast})
 
         while True:
             await asyncio.sleep(STREAM_HZ)
 
-            # Lightweight update: only what changes frequently
-            acc_cfg  = ACCOUNTS[account_id]
-            mt5      = _load_json(acc_cfg.get("data_path", ""))
-            state    = _load_json_clean(acc_cfg.get("state_path", ""))
-            new_logs = _get_new_log_lines(account_id)
+            # Run all I/O in a thread pool so the event loop stays free.
+            # Setups are read from trader_state.json (written by auto_trader every scan)
+            # so the server never needs to run its own ICT scan.
+            def _build_update():
+                acc_cfg  = ACCOUNTS[account_id]
+                mt5      = _load_json(acc_cfg.get("data_path", ""))
+                state    = _load_json_clean(acc_cfg.get("state_path", ""))
+                new_logs = _get_new_log_lines(account_id)
+                # Read setups computed by auto_trader (stored in state["top_setups"])
+                setups_fast = [
+                    {
+                        "symbol":      s.get("symbol", ""),
+                        "direction":   s.get("direction", ""),
+                        "entry_type":  s.get("entry_type", ""),
+                        "confidence":  s.get("confidence", 0),
+                        "rr_ratio":    s.get("rr_ratio", 0),
+                        "entry_price": s.get("entry_price", 0),
+                        "sl_price":    s.get("sl_price", 0),
+                        "tp1_price":   s.get("tp1_price", 0),
+                        "tp2_price":   s.get("tp2_price", 0),
+                        "tp3_price":   s.get("tp3_price", 0),
+                        "reasons":     s.get("reasons", []),
+                        "session":     s.get("session", ""),
+                        "tf_bias":     s.get("tf_bias", ""),
+                        "amd_phase":   s.get("amd_phase", ""),
+                        "grade":       s.get("grade", ""),
+                        "invalidation": s.get("invalidation", 0),
+                    }
+                    for s in state.get("top_setups", [])[:15]
+                ]
+                return mt5, state, new_logs, setups_fast, acc_cfg
 
-            # Run ICT scanner (only if data fresh)
-            setups_fast = []
-            if ICT_AVAILABLE and _data_age_secs(acc_cfg.get("data_path", "")) < 30:
-                try:
-                    raw = ict.scan_all_primary_symbols()
-                    for s in raw[:15]:
-                        setups_fast.append({
-                            "symbol":     s.symbol,
-                            "direction":  s.direction,
-                            "entry_type": s.entry_type,
-                            "confidence": s.confidence,
-                            "rr_ratio":   s.rr_ratio,
-                            "entry_price": s.entry_price,
-                            "sl_price":   s.sl_price,
-                            "tp1_price":  s.tp1_price,
-                            "reasons":    s.reasons,
-                            "session":    s.session,
-                            "tf_bias":    s.tf_bias,
-                        })
-                except Exception:
-                    pass
+            mt5, state, new_logs, setups_fast, acc_cfg = await loop.run_in_executor(None, _build_update)
 
             update = {
                 "type":      "update",
@@ -592,8 +790,8 @@ if __name__ == "__main__":
     import uvicorn
 
     server_cfg = CONFIG.get("server", {})
-    host = server_cfg.get("host", "0.0.0.0")
-    port = server_cfg.get("port", 8000)
+    host = os.getenv("OMNI_SERVER_HOST", server_cfg.get("host", "0.0.0.0"))
+    port = int(os.getenv("OMNI_SERVER_PORT", server_cfg.get("port", 8787)))
 
     log.info(f"OMNI ICT Dashboard starting on http://{host}:{port}")
     log.info(f"Accounts: {list(ACCOUNTS.keys())}")

@@ -18,7 +18,12 @@ try:
     from config import cfg
     JSON_PATH = cfg.JSON_PATH
 except ImportError:
-    JSON_PATH = "/Users/owner/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/omni_data.json"
+    from pathlib import Path as _Path
+    JSON_PATH = str(
+        _Path.home() / "Library/Application Support"
+        / "net.metaquotes.wine.metatrader5/drive_c/users/user"
+        / "AppData/Roaming/MetaQuotes/Terminal/Common/Files/omni_data.json"
+    )
 RESULTS_PATH = str(Path(__file__).parent / "backtest_results.json")
 
 # ── Data structures ───────────────────────────────────────────────────────────

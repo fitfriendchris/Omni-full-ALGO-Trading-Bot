@@ -9,7 +9,7 @@ The engine then:
   - Generates plain-English learned rules from what is actually working
   - Scales confidence bonuses / penalties automatically
 
-Persists to: /Users/owner/Desktop/omni-ict/python/trade_memory.json
+Persists to: python/trade_memory.json (next to this file; override with cfg.MEMORY_PATH)
 
 Usage:
     from trade_memory import TradeMemory
@@ -25,13 +25,15 @@ from __future__ import annotations
 import json
 import os
 import logging
+import time as _time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Optional
 
-MEMORY_PATH = "/Users/owner/Desktop/omni-ict/python/trade_memory.json"
-LOG_PATH    = "/Users/owner/Desktop/omni-ict/python/trade_journal.log"
-MIN_SAMPLE  = 8   # Minimum trades before adjusting confidence for a category
+_HERE = os.path.dirname(os.path.abspath(__file__))
+MEMORY_PATH = os.path.join(_HERE, "trade_memory.json")
+LOG_PATH    = os.path.join(_HERE, "trade_journal.log")
+MIN_SAMPLE  = 15  # Minimum trades before adjusting confidence for a category
 
 log = logging.getLogger("TradeMemory")
 
@@ -97,10 +99,14 @@ class TradeRecord:
     open_time:       str   = ""
     close_time:      str   = ""
     duration_mins:   float = 0.0
+    close_ts:        float = 0.0   # Unix timestamp of close (for recency weighting)
 
     # Invalidation tracking
     invalidation:    float = 0.0
     was_invalidated: bool  = False
+
+    # Sweep confirmation (ICT core rule)
+    sweep_confirmed: bool  = False  # True if a liquidity sweep preceded this entry
 
 
 @dataclass
@@ -156,6 +162,7 @@ class TradeMemory:
         self.by_pattern:    dict[str, PerformanceBucket] = {}
         self.by_quarter:    dict[str, PerformanceBucket] = {}
         self.by_direction:  dict[str, PerformanceBucket] = {}
+        self.by_sweep:      dict[str, PerformanceBucket] = {}  # "SWEPT" vs "UNSWEPT"
         self._load()
 
     # ── Persistence ───────────────────────────────────────────────────────────
@@ -197,6 +204,7 @@ class TradeMemory:
         self.by_pattern.clear()
         self.by_quarter.clear()
         self.by_direction.clear()
+        self.by_sweep.clear()
         for t in self.trades.values():
             if t.status in ("WIN", "LOSS", "BREAKEVEN"):
                 self._update_buckets(t)
@@ -206,6 +214,7 @@ class TradeMemory:
         self._update_bucket(self.by_session,    t.session,     t)
         self._update_bucket(self.by_amd,        t.amd_phase,   t)
         self._update_bucket(self.by_direction,  t.direction,   t)
+        self._update_bucket(self.by_sweep, "SWEPT" if t.sweep_confirmed else "UNSWEPT", t)
         if t.quarter:
             self._update_bucket(self.by_quarter, t.quarter, t)
         for p in t.patterns:
@@ -256,7 +265,8 @@ class TradeMemory:
                   invalidation: float = 0.0,
                   is_scale_in: bool = False,
                   parent_trade_id: str = "",
-                  adj_confidence: int = 0) -> str:
+                  adj_confidence: int = 0,
+                  sweep_confirmed: bool = False) -> str:
         """
         Record a new trade entry.  Returns the trade_id.
         """
@@ -296,6 +306,7 @@ class TradeMemory:
             invalidation=invalidation,
             is_scale_in=is_scale_in,
             parent_trade_id=parent_trade_id,
+            sweep_confirmed=sweep_confirmed,
             status="OPEN",
             open_time=ts.isoformat(),
         )
@@ -332,6 +343,7 @@ class TradeMemory:
         t.close_reason   = close_reason
         t.was_invalidated = was_invalidated
         t.close_time     = now.isoformat()
+        t.close_ts       = _time.time()   # Unix timestamp for recency weighting
 
         # Duration in minutes
         try:
@@ -365,10 +377,16 @@ class TradeMemory:
                                   session: str = "",
                                   patterns: list = None,
                                   quarter: str = "",
-                                  amd_phase: str = "") -> int:
+                                  amd_phase: str = "",
+                                  sweep_confirmed: bool = False) -> int:
         """
         Returns an integer to add/subtract from raw confidence based on
         historical performance.  Requires MIN_SAMPLE trades per bucket.
+
+        Recency weighting: trades closed within the last 7 days are counted
+        with weight 2.0; older trades (or records with no close_ts) use
+        weight 1.0.  This makes recent market-regime performance matter more
+        than results from months ago.
 
         Rules:
           ≥ 70% win rate → +10 bonus
@@ -378,44 +396,102 @@ class TradeMemory:
           avg R > 2.0   → +5 bonus (good trade quality)
           avg R < 0.8   → -5 penalty
         """
-        total_adj = 0
-        applied = []
+        _now = _time.time()
 
-        def _adj_from_bucket(b: PerformanceBucket, label: str) -> int:
-            if b.total < MIN_SAMPLE:
+        def _recency_weight(t: TradeRecord) -> float:
+            """Tapered recency: 2.0× at day 0, linear decay to 1.0× at day 30, 1.0× beyond."""
+            if t.close_ts <= 0:
+                return 1.0
+            age_days = (_now - t.close_ts) / 86400
+            if age_days > 30:
+                return 1.0
+            return 1.0 + (1.0 - age_days / 30)  # 2.0 at day 0, 1.0 at day 30
+
+        def _recency_adj(trades_iter, label: str) -> int:
+            """
+            Compute confidence adjustment for an iterable of closed TradeRecords
+            using recency-weighted win rate and average R.
+            Mirrors the original _adj_from_bucket thresholds exactly.
+            """
+            weighted_wins  = 0.0
+            weighted_total = 0.0
+            weighted_r     = 0.0
+            for t in trades_iter:
+                if t.status not in ("WIN", "LOSS", "BREAKEVEN"):
+                    continue
+                w = _recency_weight(t)
+                weighted_total += w
+                weighted_r     += t.r_multiple * w
+                if t.status == "WIN":
+                    weighted_wins += w
+
+            if weighted_total < MIN_SAMPLE:
                 return 0
+
+            wr    = weighted_wins / weighted_total * 100
+            avg_r = weighted_r / weighted_total
+
             adj = 0
-            wr = b.win_rate
             if wr >= 70:    adj += 10
             elif wr >= 60:  adj += 5
             elif wr <= 35:  adj -= 15
             elif wr <= 45:  adj -= 8
-            if b.avg_r >= 2.0: adj += 5
-            elif b.avg_r < 0.8: adj -= 5
+            if avg_r >= 2.0: adj += 5
+            elif avg_r < 0.8: adj -= 5
+
             if adj != 0:
-                applied.append(f"{label}: WR={wr:.0f}% avgR={b.avg_r:.1f} → {adj:+d}")
+                applied.append(f"{label}: WR={wr:.0f}% avgR={avg_r:.1f} → {adj:+d}")
             return adj
 
-        if entry_type and entry_type in self.by_entry_type:
-            total_adj += _adj_from_bucket(self.by_entry_type[entry_type], f"type:{entry_type}")
+        total_adj = 0
+        applied: list[str] = []
 
-        if session and session in self.by_session:
-            total_adj += _adj_from_bucket(self.by_session[session], f"session:{session}")
+        # Collect closed trades once for filtering
+        closed_trades = [t for t in self.trades.values()
+                         if t.status in ("WIN", "LOSS", "BREAKEVEN")]
 
-        if amd_phase and amd_phase in self.by_amd:
-            total_adj += _adj_from_bucket(self.by_amd[amd_phase], f"amd:{amd_phase}")
+        if entry_type:
+            total_adj += _recency_adj(
+                (t for t in closed_trades if t.entry_type == entry_type),
+                f"type:{entry_type}"
+            )
 
-        if quarter and quarter in self.by_quarter:
-            total_adj += _adj_from_bucket(self.by_quarter[quarter], f"quarter:{quarter}")
+        if session:
+            total_adj += _recency_adj(
+                (t for t in closed_trades if t.session == session),
+                f"session:{session}"
+            )
+
+        if amd_phase:
+            total_adj += _recency_adj(
+                (t for t in closed_trades if t.amd_phase == amd_phase),
+                f"amd:{amd_phase}"
+            )
+
+        if quarter:
+            total_adj += _recency_adj(
+                (t for t in closed_trades if t.quarter == quarter),
+                f"quarter:{quarter}"
+            )
 
         for p in (patterns or []):
-            if p in self.by_pattern:
-                total_adj += _adj_from_bucket(self.by_pattern[p], f"pattern:{p}")
+            total_adj += _recency_adj(
+                (t for t in closed_trades if p in t.patterns),
+                f"pattern:{p}"
+            )
+
+        # Sweep confirmation learning
+        sweep_key = "SWEPT" if sweep_confirmed else "UNSWEPT"
+        total_adj += _recency_adj(
+            (t for t in closed_trades
+             if ("SWEPT" if t.sweep_confirmed else "UNSWEPT") == sweep_key),
+            f"sweep:{sweep_key}"
+        )
 
         if applied:
             log.debug(f"[MEMORY] Confidence adj {total_adj:+d}: {' | '.join(applied)}")
 
-        return max(-30, min(25, total_adj))  # Hard cap: -30 to +25
+        return max(-50, min(40, total_adj))  # Hard cap: -50 to +40
 
     # ── Learned Rules Generator ───────────────────────────────────────────────
 

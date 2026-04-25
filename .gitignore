@@ -1,4 +1,7 @@
-# ── Live config (contains real file paths / account IDs) ──────────────────────
+# ── Credentials & secrets ─────────────────────────────────────────────────────
+.env
+env
+env/
 config.json
 
 # ── Python runtime artifacts ──────────────────────────────────────────────────
@@ -8,8 +11,6 @@ __pycache__/
 *.pyd
 .Python
 venv/
-env/
-.env
 *.egg-info/
 dist/
 build/
@@ -20,10 +21,12 @@ python/trade_memory*.json
 python/trade_journal*.log
 python/trader*.log
 python/tv_data.json
+python/ai_state.json
 
 # ── MT5 live data feed files ──────────────────────────────────────────────────
 omni_data.json
 omni_cmd.txt
+omni_result.txt
 
 # ── IDE / OS ──────────────────────────────────────────────────────────────────
 .DS_Store
@@ -40,3 +43,13 @@ Thumbs.db
 database/
 *.db
 *.sqlite3
+
+# ── Telegram / session ────────────────────────────────────────────────────────
+python/telegram_chat_id.txt
+python/active_account.txt
+logs/license_cache.json
+
+# ── Shared output ─────────────────────────────────────────────────────────────
+shared/
+logs/
+.claw/

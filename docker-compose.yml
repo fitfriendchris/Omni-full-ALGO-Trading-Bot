@@ -1,0 +1,60 @@
+version: '3.8'
+
+# ═══════════════════════════════════════════════════════════════
+#  OMNI-ICT Auto Trader — Docker Compose
+#
+#  Quick start:
+#    1. cp .env.example .env  (fill in your values)
+#    2. cp config.example.json config.json  (set your MT5 data path)
+#    3. docker compose up -d
+#    4. docker compose logs -f telegram_bot   (watch for startup message)
+# ═══════════════════════════════════════════════════════════════
+
+x-common: &common
+  build: .
+  env_file: .env
+  restart: unless-stopped
+  volumes:
+    - ./logs:/app/logs
+    - ./shared:/app/shared
+    - ./pine:/app/pine
+    - ./python:/app/python
+    - ./config.json:/app/config.json:ro
+    # MT5 data directory — update this path to match your MT5 installation:
+    #   Windows native: C:\Users\YourName\AppData\Roaming\MetaQuotes\Terminal\Common\Files
+    #   Linux/VPS:      /path/to/mt5/Terminal/Common/Files
+    - ${MT5_DATA_DIR:-/tmp/mt5data}:/mt5data
+
+services:
+  watchdog:
+    <<: *common
+    container_name: omni_watchdog
+    command: python python/watchdog.py
+    # Watchdog starts and supervises the other services internally.
+    # You do NOT need to run the other services separately — watchdog handles it.
+
+  # ── Optional: run services individually (advanced) ──────────────
+  # Uncomment below only if you want to manage services manually
+  # instead of using the watchdog.
+
+  # server:
+  #   <<: *common
+  #   container_name: omni_server
+  #   command: python -m uvicorn server:app --host 0.0.0.0 --port 8787
+  #   ports:
+  #     - "8787:8787"
+
+  # orchestrator:
+  #   <<: *common
+  #   container_name: omni_orchestrator
+  #   command: python python/orchestrator.py --loop 60
+
+  # auto_trader:
+  #   <<: *common
+  #   container_name: omni_auto_trader
+  #   command: python python/auto_trader.py --risk MODERATE --freq NORMAL
+
+  # telegram_bot:
+  #   <<: *common
+  #   container_name: omni_telegram_bot
+  #   command: python python/telegram_bot.py

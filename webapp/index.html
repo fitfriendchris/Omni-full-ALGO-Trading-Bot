@@ -218,7 +218,25 @@ const SESS_COLORS = {
 
 const AMD_COLORS = {
   ACCUMULATION: "#3b82f6", MANIPULATION: "#d4a843",
-  DISTRIBUTION: "#2ecc71", UNKNOWN: "#4a5a72",
+  DISTRIBUTION: "#2ecc71", LATE_DIST: "#8b5cf6",
+  OFF_HOURS: "#4a5a72", UNKNOWN: "#4a5a72",
+};
+
+const ENTRY_TYPE_COLORS = {
+  POWER_OF_3_BUY:   "#f0c040", POWER_OF_3_SELL:   "#f0c040",
+  CHOCH_ENTRY_BUY:  "#8b5cf6", CHOCH_ENTRY_SELL:  "#8b5cf6",
+  JUDAS_SWING_BUY:  "#f97316", JUDAS_SWING_SELL:  "#f97316",
+  H1_OB_BUY:        "#3b82f6", H1_OB_SELL:        "#3b82f6",
+  H1_FVG_BUY:       "#06b6d4", H1_FVG_SELL:       "#06b6d4",
+  H1_SWEEP_BUY:     "#a78bfa", H1_SWEEP_SELL:     "#a78bfa",
+  H1_MITIGATION_BUY:"#d4a843", H1_MITIGATION_SELL:"#d4a843",
+};
+function entryTypeColor(t) { return ENTRY_TYPE_COLORS[t] || "#d4a843"; }
+
+const KZ_COLORS = {
+  LONDON_OPEN:  "#d4a843", LONDON_CLOSE: "#f97316",
+  NY_OPEN:      "#2ecc71", NY_CLOSE:     "#8b5cf6",
+  ASIA:         "#3b82f6",
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -305,6 +323,13 @@ function Header({ accounts, activeAccount, setActiveAccount, session, amdPhase, 
       </div>
 
       <div className="hstat">
+        <div className="hstat-label">Kill Zone</div>
+        <div className="hstat-value" style={{color: KZ_COLORS[botStatus.kill_zone] || "#4a5a72", fontSize:10}}>
+          {botStatus.kill_zone ? botStatus.kill_zone.replace("_"," ") : "INACTIVE"}
+        </div>
+      </div>
+
+      <div className="hstat">
         <div className="hstat-label">GMT</div>
         <div className="hstat-value" style={{fontSize:11}}>{gmtTime ? gmtTime.slice(11,19) : "—"}</div>
       </div>
@@ -326,8 +351,13 @@ function Header({ accounts, activeAccount, setActiveAccount, session, amdPhase, 
       </div>
 
       <div className="hstat">
-        <div className="hstat-label">Risk</div>
-        <div className="hstat-value" style={{color:"#d4a843"}}>{botStatus.current_risk?.toFixed(2) || "—"}%</div>
+        <div className="hstat-label">Risk Mode</div>
+        <div className="hstat-value" style={{color:"#d4a843",fontSize:10}}>{botStatus.risk_mode || "—"}</div>
+      </div>
+
+      <div className="hstat">
+        <div className="hstat-label">Risk %</div>
+        <div className="hstat-value" style={{color:"#d4a843"}}>{botStatus.base_risk?.toFixed(1) || "—"}%</div>
       </div>
 
       <div className="spacer" />
@@ -383,6 +413,17 @@ function AccountSummary({ accountInfo, botStatus }) {
           <div className="metric-value" style={{color:botStatus.peak_drawdown>5?"#e84545":"#a8b8c8"}}>
             {(botStatus.peak_drawdown||0).toFixed(1)}%
           </div>
+          <div className="metric-sub">limit {(botStatus.max_dd||0).toFixed(0)}%</div>
+        </div>
+        <div className="metric">
+          <div className="metric-label">Peak Equity</div>
+          <div className="metric-value" style={{color:"#a8b8c8",fontSize:12}}>
+            ${(botStatus.peak_equity||0).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})}
+          </div>
+        </div>
+        <div className="metric">
+          <div className="metric-label">Freq Mode</div>
+          <div className="metric-value" style={{color:"#3b82f6",fontSize:11}}>{botStatus.freq_mode || "—"}</div>
         </div>
       </div>
     </div>
@@ -514,7 +555,18 @@ function MarketScanner({ setups, prices, onSelect, selectedSymbol, symbolAnalysi
               const isSelected = row.symbol === selectedSymbol;
               return (
                 <tr key={i} className={isSelected?"selected":""} onClick={() => onSelect(row)}>
-                  <td style={{fontWeight:700,color:"#dde4ef"}}>{row.symbol}</td>
+                  <td style={{fontWeight:700,color:"#dde4ef"}}>
+                    {row.symbol}
+                    {row._has_setup && (row.entry_type||"").startsWith("POWER_OF_3") && (
+                      <span title="Power of 3" style={{marginLeft:4,fontSize:8,color:"#f0c040"}}>★</span>
+                    )}
+                    {row._has_setup && (row.entry_type||"").startsWith("CHOCH") && (
+                      <span title="CHoCH Entry" style={{marginLeft:4,fontSize:8,color:"#8b5cf6"}}>⚡</span>
+                    )}
+                    {row._has_setup && (row.entry_type||"").startsWith("JUDAS") && (
+                      <span title="Judas Swing" style={{marginLeft:4,fontSize:8,color:"#f97316"}}>⟳</span>
+                    )}
+                  </td>
                   <td style={{color:"#d4a843",fontFamily:"var(--mono)"}}>{fmt(px.bid||row.entry_price,row.symbol?.includes("JPY")?3:row.symbol?.includes("XAU")||row.symbol?.includes("XAG")?2:5)}</td>
                   <td>
                     <span style={{color:bias==="BULLISH"?"#2ecc71":bias==="BEARISH"?"#e84545":"#4a5a72",fontFamily:"var(--mono)",fontSize:10}}>
@@ -522,7 +574,9 @@ function MarketScanner({ setups, prices, onSelect, selectedSymbol, symbolAnalysi
                     </span>
                   </td>
                   <td style={{fontFamily:"var(--mono)",fontSize:10,color:"#a8b8c8"}}>{structure}</td>
-                  <td style={{fontFamily:"var(--mono)",fontSize:10,color:"#d4a843"}}>{row._has_setup ? row.entry_type : "—"}</td>
+                  <td style={{fontFamily:"var(--mono)",fontSize:10,color:row._has_setup ? entryTypeColor(row.entry_type) : "#4a5a72"}}>
+                    {row._has_setup ? row.entry_type : "—"}
+                  </td>
                   <td>
                     {row._has_setup && row.direction !== "—" ? (
                       <span className={"badge " + (row.direction==="BUY"?"badge-buy":"badge-sell")}>{row.direction}</span>
@@ -578,9 +632,13 @@ function AnalysisDetail({ selectedSetup, symbolAnalysis }) {
             <span className="badge badge-gold">{selectedSetup.confidence}/100</span>
           )}
         </div>
-        <div style={{fontSize:10,color:"#4a5a72",fontFamily:"var(--mono)",marginTop:3}}>
+        <div style={{fontSize:10,fontFamily:"var(--mono)",marginTop:3,
+          color: selectedSetup._has_setup ? entryTypeColor(selectedSetup.entry_type) : "#4a5a72"}}>
           {selectedSetup.entry_type || "Monitoring"}
-          {selectedSetup.tf_bias && " · " + selectedSetup.tf_bias + " D1"}
+          {selectedSetup.tf_bias && <span style={{color:"#4a5a72"}}> · {selectedSetup.tf_bias} D1</span>}
+          {selectedSetup._has_setup && selectedSetup.session && (
+            <span style={{color: KZ_COLORS[selectedSetup.kill_zone] || "#4a5a72"}}> · {selectedSetup.kill_zone || selectedSetup.session}</span>
+          )}
         </div>
       </div>
 
@@ -616,7 +674,7 @@ function AnalysisDetail({ selectedSetup, symbolAnalysis }) {
         <KV label="D1 Bias"     value={analysis.d1_bias || "—"} color={analysis.d1_bias==="BULLISH"?"#2ecc71":analysis.d1_bias==="BEARISH"?"#e84545":"#4a5a72"} />
         <KV label="H4 Structure" value={analysis.h4_structure || "—"} />
         {selectedSetup._has_setup && selectedSetup.session && <KV label="Session" value={selectedSetup.session} color={SESS_COLORS[selectedSetup.session]} />}
-        {selectedSetup._has_setup && selectedSetup.amd_phase && <KV label="AMD Phase" value={selectedSetup.amd_phase} color={AMD_COLORS[selectedSetup.amd_phase]} />}
+        {selectedSetup._has_setup && selectedSetup.amd_phase && <KV label="AMD Phase" value={selectedSetup.amd_phase} color={AMD_COLORS[selectedSetup.amd_phase] || "#4a5a72"} />}
       </div>
 
       {/* OB / FVG */}
@@ -675,9 +733,10 @@ function AnalysisDetail({ selectedSetup, symbolAnalysis }) {
           </div>
           <KV label="Entry" value={fmt(selectedSetup.entry_price, 2)} color="#d4a843" />
           <KV label="Stop Loss" value={fmt(selectedSetup.sl_price, 2)} color="#e84545" />
-          <KV label="TP1 (50%)" value={fmt(selectedSetup.tp1_price, 2)} color="#2ecc71" />
-          <KV label="TP2 (30%)" value={fmt(selectedSetup.tp2_price, 2)} color="#2ecc71" />
-          <KV label="TP3 Runner" value={fmt(selectedSetup.tp3_price, 2)} color="#2ecc71" />
+          <KV label="TP1 (25%)" value={fmt(selectedSetup.tp1_price, 2)} color="#2ecc71" />
+          <KV label="TP2 (25%)" value={fmt(selectedSetup.tp2_price, 2)} color="#2ecc71" />
+          <KV label="TP3 (25%)" value={fmt(selectedSetup.tp3_price, 2)} color="#2ecc71" />
+          <KV label="TP4 Runner" value="Smart Trail →" color="#8b5cf6" />
           <KV label="R:R" value={selectedSetup.rr_ratio?.toFixed(2)+":1"} color={selectedSetup.rr_ratio>=2?"#2ecc71":"#e84545"} />
         </div>
       )}

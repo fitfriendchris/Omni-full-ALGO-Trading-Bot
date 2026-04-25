@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OMNI ICT — Smart Trail Dev</title>
+
+<!-- React + Babel (no build step, matches the main dashboard pattern) -->
+<script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Sora:wght@300;400;600;700&display=swap" rel="stylesheet" />
+
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:     #07090c;
+  --card:   #0c0f14;
+  --card2:  #111720;
+  --border: #1c2535;
+  --gold:   #d4a843;
+  --gold2:  #f0c040;
+  --silver: #a8b8c8;
+  --red:    #e84545;
+  --green:  #2ecc71;
+  --blue:   #3b82f6;
+  --purple: #8b5cf6;
+  --amber:  #f59e0b;
+  --text:   #dde4ef;
+  --muted:  #4a5a72;
+  --mono:   'JetBrains Mono', monospace;
+  --sans:   'Sora', sans-serif;
+}
+
+html, body, #root { height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 13px; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--card); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--gold); }
+
+.layout { display: grid; grid-template-rows: 52px 1fr; min-height: 100vh; }
+
+.header {
+  background: var(--card); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 16px; gap: 16px;
+  font-family: var(--mono);
+}
+.logo { color: var(--gold); font-weight: 700; font-size: 15px; letter-spacing: 0.1em; }
+.logo span { color: var(--silver); font-weight: 300; font-size: 10px; margin-left: 8px; letter-spacing: 0.05em; }
+.hstat { display: flex; flex-direction: column; gap: 1px; padding: 0 12px; border-left: 1px solid var(--border); }
+.hstat-label { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.12em; }
+.hstat-value { font-size: 12px; font-weight: 600; }
+.spacer { flex: 1; }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: middle; }
+.dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot-red   { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+.dot-gold  { background: var(--gold);  box-shadow: 0 0 6px var(--gold); }
+.dot-gray  { background: var(--muted); }
+
+.pill {
+  display: inline-block; padding: 2px 8px; border-radius: 999px;
+  font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; border: 1px solid var(--border);
+}
+.pill-buy   { color: var(--green); border-color: var(--green); background: rgba(46,204,113,0.08); }
+.pill-sell  { color: var(--red);   border-color: var(--red);   background: rgba(232,69,69,0.08); }
+.pill-on    { color: var(--green); border-color: var(--green); background: rgba(46,204,113,0.12); }
+.pill-off   { color: var(--muted); border-color: var(--border); background: transparent; }
+.pill-warn  { color: var(--amber); border-color: var(--amber); background: rgba(245,158,11,0.08); }
+.pill-close { color: var(--red); border-color: var(--red); background: rgba(232,69,69,0.15); animation: pulse 1.3s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+.grid-main {
+  display: grid; grid-template-columns: 320px 1fr; gap: 1px; background: var(--border);
+  min-height: 0;
+}
+.col { background: var(--bg); overflow: auto; padding: 12px; }
+
+.card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+  margin-bottom: 10px; padding: 12px;
+}
+.card-title {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--gold); margin-bottom: 8px; font-family: var(--mono); font-weight: 600;
+  display: flex; align-items: center; justify-content: space-between;
+}
+
+.kv { display: grid; grid-template-columns: 120px 1fr; gap: 4px 10px; font-family: var(--mono); font-size: 11px; }
+.kv-k { color: var(--muted); }
+.kv-v { color: var(--text); }
+
+.position-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 10px; }
+.pos-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+  padding: 12px; position: relative; overflow: hidden;
+}
+.pos-card.has-close { border-color: var(--red); box-shadow: 0 0 0 1px rgba(232,69,69,0.25) inset; }
+.pos-card.has-proposal { border-color: var(--gold); }
+
+.pos-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.pos-sym { font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--gold); letter-spacing: 0.05em; }
+.pos-ticket { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+
+.price-row {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin: 8px 0;
+  font-family: var(--mono);
+}
+.price-box {
+  background: var(--card2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 6px 8px;
+}
+.price-label { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.12em; }
+.price-value { font-size: 13px; font-weight: 600; color: var(--text); margin-top: 2px; }
+
+.sl-track {
+  position: relative; height: 48px; background: var(--card2);
+  border: 1px solid var(--border); border-radius: 4px; margin: 10px 0 6px;
+  padding: 4px 8px;
+}
+.sl-rail { position: absolute; top: 50%; left: 8px; right: 8px; height: 2px; background: var(--border); transform: translateY(-50%); }
+.sl-tick { position: absolute; top: 50%; transform: translate(-50%, -50%);
+           width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--card2); }
+.sl-tick.entry { background: var(--silver); }
+.sl-tick.current-sl { background: var(--red); }
+.sl-tick.proposed-sl { background: var(--gold); box-shadow: 0 0 6px var(--gold); }
+.sl-tick.price { background: var(--green); }
+.sl-legend {
+  position: absolute; bottom: 2px; left: 8px; right: 8px;
+  display: flex; justify-content: space-between;
+  font-family: var(--mono); font-size: 8px; color: var(--muted);
+}
+
+.layers { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.layer-chip {
+  font-family: var(--mono); font-size: 9px; padding: 2px 7px; border-radius: 3px;
+  background: var(--card2); border: 1px solid var(--border); color: var(--silver);
+  letter-spacing: 0.04em;
+}
+.layer-chip.volatility { color: var(--blue);   border-color: var(--blue); }
+.layer-chip.structure  { color: var(--purple); border-color: var(--purple); }
+.layer-chip.momentum   { color: var(--amber);  border-color: var(--amber); }
+.layer-chip.liquidity  { color: var(--gold2);  border-color: var(--gold2); }
+.layer-chip.profit_lock{ color: var(--green);  border-color: var(--green); }
+.layer-chip.choch      { color: var(--red);    border-color: var(--red); }
+
+.reason {
+  background: var(--card2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 6px 8px; font-family: var(--mono); font-size: 10px; color: var(--silver);
+  margin-top: 8px; line-height: 1.5;
+}
+
+.empty {
+  text-align: center; padding: 40px 20px; color: var(--muted);
+  font-family: var(--mono); font-size: 12px; letter-spacing: 0.05em;
+}
+.empty-icon { font-size: 32px; color: var(--border); margin-bottom: 10px; }
+
+.btn {
+  font-family: var(--mono); font-size: 11px; padding: 4px 10px; border-radius: 4px;
+  border: 1px solid var(--border); background: transparent; color: var(--silver); cursor: pointer;
+  transition: all 0.15s;
+}
+.btn:hover { border-color: var(--gold); color: var(--gold); }
+.btn.active { background: var(--gold); color: #000; border-color: var(--gold); }
+
+.config-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; padding: 3px 0;
+              font-family: var(--mono); font-size: 10px; }
+.config-k { color: var(--muted); }
+.config-v { color: var(--text); text-align: right; }
+
+.ladder { display: grid; grid-template-columns: 60px 1fr; gap: 3px 8px; font-family: var(--mono); font-size: 10px; }
+.ladder-r { color: var(--gold); font-weight: 600; }
+.ladder-lock { color: var(--silver); }
+
+.toast {
+  position: fixed; bottom: 16px; right: 16px; padding: 8px 14px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 4px;
+  font-family: var(--mono); font-size: 11px; z-index: 1000;
+}
+.toast-err { border-color: var(--red); color: var(--red); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo, useRef } = React;
+
+const API_BASE = "";            // same origin
+const ACCOUNT = "primary";
+const POLL_MS = 2500;
+
+function classNames(...a) { return a.filter(Boolean).join(" "); }
+
+function pct(n, d=1) { return `${(n*100).toFixed(d)}%`; }
+function fmt(n, d=5) { if (n === null || n === undefined || Number.isNaN(+n)) return "—"; return (+n).toFixed(d); }
+function ago(secs) {
+  if (!isFinite(secs)) return "—";
+  if (secs < 60) return `${secs.toFixed(0)}s`;
+  if (secs < 3600) return `${(secs/60).toFixed(1)}m`;
+  return `${(secs/3600).toFixed(1)}h`;
+}
+
+function useSmartTrail() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  const [tick, setTick] = useState(0);
+  const pausedRef = useRef(false);
+
+  useEffect(() => {
+    let alive = true;
+    let timer = null;
+    const pull = async () => {
+      if (!alive) return;
+      if (pausedRef.current) { schedule(); return; }
+      try {
+        const r = await fetch(`${API_BASE}/api/smart_trail/${ACCOUNT}`, { cache: "no-store" });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = await r.json();
+        if (alive) { setData(j); setErr(null); setTick(t => t + 1); }
+      } catch (e) {
+        if (alive) setErr(e.message);
+      }
+      schedule();
+    };
+    const schedule = () => { timer = setTimeout(pull, POLL_MS); };
+    pull();
+    return () => { alive = false; if (timer) clearTimeout(timer); };
+  }, []);
+
+  return { data, err, tick, pause: (p) => { pausedRef.current = !!p; } };
+}
+
+// Map a price into the SL track [0..100] using the span [min..max]
+function xpct(price, min, max) {
+  if (max <= min) return 50;
+  return Math.max(0, Math.min(100, ((price - min) / (max - min)) * 100));
+}
+
+function PositionCard({ pos, proposal }) {
+  const isBuy  = pos.type === "BUY";
+  const hasProposal = !!proposal;
+  const shouldClose = !!proposal?.should_close;
+
+  const entry    = +pos.open_price || 0;
+  const curSL    = +pos.sl || 0;
+  const curPx    = +pos.current_price || 0;
+  const proposed = hasProposal ? +proposal.proposed_sl : null;
+  const legacy   = hasProposal ? +proposal.legacy_sl   : null;
+
+  // risk per unit (SL distance at entry)
+  const risk = Math.max(1e-9, Math.abs(entry - curSL));
+  const profitR = ((isBuy ? (curPx - entry) : (entry - curPx)) / risk) || 0;
+
+  // Build x-axis span around entry±3R for the visual strip
+  const lo = entry - risk * 3.2;
+  const hi = entry + risk * 3.2;
+  const min = Math.min(lo, hi, curSL, curPx, proposed || entry);
+  const max = Math.max(lo, hi, curSL, curPx, proposed || entry);
+
+  const deltaPips = proposed ? ((proposed - curSL) * 10000).toFixed(1) : null;
+  const improvement = proposed ? (isBuy ? proposed > curSL : proposed < curSL) : false;
+
+  return (
+    <div className={classNames("pos-card",
+                               shouldClose ? "has-close" : (hasProposal ? "has-proposal" : ""))}>
+      <div className="pos-head">
+        <span className={classNames("pill", isBuy ? "pill-buy" : "pill-sell")}>{pos.type}</span>
+        <span className="pos-sym">{pos.symbol}</span>
+        <span className="pos-ticket">#{pos.ticket} · {pos.volume} lots</span>
+        <div className="spacer" style={{flex:1}}></div>
+        <span className="pos-ticket">{profitR >= 0 ? "+" : ""}{profitR.toFixed(2)}R</span>
+        {shouldClose && <span className="pill pill-close">CLOSE</span>}
+        {!shouldClose && hasProposal && <span className="pill pill-on">TRAIL</span>}
+      </div>
+
+      <div className="price-row">
+        <div className="price-box">
+          <div className="price-label">Entry</div>
+          <div className="price-value">{fmt(entry)}</div>
+        </div>
+        <div className="price-box">
+          <div className="price-label">Price</div>
+          <div className="price-value" style={{color: profitR >= 0 ? "var(--green)" : "var(--red)"}}>
+            {fmt(curPx)}
+          </div>
+        </div>
+        <div className="price-box">
+          <div className="price-label">P/L $</div>
+          <div className="price-value" style={{color: (+pos.profit) >= 0 ? "var(--green)" : "var(--red)"}}>
+            {(+pos.profit).toFixed(2)}
+          </div>
+        </div>
+      </div>
+
+      <div className="sl-track">
+        <div className="sl-rail"></div>
+        {/* Entry */}
+        <div className="sl-tick entry" style={{left: `${xpct(entry, min, max)}%`}} title={`Entry ${fmt(entry)}`}></div>
+        {/* Current price */}
+        <div className="sl-tick price" style={{left: `${xpct(curPx, min, max)}%`}} title={`Price ${fmt(curPx)}`}></div>
+        {/* Current SL */}
+        <div className="sl-tick current-sl" style={{left: `${xpct(curSL, min, max)}%`}} title={`Current SL ${fmt(curSL)}`}></div>
+        {/* Proposed SL */}
+        {proposed && (
+          <div className="sl-tick proposed-sl" style={{left: `${xpct(proposed, min, max)}%`}}
+               title={`Proposed SL ${fmt(proposed)}`}></div>
+        )}
+        <div className="sl-legend">
+          <span>-3.2R</span><span>Entry</span><span>+3.2R</span>
+        </div>
+      </div>
+
+      <div className="kv" style={{marginTop: 8}}>
+        <div className="kv-k">Current SL</div>
+        <div className="kv-v">{fmt(curSL)}</div>
+        {legacy !== null && (
+          <>
+            <div className="kv-k">Legacy SL</div>
+            <div className="kv-v">{fmt(legacy)}</div>
+          </>
+        )}
+        {proposed !== null && (
+          <>
+            <div className="kv-k">Smart SL</div>
+            <div className="kv-v" style={{color: improvement ? "var(--gold)" : "var(--muted)"}}>
+              {fmt(proposed)} <span style={{color: "var(--muted)"}}>
+                ({deltaPips} pips {improvement ? "↑" : "→"})
+              </span>
+            </div>
+          </>
+        )}
+      </div>
+
+      {hasProposal && proposal.layers && proposal.layers.length > 0 && (
+        <div className="layers">
+          {proposal.layers.map((L, i) => {
+            const cat = L.split(":")[0].replace(/\s+/g,"_");
+            return <span key={i} className={`layer-chip ${cat}`}>{L}</span>;
+          })}
+        </div>
+      )}
+
+      {hasProposal && proposal.reason && (
+        <div className="reason">↳ {proposal.reason}</div>
+      )}
+    </div>
+  );
+}
+
+function ConfigPanel({ cfg, enabled }) {
+  const ladder = cfg.profit_lock_ladder || [];
+  return (
+    <div className="card">
+      <div className="card-title">
+        <span>Smart Trail Config</span>
+        <span className={classNames("pill", enabled ? "pill-on" : "pill-off")}>
+          {enabled ? "ENABLED" : "DISABLED"}
+        </span>
+      </div>
+      <div className="config-row"><span className="config-k">atr_period</span><span className="config-v">{cfg.atr_period ?? "—"}</span></div>
+      <div className="config-row"><span className="config-k">atr_mult_min</span><span className="config-v">{cfg.atr_mult_min ?? "—"}</span></div>
+      <div className="config-row"><span className="config-k">atr_mult_runner</span><span className="config-v">{cfg.atr_mult_runner ?? "—"}</span></div>
+      <div className="config-row"><span className="config-k">exhaustion_tighten</span><span className="config-v">{cfg.exhaustion_tighten_atr_mult ?? "—"}×ATR</span></div>
+      <div className="config-row"><span className="config-k">displacement_loosen</span><span className="config-v">{cfg.displacement_loosen_atr_mult ?? "—"}×ATR</span></div>
+      <div className="config-row"><span className="config-k">structure_buffer</span><span className="config-v">{cfg.structure_buffer_pips ?? "—"} pips</span></div>
+      <div className="config-row"><span className="config-k">liquidity_avoid</span><span className="config-v">{cfg.liquidity_avoid_pips ?? "—"} pips</span></div>
+      <div className="config-row"><span className="config-k">avoid_equal_levels</span><span className="config-v">{String(cfg.avoid_equal_levels ?? "—")}</span></div>
+      <div className="config-row"><span className="config-k">close_on_choch</span><span className="config-v">{String(cfg.close_on_opposing_choch_once_profitable ?? "—")}</span></div>
+      <div className="config-row"><span className="config-k">min_modify</span><span className="config-v">{cfg.min_modify_pips ?? "—"} pips</span></div>
+
+      {ladder.length > 0 && (
+        <>
+          <div className="card-title" style={{marginTop: 14, marginBottom: 6, fontSize: 9}}>Profit lock ladder</div>
+          <div className="ladder">
+            {ladder.map((pair, i) => (
+              <React.Fragment key={i}>
+                <span className="ladder-r">@ {pair[0]}R</span>
+                <span className="ladder-lock">lock {pair[1]}R</span>
+              </React.Fragment>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Sidebar({ data }) {
+  const ctx = data?.context || {};
+  const syms = Object.keys(ctx);
+  return (
+    <div>
+      <ConfigPanel cfg={data?.config || {}} enabled={data?.enabled} />
+
+      <div className="card">
+        <div className="card-title">Data freshness</div>
+        <div className="kv">
+          <div className="kv-k">state age</div><div className="kv-v">{ago(data?.state_age_secs)}</div>
+          <div className="kv-k">mt5 data age</div><div className="kv-v">{ago(data?.data_age_secs)}</div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Scan context</div>
+        {syms.length === 0 && <div className="empty" style={{padding: "12px 0"}}>no SMC scan context yet</div>}
+        {syms.map(sym => {
+          const c = ctx[sym] || {};
+          return (
+            <div key={sym} style={{marginBottom: 10}}>
+              <div style={{fontFamily: "var(--mono)", fontWeight: 600, color: "var(--gold)", fontSize: 11}}>{sym}</div>
+              <div className="kv" style={{marginTop: 4}}>
+                {c.last_swing_high_m15 !== undefined && (<><div className="kv-k">swing hi M15</div><div className="kv-v">{fmt(c.last_swing_high_m15)}</div></>)}
+                {c.last_swing_low_m15  !== undefined && (<><div className="kv-k">swing lo M15</div><div className="kv-v">{fmt(c.last_swing_low_m15)}</div></>)}
+                {c.opposing_choch_h1 && (<><div className="kv-k">CHoCH H1</div><div className="kv-v" style={{color: "var(--red)"}}>opposing</div></>)}
+                {c.opposing_choch_m15 && (<><div className="kv-k">CHoCH M15</div><div className="kv-v" style={{color: "var(--red)"}}>opposing</div></>)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const { data, err, tick, pause } = useSmartTrail();
+  const [filter, setFilter] = useState("ALL"); // ALL | WITH_PROPOSAL | CLOSE_ONLY
+
+  const positions = data?.positions || [];
+  const proposals = data?.proposals || {};
+
+  const filtered = useMemo(() => {
+    return positions.filter(p => {
+      const prop = proposals[p.ticket];
+      if (filter === "WITH_PROPOSAL") return !!prop;
+      if (filter === "CLOSE_ONLY") return prop?.should_close;
+      return true;
+    });
+  }, [positions, proposals, filter]);
+
+  return (
+    <div className="layout">
+      <header className="header">
+        <div className="logo">OMNI · SMART TRAIL <span>DEV DASHBOARD</span></div>
+
+        <div className="hstat">
+          <div className="hstat-label">Account</div>
+          <div className="hstat-value">{ACCOUNT}</div>
+        </div>
+        <div className="hstat">
+          <div className="hstat-label">Engine</div>
+          <div className="hstat-value">
+            <span className={classNames("dot", data?.enabled ? "dot-green" : "dot-gray")}></span>
+            {data?.enabled ? "Enabled" : "Disabled"}
+          </div>
+        </div>
+        <div className="hstat">
+          <div className="hstat-label">Positions</div>
+          <div className="hstat-value">{positions.length}</div>
+        </div>
+        <div className="hstat">
+          <div className="hstat-label">Proposals</div>
+          <div className="hstat-value">{Object.keys(proposals).length}</div>
+        </div>
+        <div className="hstat">
+          <div className="hstat-label">Tick</div>
+          <div className="hstat-value" style={{color: "var(--gold)"}}>#{tick}</div>
+        </div>
+
+        <div className="spacer"></div>
+
+        <div style={{display: "flex", gap: 4}}>
+          <button className={classNames("btn", filter === "ALL" && "active")} onClick={() => setFilter("ALL")}>All</button>
+          <button className={classNames("btn", filter === "WITH_PROPOSAL" && "active")} onClick={() => setFilter("WITH_PROPOSAL")}>With proposal</button>
+          <button className={classNames("btn", filter === "CLOSE_ONLY" && "active")} onClick={() => setFilter("CLOSE_ONLY")}>Close only</button>
+        </div>
+
+        <button className="btn" onMouseDown={() => pause(true)} onMouseUp={() => pause(false)}
+                onMouseLeave={() => pause(false)} title="Hold to pause polling">
+          ⏸ hold
+        </button>
+      </header>
+
+      <div className="grid-main">
+        <div className="col" style={{maxWidth: 320}}>
+          <Sidebar data={data} />
+        </div>
+
+        <div className="col">
+          {err && <div className="toast toast-err">⚠ {err}</div>}
+
+          {filtered.length === 0 && (
+            <div className="empty">
+              <div className="empty-icon">∅</div>
+              <div>no matching positions</div>
+              <div style={{marginTop: 6, fontSize: 10}}>
+                {!data?.enabled && "smart_trail is disabled in rules.json — enable it to see live proposals."}
+                {data?.enabled && positions.length === 0 && "no open positions on this account."}
+                {data?.enabled && positions.length > 0 && filter !== "ALL" && "try switching filter to 'All'."}
+              </div>
+            </div>
+          )}
+
+          <div className="position-grid">
+            {filtered.map(pos => (
+              <PositionCard
+                key={pos.ticket}
+                pos={pos}
+                proposal={proposals[pos.ticket]}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

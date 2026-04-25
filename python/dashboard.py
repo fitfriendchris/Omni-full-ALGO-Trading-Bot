@@ -16,12 +16,18 @@ import os
 import re
 import sqlite3
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import dash
-from dash import dcc, html, dash_table, Input, Output, callback, ctx
+from dash import dcc, html, dash_table, Input, Output, callback, ctx, no_update
+from dash.exceptions import PreventUpdate
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
+try:
+    import ict_precision as ict
+    _HAS_ICT = True
+except ImportError:
+    _HAS_ICT = False
 
 # ── PATH CONFIGURATION ────────────────────────────────────────────────────────
 # Adjust these to match your machine. The dashboard auto-detects common locations.
@@ -47,7 +53,7 @@ AI_STATE_PATH   = os.path.join(_SCRIPT_DIR, "ai_state.json")
 TRADER_STATE    = os.path.join(_SCRIPT_DIR, "trader_state.json")
 DB_PATH         = os.path.join(_SCRIPT_DIR, "omni_ict.db")
 
-REFRESH_MS      = 3000   # poll every 3 seconds
+REFRESH_MS      = 5000   # poll every 5 seconds (matches EA export interval)
 
 print(f"[OMNI] JSON_PATH:    {JSON_PATH}")
 print(f"[OMNI] AI_STATE:     {AI_STATE_PATH}")
@@ -90,15 +96,51 @@ TC = {
 
 # ── DATA LOADERS ──────────────────────────────────────────────────────────────
 
+_mt5_cache: dict = {"mtime": 0.0, "data": {}}
+_analysis_cache: dict = {"mtime": 0.0, "results": {}}
+
+# Maximum bars to send to Plotly charts (keeps browser fast)
+MAX_CHART_BARS = 200
+
 def load_mt5() -> dict:
-    """Load and parse omni_data.json from MT5/Midas."""
+    """Load and parse omni_data.json from MT5/Midas (cached by file mtime)."""
     try:
+        mtime = os.path.getmtime(JSON_PATH)
+        if mtime == _mt5_cache["mtime"] and _mt5_cache["data"]:
+            return _mt5_cache["data"]
         with open(JSON_PATH, "r", encoding="utf-8") as f:
             raw = re.sub(r',\s*([\]}])', r'\1', f.read())
-        return json.loads(raw)
+        data = json.loads(raw)
+        _mt5_cache["mtime"] = mtime
+        _mt5_cache["data"] = data
+        # Invalidate analysis cache when data changes
+        _analysis_cache["mtime"] = 0.0
+        _analysis_cache["results"] = {}
+        return data
     except Exception as e:
         print(f"[load_mt5] {e}")
-        return {}
+        return _mt5_cache.get("data", {})
+
+
+def _cached_analyze(bars: list, sym: str, sym_info: dict, tf: str) -> dict:
+    """analyze_bars with per-symbol+tf caching (invalidated when JSON changes)."""
+    mtime = _mt5_cache["mtime"]
+    if _analysis_cache["mtime"] != mtime:
+        _analysis_cache["mtime"] = mtime
+        _analysis_cache["results"] = {}
+    key = f"{sym}_{tf}"
+    if key in _analysis_cache["results"]:
+        return _analysis_cache["results"][key]
+    result = analyze_bars(bars, sym, sym_info) if bars else _empty_analysis(sym)
+    _analysis_cache["results"][key] = result
+    return result
+
+
+def _trim_bars(bars: list, limit: int = MAX_CHART_BARS) -> list:
+    """Trim bar list to last `limit` entries for chart rendering."""
+    if len(bars) <= limit:
+        return bars
+    return bars[-limit:] if bars and isinstance(bars[0], dict) and "t" in bars[0] else bars[:limit]
 
 
 def load_ai_state() -> dict:
@@ -185,29 +227,93 @@ def analyze_bars(bars: list, sym: str, sym_info: dict) -> dict:
     elif cur < swing_l * 1.0005:
         structure = "CHOCH_BEAR"
 
-    # ── Order Block detection ─────────────────────────────────────────
-    ob_type = "NONE"
-    ob_h = ob_l = 0.0
-    for i in range(max(0, n - 15), n - 1):
-        b, bn = bars_asc[i], bars_asc[i + 1]
+    # ── Order Block detection — collect up to 3 (most recent first) ──
+    obs = []
+    for i in range(n - 2, max(0, n - 30), -1):
+        b, bn = bars_asc[i], bars_asc[i + 1] if i + 1 < n else bars_asc[i]
+        if i + 1 >= n:
+            continue
         rng = bn["h"] - bn["l"] or 0.0001
         impulse = abs(bn["c"] - bn["o"]) / rng
-        if impulse < 0.55:
+        if impulse < 0.50:
             continue
         if b["c"] < b["o"] and bn["c"] > bn["o"]:
-            ob_type = "BULLISH_OB"; ob_h = b["h"]; ob_l = b["l"]; break
-        if b["c"] > b["o"] and bn["c"] < bn["o"]:
-            ob_type = "BEARISH_OB"; ob_h = b["h"]; ob_l = b["l"]; break
+            obs.append({"type": "BULLISH_OB", "h": b["h"], "l": b["l"], "age": n - 1 - i})
+        elif b["c"] > b["o"] and bn["c"] < bn["o"]:
+            obs.append({"type": "BEARISH_OB", "h": b["h"], "l": b["l"], "age": n - 1 - i})
+        if len(obs) >= 3:
+            break
+    ob_type = obs[0]["type"] if obs else "NONE"
+    ob_h    = obs[0]["h"]    if obs else 0.0
+    ob_l    = obs[0]["l"]    if obs else 0.0
 
-    # ── FVG detection ─────────────────────────────────────────────────
-    fvg_type = "NONE"
-    fvg_h = fvg_l = 0.0
-    for i in range(max(0, n - 10), n - 2):
-        b0, b2 = bars_asc[i], bars_asc[i + 2]
+    # ── FVG detection — collect up to 5 (most recent first) ──────────
+    fvgs = []
+    for i in range(n - 3, max(0, n - 25), -1):
+        if i + 2 >= n:
+            continue
+        b0, b2 = bars_asc[i + 2], bars_asc[i]
         if b0["l"] > b2["h"]:
-            fvg_type = "BULLISH"; fvg_h = b0["l"]; fvg_l = b2["h"]; break
-        if b0["h"] < b2["l"]:
-            fvg_type = "BEARISH"; fvg_h = b2["l"]; fvg_l = b0["h"]; break
+            ce = (b0["l"] + b2["h"]) / 2
+            fvgs.append({"type": "BULLISH", "h": b0["l"], "l": b2["h"], "ce": ce, "age": n - 1 - i})
+        elif b0["h"] < b2["l"]:
+            ce = (b0["h"] + b2["l"]) / 2
+            fvgs.append({"type": "BEARISH", "h": b2["l"], "l": b0["h"], "ce": ce, "age": n - 1 - i})
+        if len(fvgs) >= 5:
+            break
+    fvg_type = fvgs[0]["type"] if fvgs else "NONE"
+    fvg_h    = fvgs[0]["h"]    if fvgs else 0.0
+    fvg_l    = fvgs[0]["l"]    if fvgs else 0.0
+
+    # ── OB + FVG confluence check (FVG inside or overlapping OB zone) ─
+    ob_fvg_conf = "NONE"
+    for ob in obs:
+        for fvg in fvgs:
+            if ob["type"][:4] == fvg["type"][:4]:  # same direction
+                overlap = min(ob["h"], fvg["h"]) - max(ob["l"], fvg["l"])
+                if overlap > 0:
+                    ob_fvg_conf = "BULL" if ob["type"] == "BULLISH_OB" else "BEAR"
+                    break
+        if ob_fvg_conf != "NONE":
+            break
+
+    # ── Pattern detection ─────────────────────────────────────────────
+    patterns = []
+    if n >= 20:
+        highs = [b["h"] for b in bars_asc]
+        lows  = [b["l"] for b in bars_asc]
+        # Double Top: two recent peaks within 0.4% of each other
+        peak_idxs = [i for i in range(2, n - 2)
+                     if highs[i] >= highs[i-1] and highs[i] >= highs[i+1]
+                     and highs[i] >= highs[i-2] and highs[i] >= highs[i+2]]
+        if len(peak_idxs) >= 2:
+            p1, p2 = peak_idxs[-2], peak_idxs[-1]
+            if abs(highs[p1] - highs[p2]) / max(highs[p1], 0.0001) < 0.004:
+                patterns.append({"pattern": "Double Top", "level": max(highs[p1], highs[p2]),
+                                  "direction": "BEARISH", "strength": 70})
+        # Double Bottom: two recent troughs within 0.4% of each other
+        trough_idxs = [i for i in range(2, n - 2)
+                       if lows[i] <= lows[i-1] and lows[i] <= lows[i+1]
+                       and lows[i] <= lows[i-2] and lows[i] <= lows[i+2]]
+        if len(trough_idxs) >= 2:
+            t1, t2 = trough_idxs[-2], trough_idxs[-1]
+            if abs(lows[t1] - lows[t2]) / max(lows[t1], 0.0001) < 0.004:
+                patterns.append({"pattern": "Double Bottom", "level": min(lows[t1], lows[t2]),
+                                  "direction": "BULLISH", "strength": 70})
+        # Head & Shoulders (bearish): 3 peaks, middle is highest
+        if len(peak_idxs) >= 3:
+            ls, hd, rs = peak_idxs[-3], peak_idxs[-2], peak_idxs[-1]
+            if highs[hd] > highs[ls] and highs[hd] > highs[rs]:
+                neckline = min(lows[ls:rs+1])
+                patterns.append({"pattern": "Head & Shoulders", "level": neckline,
+                                  "direction": "BEARISH", "strength": 80})
+        # Inverse H&S (bullish): 3 troughs, middle is lowest
+        if len(trough_idxs) >= 3:
+            ls, hd, rs = trough_idxs[-3], trough_idxs[-2], trough_idxs[-1]
+            if lows[hd] < lows[ls] and lows[hd] < lows[rs]:
+                neckline = max(highs[ls:rs+1])
+                patterns.append({"pattern": "Inv H&S", "level": neckline,
+                                  "direction": "BULLISH", "strength": 80})
 
     # ── MA calculations ───────────────────────────────────────────────
     closes = [b["c"] for b in bars_asc]
@@ -272,6 +378,10 @@ def analyze_bars(bars: list, sym: str, sym_info: dict) -> dict:
     if asia_h > 0:
         reasons.append(f"Asia range: {asia_l:.{digits}f}–{asia_h:.{digits}f}")
 
+    # Add OB+FVG confluence bonus to score
+    if ob_fvg_conf == ("BULL" if direction == "BUY" else "BEAR"):
+        score = min(score + 10, 100)
+
     return {
         "sym": sym, "direction": direction, "score": score,
         "sl": sl, "tp": tp, "rr": rr,
@@ -279,6 +389,8 @@ def analyze_bars(bars: list, sym: str, sym_info: dict) -> dict:
         "structure": structure, "atr": atr, "cur": cur, "digits": digits,
         "ob_type": ob_type, "ob_h": ob_h, "ob_l": ob_l,
         "fvg_type": fvg_type, "fvg_h": fvg_h, "fvg_l": fvg_l,
+        "obs": obs, "fvgs": fvgs, "ob_fvg_conf": ob_fvg_conf,
+        "patterns": patterns,
         "asia_h": asia_h, "asia_l": asia_l,
         "swing_h": swing_h, "swing_l": swing_l,
         "ma5": ma5, "ma20": ma20, "reasons": reasons,
@@ -292,15 +404,72 @@ def _empty_analysis(sym):
         "trend": "NEUTRAL", "structure": "RANGING", "atr": 0,
         "cur": 0, "digits": 5, "ob_type": "NONE", "ob_h": 0, "ob_l": 0,
         "fvg_type": "NONE", "fvg_h": 0, "fvg_l": 0,
+        "obs": [], "fvgs": [], "ob_fvg_conf": "NONE", "patterns": [],
         "asia_h": 0, "asia_l": 0, "swing_h": 0, "swing_l": 0,
         "ma5": 0, "ma20": 0, "reasons": ["No data — MT5 EA not running"],
     }
 
 
+def _analysis_from_prices(p: dict) -> dict:
+    """Build a lightweight analysis dict from the prices array (no OHLCV bars needed)."""
+    sym  = p.get("symbol", "")
+    bid  = p.get("bid", 0)
+    rsi  = p.get("rsi", 50)
+    trend = p.get("trend", "NEUTRAL")
+    fvg  = p.get("fvg_type", "NONE")
+    ob   = p.get("ob_type",  "NONE")
+    struct = p.get("structure", "RANGING")
+    spd  = p.get("spread", 0)
+    # Determine digits from symbol name
+    if "XAU" in sym or "XAG" in sym:
+        digits = 2
+    elif "JPY" in sym or "US30" in sym or "US500" in sym or "TECH" in sym:
+        digits = 2
+    else:
+        digits = 5
+    # Quick directional score
+    bull = bear = 30
+    if trend == "BULLISH":   bull += 20
+    elif trend == "BEARISH": bear += 20
+    if fvg == "BULLISH":     bull += 25
+    elif fvg == "BEARISH":   bear += 25
+    if ob == "BULLISH_OB":   bull += 20
+    elif ob == "BEARISH_OB": bear += 20
+    if rsi < 30:  bull += 15
+    elif rsi > 70: bear += 15
+    if "BOS_BULL" in struct:  bull += 15
+    elif "BOS_BEAR" in struct: bear += 15
+    if "CHOCH_POTENTIAL_BULL" in struct: bull += 10
+    elif "CHOCH_POTENTIAL_BEAR" in struct: bear += 10
+    direction = "BUY" if bull > bear else "SELL" if bear > bull else "NEUTRAL"
+    score = min(bull if direction == "BUY" else bear, 100)
+    # OB+FVG confluence
+    ob_fvg_conf = "NONE"
+    if ob == "BULLISH_OB" and fvg == "BULLISH": ob_fvg_conf = "BULL"
+    elif ob == "BEARISH_OB" and fvg == "BEARISH": ob_fvg_conf = "BEAR"
+    return {
+        "sym": sym, "direction": direction, "score": score,
+        "sl": 0, "tp": 0, "rr": 0,
+        "rsi": round(rsi, 1), "rsi_sig": "OVERSOLD" if rsi < 30 else "OVERBOUGHT" if rsi > 70 else "NEUTRAL",
+        "trend": trend, "structure": struct, "atr": 0, "cur": bid, "digits": digits,
+        "ob_type": ob, "ob_h": p.get("ob_high", 0), "ob_l": p.get("ob_low", 0),
+        "fvg_type": fvg, "fvg_h": p.get("fvg_high", 0), "fvg_l": p.get("fvg_low", 0),
+        "obs": [{"type": ob, "h": p.get("ob_high",0), "l": p.get("ob_low",0), "age": 1}] if ob != "NONE" else [],
+        "fvgs": [{"type": fvg, "h": p.get("fvg_high",0), "l": p.get("fvg_low",0), "ce": (p.get("fvg_high",0)+p.get("fvg_low",0))/2, "age": 1}] if fvg != "NONE" else [],
+        "ob_fvg_conf": ob_fvg_conf,
+        "patterns": [],
+        "asia_h": p.get("asia_high", 0), "asia_l": p.get("asia_low", 0),
+        "swing_h": p.get("swing_high", 0), "swing_l": p.get("swing_low", 0),
+        "ma5": 0, "ma20": 0, "spread": spd,
+        "reasons": [f"Trend: {trend}", f"RSI: {rsi:.1f}", f"OB: {ob}", f"FVG: {fvg}", f"Structure: {struct}"],
+    }
+
+
 # ── CHART BUILDERS ─────────────────────────────────────────────────────────────
 
-def make_candle_chart(bars_raw: list, analysis: dict, sym: str,
-                      sym_info: dict, height=380) -> go.Figure:
+def make_candle_chart(bars_raw: list, analysis: dict = None, sym: str = "",
+                      sym_info: dict = None, height=380,
+                      entry=None, sl=None, tp1=None, tp2=None) -> go.Figure:
     """
     Build a full candlestick chart from real MT5 bar data.
     bars_raw is newest-first from omni_data.json charts[sym][tf].
@@ -321,12 +490,13 @@ def make_candle_chart(bars_raw: list, analysis: dict, sym: str,
     closes = [b["c"] for b in bars]
     vols   = [b.get("v", 0) for b in bars]
 
+    analysis = analysis or {}
     d = analysis.get("digits", 5)
 
     fig = go.Figure()
 
     # ── Volume bars (subdued) ─────────────────────────────────────────
-    vol_colors = [GREEN + "55" if c >= o else RED + "55"
+    vol_colors = ["rgba(46,204,113,0.33)" if c >= o else "rgba(232,69,69,0.33)"
                   for c, o in zip(closes, opens)]
     fig.add_trace(go.Bar(
         x=times, y=vols, name="Volume",
@@ -339,8 +509,8 @@ def make_candle_chart(bars_raw: list, analysis: dict, sym: str,
     fig.add_trace(go.Candlestick(
         x=times, open=opens, high=highs, low=lows, close=closes,
         name=sym,
-        increasing_line_color=GREEN, increasing_fillcolor=GREEN + "cc",
-        decreasing_line_color=RED,   decreasing_fillcolor=RED   + "cc",
+        increasing_line_color=GREEN, increasing_fillcolor="rgba(46,204,113,0.80)",
+        decreasing_line_color=RED,   decreasing_fillcolor="rgba(232,69,69,0.80)",
         line_width=1,
         hovertemplate=(
             f"<b>%{{x}}</b><br>"
@@ -394,42 +564,138 @@ def make_candle_chart(bars_raw: list, analysis: dict, sym: str,
         _hline(sl,  RED,   f"SL {sl:.{d}f}", "dot")
         _hline(tp,  GREEN, f"TP {tp:.{d}f}", "dot")
 
-    # ── Order Block shading ───────────────────────────────────────────
-    if analysis.get("ob_type") != "NONE" and analysis.get("ob_h") and analysis.get("ob_l"):
-        ob_color = GREEN if "BULL" in analysis["ob_type"] else RED
+    # ── Multiple Order Block shading (up to 3, fading for older) ─────
+    obs = analysis.get("obs", [])
+    if not obs and analysis.get("ob_type") and analysis.get("ob_type") != "NONE":
+        obs = [{"type": analysis.get("ob_type",""), "h": analysis.get("ob_h", 0),
+                "l": analysis.get("ob_l", 0), "age": 1}]
+    # OB rgba fills: strong→medium→faint
+    _ob_fills  = ["rgba(46,204,113,0.19)", "rgba(46,204,113,0.09)", "rgba(46,204,113,0.05)"]
+    _rb_fills  = ["rgba(232,69,69,0.19)",  "rgba(232,69,69,0.09)",  "rgba(232,69,69,0.05)"]
+    _ob_lines  = ["rgba(46,204,113,0.40)", "rgba(46,204,113,0.20)", "rgba(46,204,113,0.13)"]
+    _rb_lines  = ["rgba(232,69,69,0.40)",  "rgba(232,69,69,0.20)",  "rgba(232,69,69,0.13)"]
+    for i, ob in enumerate(obs[:3]):
+        is_bull = "BULL" in ob.get("type", "")
+        ob_color = GREEN if is_bull else RED
+        fill_c = _ob_fills[i] if is_bull else _rb_fills[i]
+        line_c = _ob_lines[i] if is_bull else _rb_lines[i]
+        lbl = f"{'Bull' if is_bull else 'Bear'} OB"
+        if i > 0:
+            lbl += f" ({ob.get('age',1)}b)"
         fig.add_hrect(
-            y0=analysis["ob_l"], y1=analysis["ob_h"],
-            fillcolor=ob_color + "20",
-            line=dict(color=ob_color + "66", width=1, dash="dot"),
+            y0=ob["l"], y1=ob["h"],
+            fillcolor=fill_c,
+            line=dict(color=line_c, width=1.2 if i == 0 else 0.6, dash="dot"),
             annotation=dict(
-                text=f"{'Bull' if 'BULL' in analysis['ob_type'] else 'Bear'} OB",
-                font=dict(color=ob_color, size=9, family=MONO),
+                text=lbl,
+                font=dict(color=ob_color, size=9 if i == 0 else 8, family=MONO),
                 xanchor="left",
             ),
         )
 
-    # ── FVG shading ───────────────────────────────────────────────────
-    if analysis.get("fvg_type") != "NONE" and analysis.get("fvg_h") and analysis.get("fvg_l"):
-        fvg_color = BLUE if analysis["fvg_type"] == "BULLISH" else PURPLE
+    # ── Multiple FVG shading (up to 5, fading for older) ─────────────
+    fvgs = analysis.get("fvgs", [])
+    if not fvgs and analysis.get("fvg_type") and analysis.get("fvg_type") != "NONE":
+        fvgs = [{"type": analysis.get("fvg_type",""), "h": analysis.get("fvg_h", 0),
+                 "l": analysis.get("fvg_l", 0),
+                 "ce": (analysis.get("fvg_h",0) + analysis.get("fvg_l",0)) / 2, "age": 1}]
+    _fvg_bull_fills = ["rgba(59,130,246,0.15)","rgba(59,130,246,0.09)","rgba(59,130,246,0.06)",
+                       "rgba(59,130,246,0.04)","rgba(59,130,246,0.02)"]
+    _fvg_bear_fills = ["rgba(139,92,246,0.15)","rgba(139,92,246,0.09)","rgba(139,92,246,0.06)",
+                       "rgba(139,92,246,0.04)","rgba(139,92,246,0.02)"]
+    _fvg_bull_lines = ["rgba(59,130,246,0.40)","rgba(59,130,246,0.25)","rgba(59,130,246,0.14)",
+                       "rgba(59,130,246,0.09)","rgba(59,130,246,0.06)"]
+    _fvg_bear_lines = ["rgba(139,92,246,0.40)","rgba(139,92,246,0.25)","rgba(139,92,246,0.14)",
+                       "rgba(139,92,246,0.09)","rgba(139,92,246,0.06)"]
+    for i, fvg in enumerate(fvgs[:5]):
+        is_bull_fvg = fvg.get("type","") == "BULLISH"
+        fvg_color = BLUE if is_bull_fvg else PURPLE
+        fill_c = _fvg_bull_fills[i] if is_bull_fvg else _fvg_bear_fills[i]
+        line_c = _fvg_bull_lines[i] if is_bull_fvg else _fvg_bear_lines[i]
+        lbl = f"FVG {fvg.get('type','')[:4]}"
+        if i > 0:
+            lbl += f" ({fvg.get('age',1)}b)"
         fig.add_hrect(
-            y0=analysis["fvg_l"], y1=analysis["fvg_h"],
-            fillcolor=fvg_color + "18",
-            line=dict(color=fvg_color + "55", width=1, dash="longdash"),
+            y0=fvg["l"], y1=fvg["h"],
+            fillcolor=fill_c,
+            line=dict(color=line_c, width=1 if i == 0 else 0.5, dash="longdash"),
             annotation=dict(
-                text=f"FVG {analysis['fvg_type'][:4]}",
-                font=dict(color=fvg_color, size=9, family=MONO),
+                text=lbl,
+                font=dict(color=fvg_color, size=9 if i == 0 else 7, family=MONO),
                 xanchor="left",
             ),
         )
+        # CE equilibrium line for the primary FVG
+        if i == 0 and fvg.get("ce"):
+            _hline(fvg["ce"], fvg_color,
+                   f"CE {fvg['ce']:.{d}f}", "dot")
+
+    # ── OB + FVG Confluence zone (special highlight) ──────────────────
+    conf = analysis.get("ob_fvg_conf", "NONE")
+    if conf in ("BULL", "BEAR"):
+        c_want_ob  = "BULL" if conf == "BULL" else "BEAR"
+        c_want_fvg = "BULLISH" if conf == "BULL" else "BEARISH"
+        conf_color = GREEN if conf == "BULL" else RED
+        conf_fill  = "rgba(46,204,113,0.25)" if conf == "BULL" else "rgba(232,69,69,0.25)"
+        conf_line  = "rgba(46,204,113,0.73)" if conf == "BULL" else "rgba(232,69,69,0.73)"
+        for ob in obs:
+            if c_want_ob in ob.get("type",""):
+                for fvg in fvgs:
+                    if fvg.get("type") == c_want_fvg:
+                        ol = max(ob["l"], fvg["l"])
+                        oh = min(ob["h"], fvg["h"])
+                        if oh > ol:
+                            fig.add_hrect(
+                                y0=ol, y1=oh,
+                                fillcolor=conf_fill,
+                                line=dict(color=conf_line, width=2, dash="solid"),
+                                annotation=dict(
+                                    text=f"⚡ OB+FVG {conf}",
+                                    font=dict(color=conf_color, size=10, family=MONO),
+                                    xanchor="left",
+                                ),
+                            )
+                        break
+                break
+
+    # ── Pattern levels (Double Top/Bottom, H&S, Inv H&S) ─────────────
+    for pat in analysis.get("patterns", []):
+        lvl = pat.get("level", 0)
+        if not lvl:
+            continue
+        pat_dir   = pat.get("direction", "NEUTRAL")
+        pat_color = RED if pat_dir == "BEARISH" else GREEN
+        pat_name  = pat.get("pattern", "")
+        strength  = pat.get("strength", 0)
+        _hline(lvl, f"rgba({46 if pat_color == GREEN else 232},{204 if pat_color == GREEN else 69},{113 if pat_color == GREEN else 69},0.80)",
+               f"{pat_name} {strength}%", "dashdot")
 
     # ── Asia range shading ────────────────────────────────────────────
     ah, al = analysis.get("asia_h", 0), analysis.get("asia_l", 0)
     if ah and al and ah != al:
         fig.add_hrect(
-            y0=al, y1=ah, fillcolor=BLUE + "0c",
-            line=dict(color=BLUE + "33", width=0.5),
+            y0=al, y1=ah, fillcolor="rgba(59,130,246,0.05)",
+            line=dict(color="rgba(59,130,246,0.20)", width=0.5),
             annotation=dict(text="Asia", font=dict(color=BLUE, size=8, family=MONO)),
         )
+
+    # ── Active trade levels (entry / SL / TPs) ───────────────────────
+    if entry is not None:
+        fig.add_hline(y=entry, line_color="#00BFFF", line_dash="dash", line_width=1.5,
+                      annotation_text="ENTRY", annotation_position="right",
+                      annotation_font_color="#00BFFF", annotation_font_size=10)
+    if sl is not None:
+        fig.add_hline(y=sl, line_color="#FF4444", line_dash="dot", line_width=1.5,
+                      annotation_text="SL", annotation_position="right",
+                      annotation_font_color="#FF4444", annotation_font_size=10)
+    if tp1 is not None:
+        fig.add_hline(y=tp1, line_color="#00FF88", line_dash="dot", line_width=1.5,
+                      annotation_text="TP1", annotation_position="right",
+                      annotation_font_color="#00FF88", annotation_font_size=10)
+    if tp2 is not None:
+        fig.add_hline(y=tp2, line_color="#00FF44", line_dash="dot", line_width=1.5,
+                      annotation_text="TP2", annotation_position="right",
+                      annotation_font_color="#00FF44", annotation_font_size=10)
 
     layout = _chart_layout(height=height)
     layout.update(
@@ -458,7 +724,7 @@ def make_equity_curve(history_df: pd.DataFrame, height=200) -> go.Figure:
     fig.add_trace(go.Scatter(
         x=history_df["time"], y=history_df["cumulative_profit"],
         fill="tozeroy", line=dict(color=GOLD, width=2),
-        fillcolor=GOLD + "18", name="Equity",
+        fillcolor="rgba(212,168,67,0.09)", name="Equity",
         hovertemplate="%{x}<br>Cum P&L: $%{y:+,.2f}<extra></extra>",
     ))
     fig.update_layout(**_chart_layout(height=height))
@@ -478,7 +744,7 @@ def make_drawdown_chart(history_df: pd.DataFrame, height=160) -> go.Figure:
     fig.add_trace(go.Scatter(
         x=history_df["time"], y=dd,
         fill="tozeroy", line=dict(color=RED, width=1.5),
-        fillcolor=RED + "18", name="Drawdown",
+        fillcolor="rgba(232,69,69,0.09)", name="Drawdown",
         hovertemplate="%{x}<br>DD: $%{y:+,.2f}<extra></extra>",
     ))
     fig.update_layout(**_chart_layout(height=height))
@@ -513,7 +779,7 @@ def make_rr_histogram(db_df: pd.DataFrame, height=180) -> go.Figure:
     vals = db_df["r_multiple"].dropna()
     fig.add_trace(go.Histogram(
         x=vals, nbinsx=20,
-        marker_color=GOLD + "aa", marker_line=dict(color=GOLD, width=0.5),
+        marker_color="rgba(255,214,0,0.67)", marker_line=dict(color=GOLD, width=0.5),
         hovertemplate="R: %{x:.2f}  Count: %{y}<extra></extra>",
     ))
     fig.add_vline(x=0, line=dict(color=RED, width=1, dash="dash"))
@@ -602,6 +868,7 @@ def build_sidebar(active_page):
         ("positions", "📋", "Positions"),
         ("history",   "📜", "Trade History"),
         ("ai",        "⬡",  "AI Engine"),
+        ("signals",   "🎯", "Signals"),
     ]
 
     def nav_item(page_id, icon, label):
@@ -703,7 +970,7 @@ app.layout = html.Div([
 
 # ── PAGE RENDERERS ─────────────────────────────────────────────────────────────
 
-def page_metals(mt5, ai_state, trader_st):
+def page_metals(mt5, ai_state, trader_st, active_sym="XAUUSD", active_tf="H1"):
     charts_data = mt5.get("charts", {})
     prices_list = mt5.get("prices", [])
     prices_map  = {p["symbol"]: p for p in prices_list}
@@ -715,11 +982,11 @@ def page_metals(mt5, ai_state, trader_st):
     def metal_hero(sym, color, icon):
         p    = prices_map.get(sym, {})
         sym_info = charts_data.get(sym, {})
-        bars_raw = sym_info.get("H1", [])
-        bid  = p.get("bid", sym_info.get("H1", [{}])[0].get("c", 0) if sym_info.get("H1") else 0)
+        bars_raw = sym_info.get(active_tf, sym_info.get("H1", []))
+        bid  = p.get("bid", bars_raw[0].get("c", 0) if bars_raw else 0)
         ask  = p.get("ask", 0)
         sprd = p.get("spread", 0)
-        a    = analyze_bars(bars_raw, sym, sym_info) if bars_raw else _empty_analysis(sym)
+        a    = _cached_analyze(bars_raw, sym, sym_info, active_tf)
         dc   = dir_color(a["direction"])
         d    = a["digits"]
         fmt  = f"{{:.{d}f}}"
@@ -816,6 +1083,38 @@ def page_metals(mt5, ai_state, trader_st):
         ("Session",     session, SESS_COLORS.get(session, MUTED)),
     ]
 
+    # TF + symbol controls for the main chart
+    def _btn(label, btn_id, active_val, current_val, color=GOLD):
+        is_active = current_val == active_val
+        return html.Button(label, id=btn_id, n_clicks=0, style={
+            "background": color + "22" if is_active else CARD2,
+            "color": color if is_active else MUTED,
+            "border": f"1px solid {color+'44' if is_active else BORDER}",
+            "borderRadius": "6px", "padding": "5px 12px",
+            "fontFamily": MONO, "fontSize": "11px", "cursor": "pointer",
+        })
+
+    tf_controls = html.Div([
+        html.Span("TF:", style={"fontFamily": MONO, "fontSize": "10px",
+                                 "color": MUTED, "marginRight": "6px"}),
+        *[_btn(tf, f"tf-btn-{tf}", tf, active_tf)
+          for tf in ["M1", "M5", "M15", "H1", "H4", "D1", "W1"]],
+    ], style={"display": "flex", "alignItems": "center", "gap": "6px", "flexWrap": "wrap"})
+
+    sym_controls = html.Div([
+        html.Span("Chart:", style={"fontFamily": MONO, "fontSize": "10px",
+                                    "color": MUTED, "marginRight": "6px"}),
+        *[_btn(s, f"sym-btn-{s}", s, active_sym, GOLD if s == "XAUUSD" else SILVER)
+          for s in ["XAUUSD", "XAGUSD"]],
+    ], style={"display": "flex", "alignItems": "center", "gap": "6px"})
+
+    # Build main chart with active sym + tf
+    chart_sym_info = charts_data.get(active_sym, {})
+    chart_bars_full = chart_sym_info.get(active_tf, [])
+    chart_analysis = _cached_analyze(chart_bars_full, active_sym, chart_sym_info, active_tf)
+    bar_count = len(chart_bars_full)
+    chart_bars = _trim_bars(chart_bars_full)
+
     return html.Div([
         html.Div([
             html.H2("🥇 Metals Dashboard", style={"fontFamily": SANS, "fontWeight": "700",
@@ -844,50 +1143,144 @@ def page_metals(mt5, ai_state, trader_st):
             metal_hero("XAGUSD", SILVER, "🥈"),
         ], style={"display": "flex", "gap": "14px", "flexWrap": "wrap", "marginBottom": "14px"}),
 
-        # Full H1 chart for Gold
+        # Interactive chart — responds to TF + symbol switcher
         card([
-            sec_header("XAUUSD H1 — Live Chart"),
+            html.Div([
+                html.Div([
+                    sym_controls,
+                    tf_controls,
+                ], style={"display": "flex", "gap": "16px", "alignItems": "center",
+                          "flexWrap": "wrap", "marginBottom": "10px"}),
+                html.Div([
+                    html.Span(f"{active_sym} / {active_tf}",
+                              style={"fontFamily": MONO, "fontSize": "12px",
+                                     "color": GOLD, "fontWeight": "700"}),
+                    html.Span(f"  {bar_count} bars",
+                              style={"fontFamily": MONO, "fontSize": "10px", "color": MUTED}),
+                    html.Span(f"  {chart_analysis['direction']}",
+                              style={"fontFamily": MONO, "fontSize": "11px",
+                                     "color": dir_color(chart_analysis['direction']),
+                                     "fontWeight": "700", "marginLeft": "10px"}),
+                    html.Span(f"  {chart_analysis['score']}/100",
+                              style={"fontFamily": MONO, "fontSize": "10px",
+                                     "color": score_color(chart_analysis['score'])}),
+                ]),
+            ]),
             dcc.Graph(
                 figure=make_candle_chart(
-                    charts_data.get("XAUUSD", {}).get("H1", []),
-                    analyze_bars(charts_data.get("XAUUSD", {}).get("H1", []),
-                                 "XAUUSD", charts_data.get("XAUUSD", {})),
-                    "XAUUSD",
-                    charts_data.get("XAUUSD", {}),
-                    height=320,
+                    chart_bars, chart_analysis, active_sym, chart_sym_info, height=420,
                 ),
-                config={"displayModeBar": False},
+                config={"displayModeBar": True,
+                        "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+                        "scrollZoom": True},
             ),
         ]),
     ])
 
 
 def page_markets(mt5, active_sym, active_tf):
-    charts = mt5.get("charts", {})
-    prices = {p["symbol"]: p for p in mt5.get("prices", [])}
-    syms   = list(charts.keys())
+    charts      = mt5.get("charts", {})
+    prices_list = mt5.get("prices", [])
+    prices      = {p["symbol"]: p for p in prices_list}
 
+    # ── Build analysis for ALL symbols ───────────────────────────────
     rows = []
-    for sym in syms:
+    seen = set()
+
+    # Chart symbols → full OHLCV analysis
+    for sym in charts.keys():
+        seen.add(sym)
         sym_info = charts[sym]
-        bars_raw = sym_info.get(active_tf, sym_info.get("H1", []))
-        a = analyze_bars(bars_raw, sym, sym_info) if bars_raw else _empty_analysis(sym)
+        tf_used = active_tf if active_tf in sym_info else "H1"
+        bars_raw = sym_info.get(tf_used, [])
+        a = _cached_analyze(bars_raw, sym, sym_info, tf_used)
         p = prices.get(sym, {})
-        bid  = p.get("bid", a["cur"])
-        sprd = p.get("spread", 0)
-        dc   = dir_color(a["direction"])
+        bid   = p.get("bid", a["cur"])
+        sprd  = p.get("spread", 0)
+        conf  = a["ob_fvg_conf"]
+        pats  = ", ".join(pt["pattern"] for pt in a.get("patterns", [])[:2]) or "—"
         rows.append({
             "Symbol": sym, "Bid": f"{bid:.{a['digits']}f}",
             "Spread": sprd, "Signal": a["direction"],
             "Score": a["score"], "RSI": a["rsi"],
-            "Trend": a["trend"], "FVG": a["fvg_type"][:4] if a["fvg_type"] != "NONE" else "—",
-            "OB": a["ob_type"].replace("_OB", "")[:4] if a["ob_type"] != "NONE" else "—",
-            "Structure": a["structure"].replace("_", " ")[:10],
-            "SL": f"{a['sl']:.{a['digits']}f}", "TP": f"{a['tp']:.{a['digits']}f}",
+            "Trend": a["trend"],
+            "FVG": a["fvg_type"][:4] if a["fvg_type"] != "NONE" else "—",
+            "OB": a["ob_type"].replace("_OB","")[:4] if a["ob_type"] != "NONE" else "—",
+            "Confluence": f"⚡ {conf}" if conf != "NONE" else "—",
+            "Patterns": pats,
+            "Structure": a["structure"].replace("_"," ")[:10],
             "RR": a["rr"],
+            "Data": "FULL",
+        })
+
+    # Prices-only symbols → lightweight analysis
+    for p in prices_list:
+        sym = p.get("symbol", "")
+        if not sym or sym in seen:
+            continue
+        a = _analysis_from_prices(p)
+        conf = a["ob_fvg_conf"]
+        rows.append({
+            "Symbol": sym, "Bid": f"{a['cur']:.{a['digits']}f}",
+            "Spread": p.get("spread", 0), "Signal": a["direction"],
+            "Score": a["score"], "RSI": a["rsi"],
+            "Trend": a["trend"],
+            "FVG": a["fvg_type"][:4] if a["fvg_type"] != "NONE" else "—",
+            "OB": a["ob_type"].replace("_OB","")[:4] if a["ob_type"] != "NONE" else "—",
+            "Confluence": f"⚡ {conf}" if conf != "NONE" else "—",
+            "Patterns": "—",
+            "Structure": a["structure"].replace("_"," ")[:10],
+            "RR": "—",
+            "Data": "LITE",
         })
 
     rows.sort(key=lambda x: x["Score"], reverse=True)
+
+    # ── Mini pairs grid (compact cards for all symbols) ───────────────
+    def mini_pair_card(r):
+        sig = r["Signal"]
+        dc  = dir_color(sig)
+        sc  = score_color(r["Score"])
+        conf_show = r["Confluence"] != "—"
+        return html.Div([
+            html.Div(r["Symbol"], style={"fontFamily": MONO, "fontWeight": "700",
+                                          "fontSize": "11px", "color": TEXT,
+                                          "marginBottom": "3px"}),
+            html.Div(r["Bid"], style={"fontFamily": MONO, "fontSize": "12px",
+                                      "fontWeight": "700", "color": dc}),
+            html.Div([
+                html.Span(sig, style={"fontFamily": MONO, "fontSize": "9px",
+                                       "color": dc, "fontWeight": "700"}),
+                html.Span(f" {r['Score']}", style={"fontFamily": MONO, "fontSize": "9px",
+                                                    "color": sc}),
+            ], style={"display": "flex", "gap": "4px", "marginTop": "2px"}),
+            html.Div([
+                html.Span(f"RSI {r['RSI']}", style={"fontFamily": MONO, "fontSize": "8px",
+                                                      "color": MUTED}),
+                html.Span(" ⚡" if conf_show else "", style={"color": GOLD, "fontSize": "9px"}),
+            ], style={"display": "flex", "gap": "4px", "marginTop": "1px"}),
+            # Score bar
+            html.Div(style={"marginTop": "4px", "height": "2px",
+                             "borderRadius": "1px", "background": BORDER},
+                     children=[html.Div(style={
+                         "height": "2px", "borderRadius": "1px",
+                         "width": f"{r['Score']}%",
+                         "background": f"linear-gradient(90deg,{dc},{sc})",
+                     })]),
+        ], style={
+            "background": CARD2,
+            "border": f"1px solid {GOLD+'55' if conf_show else BORDER}",
+            "borderRadius": "8px", "padding": "10px 12px",
+            "minWidth": "110px", "flex": "1",
+        })
+
+    grid = html.Div(
+        [mini_pair_card(r) for r in rows],
+        style={
+            "display": "flex", "flexWrap": "wrap", "gap": "8px",
+            "marginBottom": "14px",
+        }
+    )
 
     tf_buttons = html.Div([
         html.Span("Timeframe: ", style={"fontFamily": MONO, "fontSize": "10px",
@@ -901,16 +1294,27 @@ def page_markets(mt5, active_sym, active_tf):
         }) for tf in ["M5", "M15", "H1", "H4", "D1"]],
     ], style={"display": "flex", "alignItems": "center", "marginBottom": "12px", "flexWrap": "wrap"})
 
+    n_conf = len([r for r in rows if r["Confluence"] != "—"])
+    n_sig  = len([r for r in rows if r["Signal"] != "NEUTRAL"])
+
     return html.Div([
         html.Div([
             html.H2("◈ All Markets", style={"fontFamily": MONO, "fontWeight": "700",
                                              "fontSize": "18px", "color": TEXT, "margin": "0"}),
-            html.P(f"{len(syms)} instruments | ICT signals | TF: {active_tf}",
+            html.P(f"{len(rows)} instruments | {n_sig} signals | {n_conf} OB+FVG confluences | TF: {active_tf}",
                    style={"fontSize": "12px", "color": MUTED, "margin": "3px 0 0"}),
         ], style={"marginBottom": "12px"}),
         tf_buttons,
+
+        # Pairs overview grid
         card([
-            sec_header("ICT Signals", f"{len([r for r in rows if r['Signal'] != 'NEUTRAL'])} active"),
+            sec_header("Pairs Overview", f"{len(rows)} instruments"),
+            grid,
+        ]),
+
+        # Full signal table
+        card([
+            sec_header("ICT Signals", f"{n_sig} active"),
             dash_table.DataTable(
                 data=rows,
                 columns=[{"name": c, "id": c} for c in rows[0].keys()] if rows else [],
@@ -918,15 +1322,30 @@ def page_markets(mt5, active_sym, active_tf):
                 style_header=TH,
                 style_cell=TC,
                 style_data_conditional=[
-                    {"if": {"filter_query": '{Signal} = "BUY"',  "column_id": "Signal"}, "color": GREEN, "fontWeight": "700"},
-                    {"if": {"filter_query": '{Signal} = "SELL"', "column_id": "Signal"}, "color": RED,   "fontWeight": "700"},
-                    {"if": {"filter_query": '{Trend} = "BULLISH"', "column_id": "Trend"}, "color": GREEN},
-                    {"if": {"filter_query": '{Trend} = "BEARISH"', "column_id": "Trend"}, "color": RED},
-                    {"if": {"filter_query": "{Score} >= 75", "column_id": "Score"}, "color": GOLD, "fontWeight": "700"},
-                    {"if": {"filter_query": "{Score} >= 55", "column_id": "Score"}, "color": BLUE},
-                    {"if": {"filter_query": '{FVG} != "—"', "column_id": "FVG"}, "color": BLUE, "fontWeight": "600"},
+                    {"if": {"filter_query": '{Signal} = "BUY"',  "column_id": "Signal"},
+                     "color": GREEN, "fontWeight": "700"},
+                    {"if": {"filter_query": '{Signal} = "SELL"', "column_id": "Signal"},
+                     "color": RED,   "fontWeight": "700"},
+                    {"if": {"filter_query": '{Trend} = "BULLISH"', "column_id": "Trend"},
+                     "color": GREEN},
+                    {"if": {"filter_query": '{Trend} = "BEARISH"', "column_id": "Trend"},
+                     "color": RED},
+                    {"if": {"filter_query": "{Score} >= 75", "column_id": "Score"},
+                     "color": GOLD, "fontWeight": "700"},
+                    {"if": {"filter_query": "{Score} >= 55", "column_id": "Score"},
+                     "color": BLUE},
+                    {"if": {"filter_query": '{FVG} != "—"', "column_id": "FVG"},
+                     "color": BLUE, "fontWeight": "600"},
+                    {"if": {"filter_query": '{Confluence} != "—"', "column_id": "Confluence"},
+                     "color": GOLD, "fontWeight": "700"},
+                    {"if": {"filter_query": '{Patterns} != "—"', "column_id": "Patterns"},
+                     "color": ORANGE, "fontWeight": "600"},
+                    {"if": {"filter_query": '{Data} = "LITE"', "column_id": "Data"},
+                     "color": MUTED},
+                    {"if": {"filter_query": '{Data} = "FULL"', "column_id": "Data"},
+                     "color": GREEN},
                 ],
-                sort_action="native", filter_action="native", page_size=20,
+                sort_action="native", filter_action="native", page_size=30,
                 row_selectable="single",
             ),
         ]),
@@ -939,7 +1358,7 @@ def page_chart(mt5, active_sym, active_tf):
     syms     = list(charts.keys())
     sym_info = charts.get(active_sym, {})
     bars_raw = sym_info.get(active_tf, [])
-    analysis = analyze_bars(bars_raw, active_sym, sym_info) if bars_raw else _empty_analysis(active_sym)
+    analysis = _cached_analyze(bars_raw, active_sym, sym_info, active_tf)
     p        = prices_l.get(active_sym, {})
     bid      = p.get("bid", analysis["cur"])
     d        = analysis["digits"]
@@ -1003,7 +1422,7 @@ def page_chart(mt5, active_sym, active_tf):
         # Chart
         card([
             dcc.Graph(
-                figure=make_candle_chart(bars_raw, analysis, active_sym, sym_info, height=380),
+                figure=make_candle_chart(_trim_bars(bars_raw), analysis, active_sym, sym_info, height=380),
                 config={"displayModeBar": True,
                         "modeBarButtonsToRemove": ["lasso2d", "select2d"]},
             ),
@@ -1084,8 +1503,9 @@ def page_scanner(mt5):
     all_setups = []
     for sym, sym_info in charts.items():
         bars_raw = sym_info.get("H1", sym_info.get("H4", []))
-        a = analyze_bars(bars_raw, sym, sym_info) if bars_raw else _empty_analysis(sym)
+        a = _cached_analyze(bars_raw, sym, sym_info, "H1")
         p = prices_l.get(sym, {})
+        a = dict(a)  # copy so we don't mutate cache
         a["bid"] = p.get("bid", a["cur"])
         a["spread"] = p.get("spread", 0)
         all_setups.append(a)
@@ -1224,6 +1644,39 @@ def page_pnl(mt5):
     ])
 
 
+def _bot_trades_card():
+    """Card showing bot-tracked active_trades from trader_state.json."""
+    trader_st    = load_trader_state()
+    active_trades = trader_st.get("active_trades", {})
+    if not active_trades:
+        return card([
+            sec_header("Bot-Tracked Trades", "0 open"),
+            html.P("No bot-tracked trades.", style={"color": MUTED, "fontFamily": MONO, "fontSize": "12px"}),
+        ])
+    cols = ["symbol", "direction", "entry_price", "sl_price", "tp1_price", "volume", "opened_at"]
+    rows = []
+    for tid, t in active_trades.items():
+        row = {"ticket": tid}
+        for c in cols:
+            row[c] = t.get(c, "")
+        rows.append(row)
+    all_cols = ["ticket"] + cols
+    return card([
+        sec_header("Bot-Tracked Trades", f"{len(rows)} open"),
+        dash_table.DataTable(
+            data=rows,
+            columns=[{"name": c.replace("_", " ").upper(), "id": c} for c in all_cols],
+            style_table={"overflowX": "auto"},
+            style_header=TH, style_cell=TC,
+            style_data_conditional=[
+                {"if": {"filter_query": '{direction} = "BUY"',  "column_id": "direction"}, "color": GREEN},
+                {"if": {"filter_query": '{direction} = "SELL"', "column_id": "direction"}, "color": RED},
+            ],
+            sort_action="native", page_size=20,
+        ),
+    ])
+
+
 def page_positions(mt5):
     positions = mt5.get("positions", [])
     account   = mt5.get("account", {})
@@ -1270,6 +1723,7 @@ def page_positions(mt5):
             ) if positions else html.P("No open positions.",
                                        style={"color": MUTED, "fontFamily": MONO, "fontSize": "12px"}),
         ]),
+        _bot_trades_card(),
     ])
 
 
@@ -1347,8 +1801,8 @@ def page_smt(mt5):
         si_b = charts.get(sym_b, {})
         if not si_a or not si_b:
             continue
-        a_a = analyze_bars(si_a.get("H1", []), sym_a, si_a)
-        a_b = analyze_bars(si_b.get("H1", []), sym_b, si_b)
+        a_a = _cached_analyze(si_a.get("H1", []), sym_a, si_a, "H1")
+        a_b = _cached_analyze(si_b.get("H1", []), sym_b, si_b, "H1")
         pa = prices_l.get(sym_a, {})
         pb = prices_l.get(sym_b, {})
 
@@ -1415,6 +1869,316 @@ def page_smt(mt5):
                                              "margin": "0 0 14px"}),
         html.Div(smt_cards) if smt_cards
         else html.P("No chart data available.", style={"color": MUTED, "fontFamily": MONO}),
+    ])
+
+
+def page_signals(mt5, trader_st):
+    top_setups    = trader_st.get("top_setups", [])
+    active_trades = trader_st.get("active_trades", {})
+    session       = mt5.get("session", "—")
+    amd_phase     = mt5.get("amd_phase", "—")
+
+    # ── Status bar ────────────────────────────────────────────────────
+    risk_mode  = trader_st.get("risk_mode", "—")
+    freq_mode  = trader_st.get("freq_mode", "—")
+    open_cnt   = len(active_trades)
+    max_open   = trader_st.get("max_open", "—")
+    min_conf   = trader_st.get("min_conf", "—")
+    min_rr     = trader_st.get("min_rr", "—")
+
+    sess_color = GOLD if session in ("LONDON", "NEW_YORK", "NY_CLOSE") else MUTED
+
+    status_bar = html.Div([
+        stat_box("Session",    session,   sess_color),
+        html.Div(style={"width": "1px", "background": BORDER}),
+        stat_box("AMD Phase",  amd_phase, GOLD),
+        html.Div(style={"width": "1px", "background": BORDER}),
+        stat_box("Risk Mode",  risk_mode, ORANGE),
+        html.Div(style={"width": "1px", "background": BORDER}),
+        stat_box("Freq Mode",  freq_mode, BLUE),
+        html.Div(style={"width": "1px", "background": BORDER}),
+        stat_box("Open Trades", f"{open_cnt}/{max_open}", GREEN if open_cnt < max_open else RED),
+        html.Div(style={"width": "1px", "background": BORDER}),
+        stat_box("Min Conf",   f"{min_conf}%", MUTED),
+        html.Div(style={"width": "1px", "background": BORDER}),
+        stat_box("Min RR",     f"{min_rr}R", MUTED),
+    ], style={"display": "flex", "background": CARD, "border": f"1px solid {BORDER}",
+              "borderRadius": "10px", "padding": "14px", "marginBottom": "14px",
+              "alignItems": "center", "flexWrap": "wrap"})
+
+    # ── Active Trades section ─────────────────────────────────────────
+    active_section = []
+    if active_trades:
+        trade_cards = []
+        for tid, t in active_trades.items():
+            sym_label = t.get("symbol", str(tid))
+            direction = t.get("direction", "—")
+            dir_color = GREEN if direction == "BUY" else RED
+            pnl = t.get("pnl", t.get("unrealized_pnl", 0))
+            pnl_color = GREEN if pnl >= 0 else RED
+            trade_cards.append(html.Div([
+                html.Div([
+                    html.Span(direction, style={"background": dir_color + "22", "color": dir_color,
+                                                "border": f"1px solid {dir_color}44",
+                                                "borderRadius": "4px", "padding": "2px 8px",
+                                                "fontSize": "11px", "fontFamily": MONO, "fontWeight": "700"}),
+                    html.Span(sym_label, style={"fontFamily": MONO, "fontWeight": "700",
+                                                "fontSize": "14px", "color": TEXT, "marginLeft": "8px"}),
+                    html.Span(f"P&L: {pnl:+.2f}", style={"fontFamily": MONO, "fontSize": "12px",
+                                                           "color": pnl_color, "marginLeft": "auto"}),
+                ], style={"display": "flex", "alignItems": "center", "marginBottom": "6px"}),
+                html.Div([
+                    html.Span(f"Entry: {t.get('entry_price', '—')}", style={"fontFamily": MONO, "fontSize": "11px", "color": "#00BFFF", "marginRight": "10px"}),
+                    html.Span(f"SL: {t.get('sl_price', '—')}", style={"fontFamily": MONO, "fontSize": "11px", "color": "#FF4444", "marginRight": "10px"}),
+                    html.Span(f"TP1: {t.get('tp1_price', '—')}", style={"fontFamily": MONO, "fontSize": "11px", "color": "#00FF88", "marginRight": "10px"}),
+                    html.Span(f"TP2: {t.get('tp2_price', '—')}", style={"fontFamily": MONO, "fontSize": "11px", "color": "#00FF44"}),
+                ], style={"display": "flex", "flexWrap": "wrap", "gap": "4px"}),
+            ], style={"background": CARD2, "border": f"1px solid {BORDER}", "borderRadius": "8px",
+                      "padding": "10px 14px", "marginBottom": "8px"}))
+        active_section = [
+            sec_header("🟢 Active Trades", f"{len(active_trades)} open"),
+            html.Div(trade_cards),
+        ]
+
+    # ── Live Pattern Detection ───────────────────────────────────────
+    pattern_section = []
+    if _HAS_ICT and mt5.get("charts"):
+        PATTERN_SYMBOLS = ["XAUUSD", "XAGUSD", "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"]
+        all_patterns = []
+        for sym in PATTERN_SYMBOLS:
+            charts = mt5.get("charts", {}).get(sym, {})
+            h1_raw = charts.get("H1", [])[-30:]
+            m15_raw = charts.get("M15", [])[-30:]
+            h1_bars = ict._parse_bars(h1_raw) if h1_raw else []
+            m15_bars = ict._parse_bars(m15_raw) if m15_raw else []
+            if h1_bars:
+                found = ict.detect_all_patterns(h1_bars, short_bars=m15_bars)
+                for p in found:
+                    p["_symbol"] = sym
+                all_patterns.extend(found)
+
+        if all_patterns:
+            # Group by pattern type
+            pat_categories = {
+                "Classic Reversal": ["DOUBLE_TOP", "DOUBLE_BOTTOM", "HEAD_SHOULDERS",
+                                     "INVERSE_HEAD_SHOULDERS", "TRIPLE_TOP", "TRIPLE_BOTTOM",
+                                     "RISING_WEDGE", "FALLING_WEDGE"],
+                "Continuation": ["BULL_FLAG", "BEAR_FLAG", "PENNANT",
+                                 "ASCENDING_TRIANGLE", "DESCENDING_TRIANGLE",
+                                 "RECTANGLE_BREAKOUT", "RECTANGLE_BREAKDOWN"],
+                "Bilateral": ["SYMMETRICAL_TRIANGLE"],
+                "Candlestick": ["BULLISH_ENGULFING", "BEARISH_ENGULFING",
+                                "BULLISH_PIN_BAR", "BEARISH_PIN_BAR", "DOJI",
+                                "MORNING_STAR", "EVENING_STAR", "INSIDE_BAR",
+                                "TWEEZER_TOP", "TWEEZER_BOTTOM",
+                                "THREE_WHITE_SOLDIERS", "THREE_BLACK_CROWS"],
+            }
+            pattern_rows = []
+            for p in sorted(all_patterns, key=lambda x: -x.get("confidence_bonus", 0)):
+                pname = p.get("pattern", "")
+                pdir = p.get("direction", "")
+                bonus = p.get("confidence_bonus", 0)
+                sym = p.get("_symbol", "")
+                dir_c = GREEN if pdir == "BUY" else RED
+                # Determine category
+                base_name = pname.replace("_M15", "")
+                cat = "Other"
+                for c, names in pat_categories.items():
+                    if base_name in names:
+                        cat = c
+                        break
+                tf_label = " (M15)" if "_M15" in pname else " (H1)"
+                pattern_rows.append(html.Div([
+                    html.Span(sym, style={"fontFamily": MONO, "fontWeight": "700",
+                                          "fontSize": "11px", "color": TEXT, "minWidth": "65px"}),
+                    html.Span(pdir, style={"background": dir_c + "22", "color": dir_c,
+                                           "border": f"1px solid {dir_c}44", "borderRadius": "3px",
+                                           "padding": "1px 6px", "fontSize": "10px",
+                                           "fontFamily": MONO, "fontWeight": "700", "minWidth": "40px",
+                                           "textAlign": "center"}),
+                    html.Span(base_name.replace("_", " ") + tf_label, style={
+                        "fontFamily": MONO, "fontSize": "11px", "color": GOLD, "flex": "1"}),
+                    html.Span(cat, style={"fontFamily": MONO, "fontSize": "9px",
+                                          "color": MUTED, "minWidth": "80px"}),
+                    html.Span(f"+{bonus}", style={"fontFamily": MONO, "fontSize": "11px",
+                                                   "color": GREEN, "fontWeight": "600",
+                                                   "minWidth": "30px", "textAlign": "right"}),
+                ], style={"display": "flex", "alignItems": "center", "gap": "8px",
+                          "padding": "4px 10px",
+                          "borderBottom": f"1px solid {BORDER}"}))
+
+            pattern_section = [card([
+                sec_header("Live Pattern Detection", f"{len(all_patterns)} patterns across {len(PATTERN_SYMBOLS)} symbols"),
+                html.Div([
+                    html.Div([
+                        html.Span("Symbol", style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED, "minWidth": "65px"}),
+                        html.Span("Dir", style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED, "minWidth": "40px", "textAlign": "center"}),
+                        html.Span("Pattern", style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED, "flex": "1"}),
+                        html.Span("Category", style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED, "minWidth": "80px"}),
+                        html.Span("Bonus", style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED, "minWidth": "30px", "textAlign": "right"}),
+                    ], style={"display": "flex", "alignItems": "center", "gap": "8px",
+                              "padding": "4px 10px", "borderBottom": f"1px solid {BORDER}",
+                              "marginBottom": "2px"}),
+                    *pattern_rows,
+                ], style={"maxHeight": "350px", "overflowY": "auto"}),
+            ])]
+
+    # ── Signal cards ─────────────────────────────────────────────────
+    def _grade_color(g):
+        return {
+            "A+": PURPLE, "A": BLUE, "B+": GOLD,
+        }.get(g, MUTED)
+
+    def _conf_color(c):
+        if c >= 70:   return GREEN
+        if c >= 55:   return GOLD
+        return RED
+
+    signal_cards = []
+    for setup in top_setups[:8]:
+        sym       = setup.get("symbol", "")
+        direction = setup.get("direction", "—")
+        grade     = setup.get("grade", "—")
+        etype     = setup.get("entry_type", "")
+        conf      = setup.get("confidence", 0)
+        rr        = setup.get("rr_ratio", 0)
+        entry_p   = setup.get("entry_price", 0)
+        sl_p      = setup.get("sl_price", 0)
+        tp1_p     = setup.get("tp1_price", 0)
+        tp2_p     = setup.get("tp2_price", 0)
+        sess_s    = setup.get("session", "")
+        phase     = setup.get("amd_phase", "")
+        tf_bias   = setup.get("tf_bias", "")
+        reasons   = setup.get("reasons", [])[:6]
+        inval     = setup.get("invalidation", 0)
+
+        dir_color   = GREEN if direction == "BUY" else RED
+        conf_color  = _conf_color(conf)
+        grade_color = _grade_color(grade)
+        rr_color    = GREEN if rr >= 2 else GOLD if rr >= 1.5 else RED
+
+        # Mini candle chart (last 100 bars only — full 5000 would freeze the browser)
+        bars_for_sym = mt5.get("charts", {}).get(sym, {}).get("H1", [])[-100:]
+        if bars_for_sym and isinstance(bars_for_sym, list):
+            chart_elem = dcc.Graph(
+                figure=make_candle_chart(
+                    bars_for_sym, None, sym=sym, sym_info={},
+                    height=200,
+                    entry=entry_p if entry_p else None,
+                    sl=sl_p if sl_p else None,
+                    tp1=tp1_p if tp1_p else None,
+                    tp2=tp2_p if tp2_p else None,
+                ),
+                config={"displayModeBar": False},
+                style={"marginTop": "10px"},
+            )
+        else:
+            chart_elem = html.Div("No H1 bar data available",
+                                  style={"textAlign": "center", "color": MUTED,
+                                         "fontFamily": MONO, "fontSize": "11px",
+                                         "padding": "20px 0", "marginTop": "10px"})
+
+        # Confidence bar
+        conf_bar = html.Div([
+            html.Div(style={
+                "width": f"{conf}%", "height": "6px",
+                "background": conf_color, "borderRadius": "3px",
+                "transition": "width 0.3s",
+            }),
+        ], style={"background": BORDER, "borderRadius": "3px", "height": "6px",
+                  "flex": "1", "marginRight": "8px"})
+
+        signal_cards.append(card([
+            # Header row
+            html.Div([
+                html.Span(direction, style={
+                    "background": dir_color + "22", "color": dir_color,
+                    "border": f"1px solid {dir_color}44", "borderRadius": "4px",
+                    "padding": "3px 10px", "fontSize": "12px",
+                    "fontFamily": MONO, "fontWeight": "700",
+                }),
+                html.Span(sym, style={"fontFamily": MONO, "fontWeight": "700",
+                                      "fontSize": "16px", "color": TEXT, "marginLeft": "8px"}),
+                html.Span(grade, style={
+                    "background": grade_color + "22", "color": grade_color,
+                    "border": f"1px solid {grade_color}44", "borderRadius": "4px",
+                    "padding": "2px 7px", "fontSize": "10px",
+                    "fontFamily": MONO, "fontWeight": "600", "marginLeft": "8px",
+                }),
+                html.Span(etype, style={"fontFamily": MONO, "fontSize": "10px",
+                                        "color": MUTED, "marginLeft": "8px"}),
+            ], style={"display": "flex", "alignItems": "center", "marginBottom": "10px",
+                      "flexWrap": "wrap", "gap": "4px"}),
+            # Confidence bar
+            html.Div([
+                conf_bar,
+                html.Span(f"{conf}%", style={"fontFamily": MONO, "fontSize": "11px",
+                                              "color": conf_color, "fontWeight": "600",
+                                              "minWidth": "36px", "textAlign": "right"}),
+            ], style={"display": "flex", "alignItems": "center", "marginBottom": "10px"}),
+            # Key metrics
+            html.Div([
+                html.Div([html.Div("ENTRY", style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED}),
+                          html.Div(f"{entry_p:.5g}", style={"fontFamily": MONO, "fontSize": "12px", "color": "#00BFFF"})]),
+                html.Div([html.Div("SL", style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED}),
+                          html.Div(f"{sl_p:.5g}", style={"fontFamily": MONO, "fontSize": "12px", "color": "#FF4444"})]),
+                html.Div([html.Div("TP1", style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED}),
+                          html.Div(f"{tp1_p:.5g}", style={"fontFamily": MONO, "fontSize": "12px", "color": "#00FF88"})]),
+                html.Div([html.Div("TP2", style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED}),
+                          html.Div(f"{tp2_p:.5g}", style={"fontFamily": MONO, "fontSize": "12px", "color": "#00FF44"})]),
+                html.Div([html.Div("RR", style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED}),
+                          html.Div(f"{rr:.2f}R", style={"fontFamily": MONO, "fontSize": "12px", "color": rr_color, "fontWeight": "700"})]),
+            ], style={"display": "flex", "gap": "16px", "marginBottom": "8px", "flexWrap": "wrap"}),
+            # Session / Phase
+            html.Div([
+                html.Span(sess_s, style={"background": SESS_COLORS.get(sess_s, MUTED) + "22",
+                                         "color": SESS_COLORS.get(sess_s, MUTED),
+                                         "border": f"1px solid {SESS_COLORS.get(sess_s, MUTED)}44",
+                                         "borderRadius": "4px", "padding": "2px 7px",
+                                         "fontSize": "10px", "fontFamily": MONO, "marginRight": "6px"}),
+                html.Span(phase, style={"background": AMD_COLORS.get(phase, MUTED) + "22",
+                                        "color": AMD_COLORS.get(phase, MUTED),
+                                        "border": f"1px solid {AMD_COLORS.get(phase, MUTED)}44",
+                                        "borderRadius": "4px", "padding": "2px 7px",
+                                        "fontSize": "10px", "fontFamily": MONO}),
+            ], style={"marginBottom": "8px"}) if sess_s or phase else html.Span(),
+            # TF Bias
+            html.Div(f"TF Bias: {tf_bias}", style={"fontFamily": MONO, "fontSize": "11px",
+                                                     "color": MUTED, "marginBottom": "6px"}) if tf_bias else html.Span(),
+            # Reasons
+            html.Ul([
+                html.Li(r, style={"fontFamily": MONO, "fontSize": "11px", "color": MUTED,
+                                  "marginBottom": "2px"})
+                for r in reasons
+            ], style={"paddingLeft": "16px", "margin": "0 0 6px"}) if reasons else html.Span(),
+            # Invalidation
+            html.Div(f"⚠ Invalidation: {inval:.5g}", style={"fontFamily": MONO, "fontSize": "10px",
+                                                               "color": RED, "marginTop": "4px"}) if inval else html.Span(),
+            # Mini chart
+            chart_elem,
+        ]))
+
+    if not top_setups:
+        signals_content = html.Div("No setups detected — scanner running...",
+                                   style={"textAlign": "center", "color": MUTED,
+                                          "fontFamily": MONO, "fontSize": "13px", "padding": "40px"})
+    else:
+        signals_content = html.Div(signal_cards, style={
+            "display": "grid",
+            "gridTemplateColumns": "repeat(auto-fill, minmax(380px, 1fr))",
+            "gap": "16px",
+        })
+
+    return html.Div([
+        html.H2("🎯 Signals", style={"fontFamily": SANS, "fontWeight": "700",
+                                      "fontSize": "18px", "color": TEXT, "margin": "0 0 14px"}),
+        status_bar,
+        *([card(active_section)] if active_section else []),
+        *pattern_section,
+        card([
+            sec_header("Pending Signals", f"{len(top_setups)} detected"),
+            signals_content,
+        ]),
     ])
 
 
@@ -1497,7 +2261,75 @@ def page_ai(ai_state, trader_st, mt5):
                    style={"fontFamily": SANS, "fontSize": "12px", "color": MUTED, "margin": "3px 0 0"}),
         ], style={"marginBottom": "14px"}),
 
-        # Trader state
+        # ── Trading Mode Panel ────────────────────────────────────────
+        html.Div([
+            html.Div("TRADING MODES", style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED,
+                                              "letterSpacing": "0.15em", "marginBottom": "10px"}),
+            html.Div([
+                # Risk mode badge
+                html.Div([
+                    html.Div("RISK MODE", style={"fontFamily": MONO, "fontSize": "9px",
+                                                  "color": MUTED, "letterSpacing": "0.1em",
+                                                  "marginBottom": "4px"}),
+                    html.Div(trader_st.get("risk_mode", "—"), style={
+                        "fontFamily": MONO, "fontSize": "16px", "fontWeight": "700",
+                        "color": RED if trader_st.get("risk_mode") == "HIGH"
+                                 else GOLD if trader_st.get("risk_mode") == "MODERATE"
+                                 else GREEN,
+                    }),
+                    html.Div(f"Base {trader_st.get('base_risk','?')}%  "
+                             f"Max {trader_st.get('max_risk','?')}%  "
+                             f"Min {trader_st.get('min_risk','?')}%",
+                             style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED,
+                                    "marginTop": "3px"}),
+                    html.Div(f"Daily limit {trader_st.get('daily_limit','?')}%  "
+                             f"Max DD {trader_st.get('max_dd','?')}%",
+                             style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED}),
+                ], style={"background": CARD2, "border": f"1px solid {BORDER}",
+                          "borderRadius": "8px", "padding": "12px 16px", "flex": "1"}),
+
+                # Freq mode badge
+                html.Div([
+                    html.Div("FREQUENCY MODE", style={"fontFamily": MONO, "fontSize": "9px",
+                                                       "color": MUTED, "letterSpacing": "0.1em",
+                                                       "marginBottom": "4px"}),
+                    html.Div(trader_st.get("freq_mode", "—"), style={
+                        "fontFamily": MONO, "fontSize": "16px", "fontWeight": "700",
+                        "color": RED if trader_st.get("freq_mode") == "AGGRESSIVE"
+                                 else GOLD if trader_st.get("freq_mode") == "NORMAL"
+                                 else GREEN,
+                    }),
+                    html.Div(f"Conf≥{trader_st.get('min_conf','?')}  "
+                             f"RR≥{trader_st.get('min_rr','?')}  "
+                             f"Max {trader_st.get('max_open','?')} open",
+                             style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED,
+                                    "marginTop": "3px"}),
+                ], style={"background": CARD2, "border": f"1px solid {BORDER}",
+                          "borderRadius": "8px", "padding": "12px 16px", "flex": "1"}),
+
+                # How to change hint
+                html.Div([
+                    html.Div("CHANGE MODES", style={"fontFamily": MONO, "fontSize": "9px",
+                                                     "color": MUTED, "letterSpacing": "0.1em",
+                                                     "marginBottom": "6px"}),
+                    *[html.Div(line, style={"fontFamily": MONO, "fontSize": "9px",
+                                            "color": MUTED, "marginBottom": "2px"})
+                      for line in [
+                          "python auto_trader.py",
+                          "  --risk LOW|MODERATE|HIGH",
+                          "  --freq CONSERVATIVE|NORMAL|AGGRESSIVE",
+                          "",
+                          "Or set env vars:",
+                          "  OMNI_RISK_MODE=HIGH",
+                          "  OMNI_FREQ_MODE=AGGRESSIVE",
+                      ]],
+                ], style={"background": CARD2, "border": f"1px solid {BORDER}",
+                          "borderRadius": "8px", "padding": "12px 16px", "flex": "1.5"}),
+            ], style={"display": "flex", "gap": "10px", "flexWrap": "wrap"}),
+        ], style={"background": CARD, "border": f"1px solid {BORDER}", "borderRadius": "10px",
+                  "padding": "14px", "marginBottom": "12px"}),
+
+        # ── Bot State Stats ───────────────────────────────────────────
         html.Div([
             html.Div("BOT STATE", style={"fontFamily": MONO, "fontSize": "9px", "color": MUTED,
                                           "letterSpacing": "0.15em", "marginBottom": "8px"}),
@@ -1569,7 +2401,7 @@ def update_sidebar(page):
 @callback(Output("clock", "children"),
           Input("interval", "n_intervals"))
 def update_clock(_):
-    return datetime.utcnow().strftime("%H:%M:%S UTC")
+    return datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
 
 
 @callback(
@@ -1633,7 +2465,7 @@ def update_alerts(_):
         bars = sym_info.get("H1", [])
         if not bars:
             continue
-        a = analyze_bars(bars, sym, sym_info)
+        a = _cached_analyze(bars, sym, sym_info, "H1")
         if a["score"] >= 75 and a["direction"] != "NEUTRAL":
             dc = dir_color(a["direction"])
             alerts.append(html.Div([
@@ -1661,26 +2493,41 @@ def update_alerts(_):
 @callback(
     Output("active-page", "data"),
     [Input(f"nav-{p}", "n_clicks")
-     for p in ["metals","markets","chart","scanner","smt","pnl","positions","history","ai"]],
+     for p in ["metals","markets","chart","scanner","smt","pnl","positions","history","ai","signals"]],
     prevent_initial_call=True,
 )
 def switch_page(*args):
     triggered = ctx.triggered_id
-    if triggered:
+    triggered_val = ctx.triggered[0]["value"] if ctx.triggered else 0
+    if triggered and triggered_val and triggered_val > 0:
         return triggered.replace("nav-", "")
-    return "metals"
+    raise PreventUpdate
 
 
 @callback(
     Output("active-tf", "data"),
-    [Input(f"tf-btn-{tf}", "n_clicks") for tf in ["M5","M15","H1","H4","D1"]],
+    [Input(f"tf-btn-{tf}", "n_clicks") for tf in ["M1","M5","M15","H1","H4","D1","W1"]],
     prevent_initial_call=True,
 )
 def switch_tf(*args):
     triggered = ctx.triggered_id
-    if triggered:
+    triggered_val = ctx.triggered[0]["value"] if ctx.triggered else 0
+    if triggered and triggered_val and triggered_val > 0:
         return triggered.replace("tf-btn-", "")
-    return "H1"
+    raise PreventUpdate
+
+
+@callback(
+    Output("active-sym", "data"),
+    [Input(f"sym-btn-{s}", "n_clicks") for s in ["XAUUSD", "XAGUSD"]],
+    prevent_initial_call=True,
+)
+def switch_sym(*args):
+    triggered = ctx.triggered_id
+    triggered_val = ctx.triggered[0]["value"] if ctx.triggered else 0
+    if triggered and triggered_val and triggered_val > 0:
+        return triggered.replace("sym-btn-", "")
+    raise PreventUpdate
 
 
 @callback(
@@ -1691,20 +2538,32 @@ def switch_tf(*args):
     Input("interval",     "n_intervals"),
 )
 def render_page(page, active_sym, active_tf, _):
-    mt5        = load_mt5()
-    ai_state   = load_ai_state()
-    trader_st  = load_trader_state()
+    try:
+        mt5        = load_mt5()
+        ai_state   = load_ai_state()
+        trader_st  = load_trader_state()
 
-    if page == "metals":    return page_metals(mt5, ai_state, trader_st)
-    if page == "markets":   return page_markets(mt5, active_sym, active_tf)
-    if page == "chart":     return page_chart(mt5, active_sym, active_tf)
-    if page == "scanner":   return page_scanner(mt5)
-    if page == "smt":       return page_smt(mt5)
-    if page == "pnl":       return page_pnl(mt5)
-    if page == "positions": return page_positions(mt5)
-    if page == "history":   return page_history(mt5)
-    if page == "ai":        return page_ai(ai_state, trader_st, mt5)
-    return page_metals(mt5, ai_state, trader_st)
+        if page == "metals":    return page_metals(mt5, ai_state, trader_st, active_sym, active_tf)
+        if page == "markets":   return page_markets(mt5, active_sym, active_tf)
+        if page == "chart":     return page_chart(mt5, active_sym, active_tf)
+        if page == "scanner":   return page_scanner(mt5)
+        if page == "smt":       return page_smt(mt5)
+        if page == "pnl":       return page_pnl(mt5)
+        if page == "positions": return page_positions(mt5)
+        if page == "history":   return page_history(mt5)
+        if page == "ai":        return page_ai(ai_state, trader_st, mt5)
+        if page == "signals":   return page_signals(mt5, trader_st)
+        return page_metals(mt5, ai_state, trader_st)
+    except Exception as _err:
+        import traceback
+        tb = traceback.format_exc()
+        return html.Div([
+            html.H3("⚠ Page Error", style={"color": "#FF4444", "fontFamily": "monospace"}),
+            html.Pre(tb, style={"color": "#ff9999", "fontFamily": "monospace",
+                                "fontSize": "12px", "whiteSpace": "pre-wrap",
+                                "background": "#1a1a1a", "padding": "16px",
+                                "borderRadius": "8px", "border": "1px solid #FF4444"}),
+        ], style={"padding": "20px"})
 
 
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────

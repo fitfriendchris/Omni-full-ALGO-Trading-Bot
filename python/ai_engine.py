@@ -23,16 +23,23 @@ from datetime import datetime, timezone
 from typing import Optional
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-JSON_PATH = (
-    "/Users/owner/Library/Application Support/"
-    "net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/"
-    "Roaming/MetaQuotes/Terminal/Common/Files/omni_data.json"
-)
-AI_STATE_PATH = "/Users/owner/Desktop/omni-ict/python/ai_state.json"
+from pathlib import Path as _Path
+try:
+    from config import cfg
+    JSON_PATH = cfg.JSON_PATH
+    AI_STATE_PATH = str(_Path(__file__).parent / "ai_state.json")
+except ImportError:
+    _MT5_COMMON = (
+        _Path.home() / "Library/Application Support"
+        / "net.metaquotes.wine.metatrader5/drive_c/users/user"
+        / "AppData/Roaming/MetaQuotes/Terminal/Common/Files"
+    )
+    JSON_PATH = str(_MT5_COMMON / "omni_data.json")
+    AI_STATE_PATH = str(_Path(__file__).parent / "ai_state.json")
 
 # ── Intervals ─────────────────────────────────────────────────────────────────
 REGIME_INTERVAL = 300    # refresh regime every 5 min
-PARAMS_INTERVAL = 3600   # re-adapt params every 60 min
+PARAMS_INTERVAL = 600    # re-adapt params every 10 min
 
 log = logging.getLogger("OmniAI")
 
@@ -161,18 +168,35 @@ def _detect_regime(data: dict) -> dict:
     else:
         volatility = "NORMAL"
 
-    # Bias from open positions
-    positions  = data.get("positions", [])
-    buy_count  = sum(1 for p in positions if p.get("type") == "BUY")
-    sell_count = sum(1 for p in positions if p.get("type") == "SELL")
-    if buy_count > sell_count:
+    # Bias from D1/H4 price structure — not from our own positions (circular).
+    # Count how many symbols have bullish vs bearish recent closes on D1.
+    bull_count = 0
+    bear_count = 0
+    for sym_charts in data.get("charts", {}).values():
+        d1_raw = sym_charts.get("D1", [])
+        if len(d1_raw) >= 3:
+            try:
+                closes = [float(b.get("close", b.get("c", 0))) for b in d1_raw[:3]]
+                if closes[0] > closes[2]:
+                    bull_count += 1
+                elif closes[0] < closes[2]:
+                    bear_count += 1
+            except (TypeError, ValueError):
+                pass
+    if bull_count > bear_count:
         bias = "BULLISH"
-    elif sell_count > buy_count:
+    elif bear_count > bull_count:
         bias = "BEARISH"
     else:
-        # Fall back to account profit direction
-        profit = data.get("account", {}).get("profit", 0)
-        bias = "BULLISH" if profit > 0 else "BEARISH" if profit < 0 else "NEUTRAL"
+        # Fall back to prices trend field if charts unavailable
+        bullish_prices = sum(1 for p in prices if p.get("trend") == "BULLISH")
+        bearish_prices = sum(1 for p in prices if p.get("trend") == "BEARISH")
+        if bullish_prices > bearish_prices:
+            bias = "BULLISH"
+        elif bearish_prices > bullish_prices:
+            bias = "BEARISH"
+        else:
+            bias = "NEUTRAL"
 
     # Market phase
     if volatility == "HIGH":
@@ -341,28 +365,66 @@ def _claude_insight(regime: dict, params: dict, data: dict) -> str:
             for p in top_prices if p.get("bid")
         )
 
+        # Gather open positions for context (not for bias detection)
+        positions  = data.get("positions", [])
+        pos_summary = ", ".join(
+            f"{p.get('symbol')} {p.get('type')} {p.get('profit',0):+.2f}USD"
+            for p in positions[:4]
+        ) or "None"
+
+        # Chart structure for key symbols
+        chart_context = []
+        for sym, sym_charts in list(data.get("charts", {}).items())[:4]:
+            d1 = sym_charts.get("D1", [])
+            h4 = sym_charts.get("H4", [])
+            if d1 and h4:
+                d1_close = d1[0].get("close", d1[0].get("c", 0))
+                h4_close = h4[0].get("close", h4[0].get("c", 0))
+                chart_context.append(f"  {sym}: D1_close={d1_close:.5g}, H4_close={h4_close:.5g}")
+        chart_txt = "\n".join(chart_context) or "  (no chart data)"
+
         prompt = (
-            f"Market: {regime['phase']} | Bias: {regime['bias']} | "
-            f"Session: {regime['session']} | AMD: {regime['amd_stage']} | "
-            f"Kill zone: {regime['killzone_active']} | Confidence: {regime['confidence']}%\n"
-            f"Equity: {account.get('equity', 0):.2f} {account.get('currency', 'USD')}\n"
-            f"Prices:\n{price_txt}\n"
-            f"AI params: risk={params['base_risk_pct']}% "
-            f"minRR={params['min_rr']} priority={params['priority_setups']}\n\n"
-            "Give a 2-3 sentence ICT market briefing with one actionable insight."
+            f"=== ICT MARKET ANALYSIS REQUEST ===\n"
+            f"Time: {regime['session']} session | AMD Phase: {regime['amd_stage']}\n"
+            f"Market Regime: {regime['phase']} | Structural Bias: {regime['bias']}\n"
+            f"Kill Zone Active: {regime['killzone_active']} | Regime Confidence: {regime['confidence']}%\n\n"
+            f"Account: {account.get('equity', 0):.2f} {account.get('currency', 'USD')} equity\n"
+            f"Open Positions: {pos_summary}\n\n"
+            f"Live Prices:\n{price_txt}\n\n"
+            f"D1/H4 Structure Sample:\n{chart_txt}\n\n"
+            f"Bot Parameters: risk={params['base_risk_pct']}% | "
+            f"minRR={params['min_rr']} | minConf={params['min_confidence']} | "
+            f"priority={params['priority_setups']}\n\n"
+            "Provide a focused ICT analysis:\n"
+            "1. Current market maker model phase (accumulation/manipulation/distribution)\n"
+            "2. Which 1-2 symbols have the best setup potential right now and why\n"
+            "3. One specific risk to watch (liquidity level, session overlap, spread concern)\n"
+            "Be concise (3-4 sentences total). Use ICT terminology: OB, FVG, EQH/EQL, SMT, AMD."
         )
 
+        import concurrent.futures
+        import os as _os
         client = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=220,
-            system=(
-                "You are a concise ICT trading analyst. "
-                "Summarize market conditions and give one actionable insight using ICT concepts "
-                "(order blocks, FVGs, liquidity sweeps, sessions). Be specific and professional."
-            ),
-            messages=[{"role": "user", "content": prompt}],
-        )
+        model = _os.getenv("OMNI_CLAUDE_MODEL", "claude-sonnet-4-6")
+        def _call():
+            return client.messages.create(
+                model=model,
+                max_tokens=400,
+                system=(
+                    "You are an expert ICT (Inner Circle Trader) market analyst embedded in a live "
+                    "automated trading system. Your analysis directly influences trading decisions. "
+                    "Use precise ICT terminology. Be actionable and specific — no generic advice. "
+                    "Reference the actual price data and session context provided."
+                ),
+                messages=[{"role": "user", "content": prompt}],
+            )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(_call)
+            try:
+                msg = future.result(timeout=15)
+            except concurrent.futures.TimeoutError:
+                log.warning("Claude API timeout after 15s; using rule-based insight")
+                return _rule_insight(regime, params)
         return msg.content[0].text.strip()
 
     except Exception as e:

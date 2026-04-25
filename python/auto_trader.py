@@ -1,6 +1,6 @@
 """
 auto_trader.py — OMNI ICT Auto-Trading Engine
-Compounding 2% risk | Multi-TF ICT entries | Full trade management
+Compounding risk | Multi-TF ICT entries | Full trade management
 
 ⚠️  PAPER MODE IS ON BY DEFAULT
     To enable live trading set OMNI_PAPER_MODE=false in your environment,
@@ -10,7 +10,30 @@ Compounding 2% risk | Multi-TF ICT entries | Full trade management
 Kill switch: touch the file at KILL_SWITCH_PATH (default: python/HALT) to
 halt trading instantly.  Remove the file to resume.
 
+──────────────────────────────────────────────────────────────────────
+RISK MODES  (set via OMNI_RISK_MODE env var or --risk CLI arg)
+──────────────────────────────────────────────────────────────────────
+  LOW        0.5% risk | 1% max | 2% daily limit | 5% max DD
+             Very safe, capital preservation focus
+  MODERATE   1.0% risk | 2% max | 3% daily limit | 10% max DD  [default]
+             Balanced growth and protection
+  HIGH       2.0% risk | 4% max | 5% daily limit | 15% max DD
+             Aggressive compounding, higher drawdown tolerance
+
+──────────────────────────────────────────────────────────────────────
+FREQUENCY MODES  (set via OMNI_FREQ_MODE env var or --freq CLI arg)
+──────────────────────────────────────────────────────────────────────
+  CONSERVATIVE  A+/A grades only | conf ≥70 | max 2 open | no zones
+                Highest quality only, trades very selectively
+  NORMAL        A+/A/B+ live, all paper | conf ≥55 | max 3 open  [default]
+                Balanced entry frequency
+  AGGRESSIVE    All grades | conf ≥45 | max 5 open | zone entries OK
+                Maximum opportunity capture, higher noise tolerance
+
 Run: python auto_trader.py
+     python auto_trader.py --risk LOW --freq CONSERVATIVE
+     python auto_trader.py --risk HIGH --freq AGGRESSIVE
+     OMNI_RISK_MODE=HIGH OMNI_FREQ_MODE=AGGRESSIVE python auto_trader.py
 """
 
 import os
@@ -21,37 +44,189 @@ import re
 import math
 import logging
 import logging.handlers
-from datetime import datetime
+import argparse
+from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 # ── Centralised config (paths, thresholds, paper/live toggle) ─────────────────
 from config import cfg
 
+# ── Smart trailing stop (Phase 1) — gated behind rules.json smart_trail.enabled
+try:
+    from smart_trail_adapter import maybe_smart_trail, is_enabled as _smart_trail_enabled
+    _SMART_TRAIL_AVAILABLE = True
+except Exception:  # import-safe — absence of the module never breaks the trader
+    _SMART_TRAIL_AVAILABLE = False
+    def maybe_smart_trail(*_a, **_kw):  # type: ignore
+        return None
+    def _smart_trail_enabled(_rules):    # type: ignore
+        return False
+
 PAPER_MODE       = cfg.PAPER_MODE
-BASE_RISK_PCT    = cfg.BASE_RISK_PCT
-MAX_RISK_PCT     = cfg.MAX_RISK_PCT
-MIN_RISK_PCT     = cfg.MIN_RISK_PCT
-MAX_OPEN_TRADES  = cfg.MAX_OPEN_TRADES
-DAILY_LOSS_LIMIT = cfg.DAILY_LOSS_LIMIT
-MAX_DD_FROM_PEAK = cfg.MAX_DD_FROM_PEAK
-SCAN_INTERVAL    = cfg.SCAN_INTERVAL
-MIN_RR           = cfg.MIN_RR
-MIN_CONFIDENCE   = cfg.MIN_CONFIDENCE
-MIN_CONFIDENCE_ASIA = cfg.MIN_CONFIDENCE_ASIA
-MIN_SL_PIPS      = cfg.MIN_SL_PIPS
 OUR_MAGIC        = cfg.MAGIC
-
+SCAN_INTERVAL    = cfg.SCAN_INTERVAL
 SESSION_FILTER   = None   # None = all sessions; session-specific thresholds in execute_setup
-
 TRADE_SYMBOLS    = cfg.TRADE_SYMBOLS
-
 JSON_PATH        = cfg.JSON_PATH
 CMD_PATH         = cfg.CMD_PATH
 RESULT_PATH      = cfg.RESULT_PATH
 STATE_PATH       = cfg.STATE_PATH
 LOG_PATH         = cfg.LOG_PATH
 KILL_SWITCH_PATH = cfg.KILL_SWITCH_PATH
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TRADING PROFILES — Risk Mode × Frequency Mode
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class RiskProfile:
+    name:              str
+    base_risk_pct:     float   # Starting risk per trade
+    max_risk_pct:      float   # Risk ceiling (win streak scaling)
+    min_risk_pct:      float   # Risk floor (loss streak scaling)
+    daily_loss_limit:   float   # % of equity lost today before halt
+    daily_profit_target: float  # % of equity gained today before halting (lock gains)
+    max_dd_from_peak:   float   # % drawdown from peak before halt
+    min_sl_pips:       int     # Minimum SL distance in pips
+    win_streak_step:   float   # How much risk increases per win streak tier
+    loss_streak_step:  float   # How much risk decreases per loss streak tier
+    description:       str
+
+@dataclass
+class FrequencyProfile:
+    name:              str
+    min_confidence:    int     # Minimum setup confidence (0-100)
+    min_confidence_asia: int   # Asia session threshold (noisier session)
+    min_rr:            float   # Minimum risk:reward ratio
+    max_open_trades:   int     # Maximum simultaneous positions
+    allowed_grades:    list    # Which ICT setup grades to trade
+    allow_zone_entries: bool   # Allow HTF zone entries (no LTF trigger yet)
+    cooldown_scans:    int     # How many scans before re-trading same symbol
+    description:       str
+
+
+RISK_PROFILES = {
+    "LOW": RiskProfile(
+        name             = "LOW",
+        base_risk_pct    = 0.5,
+        max_risk_pct     = 1.0,
+        min_risk_pct     = 0.25,
+        daily_loss_limit    = 2.0,
+        daily_profit_target = 1.5,
+        max_dd_from_peak    = 5.0,
+        min_sl_pips      = 15,
+        win_streak_step  = 0.10,
+        loss_streak_step = 0.10,
+        description      = "Capital preservation — very conservative sizing",
+    ),
+    "MODERATE": RiskProfile(
+        name             = "MODERATE",
+        base_risk_pct    = 1.0,
+        max_risk_pct     = 2.0,
+        min_risk_pct     = 0.5,
+        daily_loss_limit    = 3.0,
+        daily_profit_target = 2.0,
+        max_dd_from_peak    = 10.0,
+        min_sl_pips      = 10,
+        win_streak_step  = 0.25,
+        loss_streak_step = 0.25,
+        description      = "Balanced growth and protection",
+    ),
+    "HIGH": RiskProfile(
+        name             = "HIGH",
+        base_risk_pct    = 2.0,
+        max_risk_pct     = 4.0,
+        min_risk_pct     = 1.0,
+        daily_loss_limit    = 5.0,
+        daily_profit_target = 3.5,
+        max_dd_from_peak    = 15.0,
+        min_sl_pips      = 8,
+        win_streak_step  = 0.50,
+        loss_streak_step = 0.50,
+        description      = "Aggressive compounding — higher drawdown tolerance",
+    ),
+}
+
+FREQUENCY_PROFILES = {
+    "CONSERVATIVE": FrequencyProfile(
+        name               = "CONSERVATIVE",
+        min_confidence     = 70,
+        min_confidence_asia= 80,
+        min_rr             = 2.5,
+        max_open_trades    = 2,
+        allowed_grades     = ["A+", "A"],
+        allow_zone_entries = False,
+        cooldown_scans     = 12,   # ~2 min cooldown per symbol
+        description        = "Highest quality only — very selective entry",
+    ),
+    "NORMAL": FrequencyProfile(
+        name               = "NORMAL",
+        min_confidence     = 65,   # backtest: <65 setups all had negative expectancy
+        min_confidence_asia= 72,
+        min_rr             = 2.0,
+        max_open_trades    = 3,
+        allowed_grades     = ["A+", "A", "B+"],   # live; paper allows all
+        allow_zone_entries = False,
+        cooldown_scans     = 6,
+        description        = "Balanced frequency and quality",
+    ),
+    "AGGRESSIVE": FrequencyProfile(
+        name               = "AGGRESSIVE",
+        min_confidence     = 55,   # raised from 45; backtest showed <55 consistently loses
+        min_confidence_asia= 65,
+        min_rr             = 1.5,
+        max_open_trades    = 5,
+        allowed_grades     = ["A+", "A", "B+", "B", "C"],
+        allow_zone_entries = True,
+        cooldown_scans     = 3,
+        description        = "Maximum opportunity capture — higher noise tolerance",
+    ),
+}
+
+
+def _parse_modes() -> tuple:
+    """Read risk/freq mode from CLI args first, then env vars, then default."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--risk", choices=["LOW","MODERATE","HIGH"],    default=None)
+    parser.add_argument("--freq", choices=["CONSERVATIVE","NORMAL","AGGRESSIVE"], default=None)
+    args, _ = parser.parse_known_args()
+
+    risk_mode = (args.risk
+                 or os.getenv("OMNI_RISK_MODE", "").upper()
+                 or "MODERATE")
+    freq_mode = (args.freq
+                 or os.getenv("OMNI_FREQ_MODE", "").upper()
+                 or "NORMAL")
+
+    if risk_mode not in RISK_PROFILES:
+        print(f"[WARN] Unknown RISK_MODE '{risk_mode}' — defaulting to MODERATE")
+        risk_mode = "MODERATE"
+    if freq_mode not in FREQUENCY_PROFILES:
+        print(f"[WARN] Unknown FREQ_MODE '{freq_mode}' — defaulting to NORMAL")
+        freq_mode = "NORMAL"
+
+    return risk_mode, freq_mode
+
+
+# ── Active profiles (set at startup, used throughout) ─────────────────────────
+_RISK_MODE, _FREQ_MODE = _parse_modes()
+RISK  = RISK_PROFILES[_RISK_MODE]
+FREQ  = FREQUENCY_PROFILES[_FREQ_MODE]
+
+# Expose as module-level names used by legacy code
+BASE_RISK_PCT    = RISK.base_risk_pct
+MAX_RISK_PCT     = RISK.max_risk_pct
+MIN_RISK_PCT     = RISK.min_risk_pct
+DAILY_LOSS_LIMIT    = RISK.daily_loss_limit
+DAILY_PROFIT_TARGET = RISK.daily_profit_target
+MAX_DD_FROM_PEAK    = RISK.max_dd_from_peak
+MIN_SL_PIPS      = RISK.min_sl_pips
+MIN_CONFIDENCE      = FREQ.min_confidence
+MIN_CONFIDENCE_ASIA = FREQ.min_confidence_asia
+MIN_RR              = FREQ.min_rr
+MAX_OPEN_TRADES     = FREQ.max_open_trades
 
 # ── Logging (with rotation — max 10 MB, keep 5 files) ────────────────────────
 _file_handler = logging.handlers.RotatingFileHandler(
@@ -63,6 +238,17 @@ _stream_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(me
 
 logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stream_handler])
 log = logging.getLogger("OMNI")
+
+def _load_regime() -> str:
+    """Load current market regime from ai_engine's state file. Returns 'TRENDING' as default."""
+    try:
+        ai_path = os.path.join(os.path.dirname(STATE_PATH), "ai_state.json")
+        if os.path.exists(ai_path):
+            with open(ai_path) as f:
+                return json.load(f).get("regime", "TRENDING")
+    except Exception:
+        pass
+    return "TRENDING"
 
 # ── State ─────────────────────────────────────────────────────────────────────
 @dataclass
@@ -96,6 +282,20 @@ class TraderState:
     start_time:          str   = ""
     last_scan:           str   = ""
 
+    # Smart trail telemetry — last proposal per ticket, written for dashboard consumption
+    last_trail_proposals: dict = field(default_factory=dict)
+    # Smart trail scan context — populated by ict_precision; consumed by smart_trail_adapter
+    last_scan_context:    dict = field(default_factory=dict)
+
+    # Re-entry queue: symbol → re-entry spec (queued when trailing SL hits in profit)
+    pending_reentries:    dict = field(default_factory=dict)
+
+    # Per-symbol consecutive loss counter — pauses a symbol after 2 back-to-back losses
+    sym_loss_streak:      dict = field(default_factory=dict)
+
+    # Per-session consecutive loss counter — penalises a session after 3 back-to-back losses
+    session_loss_streak:  dict = field(default_factory=dict)
+
 
 def load_state() -> TraderState:
     if os.path.exists(STATE_PATH):
@@ -112,23 +312,108 @@ def load_state() -> TraderState:
     return TraderState()
 
 
-def save_state(state: TraderState):
+def save_state(state: TraderState, setups=None):
     try:
+        d = asdict(state)
+        # Append active profile info so the dashboard can read it
+        d["risk_mode"]   = _RISK_MODE
+        d["freq_mode"]   = _FREQ_MODE
+        d["base_risk"]   = BASE_RISK_PCT
+        d["max_risk"]    = MAX_RISK_PCT
+        d["min_risk"]    = MIN_RISK_PCT
+        d["min_conf"]    = MIN_CONFIDENCE
+        d["min_rr"]      = MIN_RR
+        d["max_open"]    = MAX_OPEN_TRADES
+        d["daily_limit"] = DAILY_LOSS_LIMIT
+        d["max_dd"]      = MAX_DD_FROM_PEAK
+        if setups is not None:
+            # Fresh scan results — overwrite with latest
+            d["top_setups"] = [
+                {
+                    "symbol":      s.symbol,
+                    "direction":   s.direction,
+                    "entry_type":  s.entry_type,
+                    "entry_price": round(s.entry_price, 5),
+                    "sl_price":    round(s.sl_price, 5),
+                    "tp1_price":   round(s.tp1_price, 5),
+                    "tp2_price":   round(s.tp2_price, 5),
+                    "tp3_price":   round(s.tp3_price, 5),
+                    "confidence":  s.confidence,
+                    "rr_ratio":    round(s.rr_ratio, 2),
+                    "grade":       s.grade,
+                    "session":     s.session,
+                    "amd_phase":   s.amd_phase,
+                    "tf_bias":     s.tf_bias,
+                    "reasons":     s.reasons[:8],
+                    "invalidation": round(s.invalidation, 5),
+                    "is_blocked":  False,
+                    "block_reason": "",
+                }
+                for s in setups[:15]
+            ]
+        else:
+            # Scan was skipped this tick — preserve the last known setups from disk
+            try:
+                with open(STATE_PATH) as _f:
+                    _prev = json.load(_f)
+                d["top_setups"] = _prev.get("top_setups", [])
+            except Exception:
+                d["top_setups"] = []
         with open(STATE_PATH, "w") as f:
-            json.dump(asdict(state), f, indent=2)
+            json.dump(d, f, indent=2)
     except Exception as e:
         log.error(f"State save error: {e}")
 
 
+# ── Rules loading (cached, mtime-aware) ──────────────────────────────────────
+_RULES_CACHE: dict = {"mtime": 0.0, "data": {}}
+_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rules.json")
+
+def load_rules() -> dict:
+    """Load rules.json with mtime-based cache. Safe on missing/malformed."""
+    try:
+        mtime = os.path.getmtime(_RULES_PATH)
+        if mtime > _RULES_CACHE["mtime"]:
+            with open(_RULES_PATH, "r", encoding="utf-8") as f:
+                _RULES_CACHE["data"] = json.load(f)
+            _RULES_CACHE["mtime"] = mtime
+    except Exception as e:
+        log.debug(f"rules.json load failed (using cached/empty): {e}")
+    return _RULES_CACHE.get("data", {}) or {}
+
+
+# ── orjson fast loader (10× faster than stdlib on 55 MB file) ─────────────────
+try:
+    import orjson as _orjson_at
+except ImportError:
+    _orjson_at = None  # type: ignore
+
+_MT5_AT_CACHE: dict = {"mtime": -1.0, "data": {}}
+
 # ── Data Loading ──────────────────────────────────────────────────────────────
 def load_mt5_data() -> dict:
+    """Load MT5 data with mtime-based caching so we never re-parse unchanged file."""
     try:
-        with open(JSON_PATH, "r", encoding="utf-8") as f:
-            raw = re.sub(r',\s*([\]}])', r'\1', f.read())
-        return json.loads(raw)
+        mtime = os.path.getmtime(JSON_PATH)
+        if mtime == _MT5_AT_CACHE["mtime"]:
+            return _MT5_AT_CACHE["data"]
+        with open(JSON_PATH, "rb") as f:
+            raw = f.read()
+        if _orjson_at is not None:
+            try:
+                data = _orjson_at.loads(raw)
+            except Exception:
+                text = raw.decode("utf-8", errors="replace")
+                data = json.loads(re.sub(r',\s*([\]}])', r'\1', text))
+        else:
+            text = raw.decode("utf-8", errors="replace")
+            data = json.loads(re.sub(r',\s*([\]}])', r'\1', text))
+        _MT5_AT_CACHE["mtime"] = mtime
+        _MT5_AT_CACHE["data"]  = data
+        return data
     except Exception as e:
         log.warning(f"Data load error: {e}")
-        return {}
+        return _MT5_AT_CACHE.get("data", {})
 
 
 def get_account(data: dict) -> dict:
@@ -167,9 +452,15 @@ def calculate_lot_size(equity: float, risk_pct: float, entry: float,
 
     lot_size = risk_amount / risk_per_lot
 
-    # Round down to lot step, then clamp
+    # Round down to lot step, then clamp to max_lot
     lot_size = math.floor(lot_size / lot_step) * lot_step
     lot_size = max(min_lot, min(lot_size, max_lot))
+
+    # Hard notional exposure cap: never risk more than 20% of equity in one trade
+    if tick_value > 0 and tick_size > 0:
+        max_exposure_lots = (equity * 0.20) / (entry * tick_value / tick_size)
+        lot_size = min(lot_size, max_exposure_lots)
+        lot_size = max(min_lot, math.floor(lot_size / lot_step) * lot_step)
 
     return round(lot_size, 2)
 
@@ -177,34 +468,89 @@ def calculate_lot_size(equity: float, risk_pct: float, entry: float,
 # ── Risk Adjuster (Compounding logic) ─────────────────────────────────────────
 def adjust_risk(state: TraderState) -> float:
     """
-    Adaptive risk scaling:
-      Win streak 3   → +0.25% (compound up)
-      Win streak 5   → +0.25% more (capped at MAX_RISK_PCT)
-      Loss streak 2  → -0.25% (protect capital)
-      Loss streak 3  → -0.25% more (capped at MIN_RISK_PCT)
+    Adaptive risk scaling — steps scale with the active risk profile:
+      Win streak 3+  → compound up by profile.win_streak_step per tier
+      Win streak 5+  → another tier up (capped at profile.max_risk_pct)
+      Loss streak 2+ → step down by profile.loss_streak_step
+      Loss streak 3+ → step down again (floored at profile.min_risk_pct)
     Risk resets toward BASE on new day (done in reset_daily_if_new_day).
     """
-    risk = state.current_risk_pct
+    risk  = state.current_risk_pct
+    step  = RISK.win_streak_step
+    lstep = RISK.loss_streak_step
 
     if state.win_streak >= 5:
-        new_risk = min(BASE_RISK_PCT + 0.50, MAX_RISK_PCT)
+        new_risk = min(BASE_RISK_PCT + step * 2, MAX_RISK_PCT)
         if new_risk > risk:
             risk = new_risk
-            log.info(f"Win streak {state.win_streak} — scaling risk UP to {risk:.2f}%")
+            log.info(f"Win streak {state.win_streak} — scaling risk UP to {risk:.2f}% "
+                     f"[{_RISK_MODE} mode, +{step*2:.2f}%]")
     elif state.win_streak >= 3:
-        new_risk = min(BASE_RISK_PCT + 0.25, MAX_RISK_PCT)
+        new_risk = min(BASE_RISK_PCT + step, MAX_RISK_PCT)
         if new_risk > risk:
             risk = new_risk
-            log.info(f"Win streak {state.win_streak} — scaling risk UP to {risk:.2f}%")
+            log.info(f"Win streak {state.win_streak} — scaling risk UP to {risk:.2f}% "
+                     f"[{_RISK_MODE} mode, +{step:.2f}%]")
     elif state.loss_streak >= 3:
-        risk = max(risk - 0.25, MIN_RISK_PCT)
-        log.info(f"Loss streak {state.loss_streak} — risk REDUCED to {risk:.2f}%")
+        risk = max(risk - lstep * 2, MIN_RISK_PCT)
+        log.info(f"Loss streak {state.loss_streak} — risk REDUCED to {risk:.2f}% "
+                 f"[{_RISK_MODE} mode, -{lstep*2:.2f}%]")
     elif state.loss_streak >= 2:
-        risk = max(risk - 0.25, MIN_RISK_PCT)
-        log.info(f"Loss streak {state.loss_streak} — risk reduced to {risk:.2f}%")
+        risk = max(risk - lstep, MIN_RISK_PCT)
+        log.info(f"Loss streak {state.loss_streak} — risk reduced to {risk:.2f}% "
+                 f"[{_RISK_MODE} mode, -{lstep:.2f}%]")
 
     state.current_risk_pct = risk
     return risk
+
+
+# ── Drawdown Recovery Mode ────────────────────────────────────────────────────
+def check_recovery_mode(state: "TraderState", equity: float, rules: dict) -> None:
+    """
+    Automatically lift a drawdown halt once equity recovers or win streak proves stability.
+    Gated by rules.recovery_protocol.enabled (default: True).
+    """
+    rp = rules.get("recovery_protocol", {})
+    if not rp.get("enabled", True):
+        return
+    if not state.trading_halted or "drawdown" not in state.halt_reason.lower():
+        return
+    min_days = int(rp.get("min_winning_days_to_resume", 3))
+    eq_pct   = float(rp.get("equity_recovery_pct", 0.95))
+    # Resume after N consecutive winning trades (proxy for winning days)
+    if state.win_streak >= min_days:
+        state.trading_halted = False
+        state.halt_reason = ""
+        log.info("Recovery mode: win_streak=%d >= %d — resuming trading with reduced limits",
+                 state.win_streak, min_days)
+        return
+    # Resume if equity recovered to configured % of peak
+    if state.peak_equity > 0 and equity >= state.peak_equity * eq_pct:
+        state.trading_halted = False
+        state.halt_reason = ""
+        log.info("Recovery mode: equity %.2f recovered to %.1f%% of peak %.2f — resuming",
+                 equity, equity / state.peak_equity * 100, state.peak_equity)
+
+
+# ── Win-streak compounding (leverage_compounding rules block) ─────────────────
+def _compounded_risk(state: "TraderState", rules: dict, base_risk: float) -> float:
+    """
+    Apply win/loss streak multipliers from rules.leverage_compounding.
+    Gated by enabled flag AND cfg.PAPER_MODE — never runs in paper mode.
+    """
+    lc = rules.get("leverage_compounding", {})
+    if not lc.get("enabled", False) or cfg.PAPER_MODE:
+        return base_risk
+    ws = state.win_streak
+    ls = state.loss_streak
+    mult = 1.0
+    if ws >= 7:   mult = float(lc.get("win_streak_7_mult", 1.75))
+    elif ws >= 5: mult = float(lc.get("win_streak_5_mult", 1.50))
+    elif ws >= 3: mult = float(lc.get("win_streak_3_mult", 1.20))
+    elif ls >= 3: mult = float(lc.get("loss_streak_3_mult", 0.60))
+    elif ls >= 2: mult = float(lc.get("loss_streak_2_mult", 0.80))
+    max_r = float(lc.get("max_compounded_risk_pct", 3.0))
+    return min(base_risk * mult, max_r)
 
 
 # ── Command Sender ────────────────────────────────────────────────────────────
@@ -265,7 +611,7 @@ def check_daily_limits(state: TraderState, equity: float) -> bool:
     if not state.day_initialized:
         state.day_initialized = True
         state.day_start_equity = equity
-        state.last_reset_day = datetime.utcnow().strftime("%Y-%m-%d")
+        state.last_reset_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         return True
 
     # Daily loss check
@@ -275,6 +621,11 @@ def check_daily_limits(state: TraderState, equity: float) -> bool:
             state.trading_halted = True
             state.halt_reason = f"Daily loss limit hit: {day_loss_pct:.2f}%"
             log.warning(f"TRADING HALTED: {state.halt_reason}")
+            return False
+        if day_loss_pct >= DAILY_PROFIT_TARGET:
+            state.trading_halted = True
+            state.halt_reason = f"Daily profit target reached: +{day_loss_pct:.2f}% — locking gains"
+            log.info(f"TRADING HALTED: {state.halt_reason}")
             return False
 
     # Peak drawdown check
@@ -297,19 +648,28 @@ def reset_daily_if_new_day(state: TraderState, equity: float):
     Uses last_reset_day (YYYY-MM-DD) so it fires once regardless of
     how many scans run in the first minute, and survives restarts.
     """
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    if state.last_reset_day == today:
+    now = datetime.now(timezone.utc)
+    # FX trading day starts at 22:00 UTC (NY close); shift day boundary accordingly
+    if now.hour >= 22:
+        trading_day = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        trading_day = now.strftime("%Y-%m-%d")
+    if state.last_reset_day == trading_day:
         return  # Already reset today
 
-    log.info(f"New trading day ({today}) — resetting daily stats")
-    state.last_reset_day    = today
+    log.info(f"New trading day ({trading_day}) — resetting daily stats")
+    state.last_reset_day    = trading_day
     state.day_initialized   = True
     state.day_start_equity  = equity
     state.day_profit        = 0.0
     state.day_trades        = 0
-    state.trading_halted    = False
-    state.halt_reason       = ""
+    # Only clear daily-limit halts — preserve DD-from-peak halts across the day reset
+    if "Daily" in state.halt_reason or "profit target" in state.halt_reason:
+        state.trading_halted = False
+        state.halt_reason    = ""
     state.recently_traded   = []
+    state.sym_loss_streak     = {}   # Reset per-symbol loss streaks each day
+    state.session_loss_streak = {}   # Reset per-session loss streaks each day
     save_state(state)  # Persist immediately so a crash can't re-trigger the reset
 
 
@@ -326,6 +686,10 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
     positions       = get_open_positions(data)
     position_tickets = {str(p.get("ticket")): p for p in positions}
     charts           = data.get("charts", {})
+
+    # Load rules once per cycle; smart_trail config lives under rules["smart_trail"]
+    rules = load_rules()
+    smart_trail_on = _SMART_TRAIL_AVAILABLE and _smart_trail_enabled(rules)
 
     # History lookup for accurate settled P&L (commission + swap included)
     history_by_ticket = {
@@ -383,19 +747,54 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
         else:
             exit_level = "MANUAL"
 
+        # Re-entry: if trailing SL was hit while in profit (not a TP target), queue
+        # a re-entry at the original entry (= better RR since SL is unchanged).
+        if profit > 0 and exit_level not in ("TP1", "TP2", "TP3") and trade.get("entry"):
+            sym_reentry = trade.get("symbol", "")
+            if sym_reentry and sym_reentry not in state.pending_reentries:
+                state.pending_reentries[sym_reentry] = {
+                    "symbol":             sym_reentry,
+                    "direction":          trade.get("direction", ""),
+                    "entry":              trade.get("entry", 0),
+                    "sl":                 trade.get("sl", 0),
+                    "tp1":                trade.get("tp1", 0),
+                    "tp2":                trade.get("tp2", 0),
+                    "tp3":                trade.get("tp3", 0),
+                    "entry_type":         trade.get("entry_type", "ICT"),
+                    "valid_until":        time.time() + 3600,
+                    "profit_from_parent": profit,
+                }
+                log.info(f"{sym_reentry} Re-entry queued: {trade.get('direction')} stopped in profit "
+                         f"(+${profit:.2f}) — waiting for pullback to {trade.get('entry', 0):.5f}")
+
+        _closed_symbol = trade.get("symbol", "")
+        _closed_session = trade.get("session", "")
         if profit >= 0:
             state.win_streak   += 1
             state.loss_streak   = 0
             state.winning_trades += 1
+            state.sym_loss_streak[_closed_symbol] = 0
+            if _closed_session:
+                state.session_loss_streak[_closed_session] = 0
             log.info(f"Trade {ticket} CLOSED WIN: +{profit:.2f} | R={r_multiple:.2f} | Streak: {state.win_streak}W | Exit: {exit_level}")
         else:
             state.loss_streak  += 1
             state.win_streak    = 0
             state.losing_trades += 1
+            _prev_sym_losses = state.sym_loss_streak.get(_closed_symbol, 0)
+            state.sym_loss_streak[_closed_symbol] = _prev_sym_losses + 1
+            if _prev_sym_losses + 1 >= 2:
+                log.info(f"{_closed_symbol}: {_prev_sym_losses + 1} consecutive losses — pausing symbol today")
+            if _closed_session:
+                _prev_sess_losses = state.session_loss_streak.get(_closed_session, 0)
+                state.session_loss_streak[_closed_session] = _prev_sess_losses + 1
+                if _prev_sess_losses + 1 >= 3:
+                    log.warning(f"SESSION {_closed_session}: {_prev_sess_losses + 1} consecutive losses — penalising session confidence")
             log.info(f"Trade {ticket} CLOSED LOSS: {profit:.2f} | R={r_multiple:.2f} | Streak: {state.loss_streak}L | Exit: {exit_level}")
 
         state.total_trades  += 1
         state.total_profit  += profit
+        state.day_profit    += profit
         any_closed = True
 
         # Record outcome in trade memory
@@ -415,6 +814,8 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
     # Adjust risk once after all closures (prevents double-adjustment within one scan)
     if any_closed:
         adjust_risk(state)
+
+    _regime = _load_regime()
 
     # Manage active positions
     for ticket_str, pos in position_tickets.items():
@@ -463,89 +864,369 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
         new_sl = current_sl
         new_tp = current_tp
 
+        # Cancel stale pending limit orders where spread has widened beyond tolerance
+        order_type_str = state.active_trades.get(ticket_str, {}).get("order_type", "")
+        if "LIMIT" in order_type_str:
+            entry_spread = state.active_trades.get(ticket_str, {}).get("entry_spread", 0)
+            current_ask  = sym_info.get("ask", 0)
+            current_bid  = sym_info.get("bid", 0)
+            current_spread = current_ask - current_bid if current_ask > current_bid else 0
+
+            entry_ts   = state.active_trades.get(ticket_str, {}).get("entry_ts", time.time())
+            mins_pending = (time.time() - entry_ts) / 60
+
+            if (entry_spread > 0 and current_spread > entry_spread * 1.5 and mins_pending > 1):
+                log.warning(f"{symbol} PENDING ORDER spread widened {current_spread:.5f} vs entry {entry_spread:.5f} — cancelling limit")
+                if ticket_str.isdigit():
+                    close_position(int(ticket_str), 0)  # Cancel pending order
+                continue
+
         if pos_type == "BUY":
             profit_in_r = (current_price - open_price) / risk
 
-            # Partial TP1: close 50% when price hits first target
-            if not tp1_taken and current_price >= tp1:
-                close_vol = round(volume * 0.5, 2)
+            # Partial TP1: close 65% when price hits first target — bank the majority immediately
+            if not tp1_taken and tp1 > 0 and current_price >= tp1:
+                close_vol = round(volume * 0.65, 2)
                 if close_vol >= min_lot:
                     if ticket_str.isdigit():
                         result = close_position(int(ticket_str), close_vol)
                     else:
                         result = "PAPER|partial_tp1"
-                    state.active_trades[ticket_str]["tp1_taken"] = True
-                    log.info(f"{symbol} TP1 hit — closed 50% ({close_vol} lots) | {result}")
+                    close_ok = result.startswith("OK") or result.startswith("PAPER")
+                    log.info(f"{symbol} TP1 hit — closed 65% ({close_vol} lots) | {result}")
+                    if close_ok:
+                        state.active_trades[ticket_str]["tp1_taken"] = True
+                        tp1_taken = True
+                        # Move SL to break-even immediately after TP1 hit
+                        new_sl = max(new_sl, open_price + pip_size)
+                        # Advance hard TP on MT5 to TP2 so the runner doesn't auto-close at TP1
+                        if tp2 > 0 and tp2 > current_tp:
+                            new_tp = tp2
+                            log.info(f"{symbol} Advancing MT5 TP to TP2 ({new_tp:.5f})")
 
             # Partial TP2: close 30% of original when price hits second target
-            if tp1_taken and not tp2_taken and current_price >= tp2:
+            if tp1_taken and not tp2_taken and tp2 > 0 and current_price >= tp2:
                 close_vol = round(volume * 0.30, 2)
                 if close_vol >= min_lot:
                     if ticket_str.isdigit():
                         result = close_position(int(ticket_str), close_vol)
                     else:
                         result = "PAPER|partial_tp2"
-                    state.active_trades[ticket_str]["tp2_taken"] = True
+                    close_ok = result.startswith("OK") or result.startswith("PAPER")
                     log.info(f"{symbol} TP2 hit — closed 30% ({close_vol} lots) | {result}")
+                    if close_ok:
+                        state.active_trades[ticket_str]["tp2_taken"] = True
+                        tp2_taken = True
+                        # Runner: remove fixed TP3 — let smart trail manage it freely
+                        # Setting MT5 TP to 0 removes the hard target so it runs until trailed out
+                        new_tp = 0
+                        log.info(f"{symbol} TP2 hit — runner released, smart trail managing")
 
-            # Trail SL to break-even + 1 pip (covers spread on reversal)
-            if profit_in_r >= 1.0 and current_sl < open_price:
-                new_sl = open_price + pip_size
-                log.info(f"{symbol} BUY: Moving SL to break-even ({new_sl:.5f})")
+            # Emergency exit: SL may not have fired via EA — close runaway losses
+            if not tp1_taken and profit_in_r < -1.5:
+                try:
+                    entry_ts = float(trade.get("entry_ts", 0)) or time.time()
+                    minutes_open = (time.time() - entry_ts) / 60
+                    if minutes_open > 30:
+                        log.warning(f"{symbol} BUY EMERGENCY EXIT — {profit_in_r:.2f}R runaway loss at {minutes_open:.0f}min")
+                        if ticket_str.isdigit():
+                            close_position(int(ticket_str), volume)
+                        continue
+                except Exception:
+                    pass
 
-            # Trail SL to 1R profit at 2R move
-            if profit_in_r >= 2.0 and current_sl < open_price + risk:
-                new_sl = max(new_sl, open_price + risk)
-                log.info(f"{symbol} BUY: Trailing SL to 1R ({new_sl:.5f})")
+            # Early loss cut — if trade is moving against us and has shown no progress,
+            # exit before reaching full SL. Saves capital vs waiting for full stop.
+            if not tp1_taken and profit_in_r < -0.4:
+                entry_time_str = trade.get("entry_time", "")
+                try:
+                    import time as _time
+                    entry_ts = float(trade.get("entry_ts", 0)) or _time.time()
+                    minutes_open = (_time.time() - entry_ts) / 60
+                    if minutes_open > 25:  # Tightened: cut losing trades at 25min (was 45)
+                        log.info(f"{symbol} BUY early exit — {profit_in_r:.2f}R adverse after {minutes_open:.0f}min — cutting loss")
+                        if ticket_str.isdigit():
+                            close_position(int(ticket_str), volume)
+                        continue
+                except Exception:
+                    pass
 
-            # Tight trail at 3R (runner management)
+            # Trail SL to break-even + 1 pip at 0.4R (tightened from 0.5R for faster protection)
+            if profit_in_r >= 0.4 and current_sl < open_price:
+                new_sl = max(new_sl, open_price + pip_size)
+                if new_sl > current_sl:
+                    log.info(f"{symbol} BUY 0.5R: Moving SL to break-even ({new_sl:.5f})")
+
+            # Lock 0.5R profit at 1R — tightened from 0.3R to protect gains faster
+            if profit_in_r >= 1.0 and current_sl < open_price + risk * 0.5:
+                new_sl = max(new_sl, open_price + risk * 0.5)
+                if new_sl > current_sl:
+                    log.info(f"{symbol} BUY 1R: Locking 0.5R profit in SL ({new_sl:.5f})")
+
+            # Trail SL to lock 1.2R profit at 2R move
+            if profit_in_r >= 2.0 and current_sl < open_price + risk * 1.2:
+                new_sl = max(new_sl, open_price + risk * 1.2)
+                if new_sl > current_sl:
+                    log.info(f"{symbol} BUY 2R: Locking 1.2R profit in SL ({new_sl:.5f})")
+
+            # Tight trail at 3R — width varies by AI regime
             if profit_in_r >= 3.0:
-                new_sl = max(new_sl, current_price - risk * 0.5)
-                log.info(f"{symbol} BUY: Tight trail at 3R ({new_sl:.5f})")
+                _trail_width = 0.25 if _regime == "VOLATILE" else (0.4 if _regime == "TRENDING" else 0.35)
+                tight = current_price - risk * _trail_width
+                if tight > new_sl:
+                    new_sl = tight
+                    log.info(f"{symbol} BUY 3R: Tight trail ({new_sl:.5f}) [regime={_regime}]")
+
+            # Progressive trail beyond 3R: trail 0.3R behind price
+            if profit_in_r > 3.0:
+                prog = current_price - risk * 0.3
+                if prog > new_sl:
+                    new_sl = prog
+
+            # Distribution phase exit: trim on H1 exhaustion or M15 CHoCH against position
+            if profit_in_r >= 1.0 and not trade.get("dist_exit_1_done"):
+                try:
+                    import ict_precision as _ict_ref
+                    _m15b = _ict_ref._parse_bars(sym_info.get("M15", []))
+                    _h1b  = _ict_ref._parse_bars(sym_info.get("H1",  []))
+                    _exh  = _ict_ref.detect_push_exhaustion(_h1b) if _h1b else {}
+                    if "EXHAUSTION" in str(_exh.get("signal", "")).upper():
+                        close_vol = round(volume * 0.25, 2)
+                        if close_vol >= min_lot and ticket_str.isdigit():
+                            result = close_position(int(ticket_str), close_vol)
+                            if result.startswith("OK") or result.startswith("PAPER"):
+                                state.active_trades[ticket_str]["dist_exit_1_done"] = True
+                                log.info(f"{symbol} BUY dist-exit 25% — H1 exhaustion at {profit_in_r:.1f}R")
+                    elif profit_in_r >= 2.0 and not trade.get("dist_exit_2_done"):
+                        if _m15b and _ict_ref.detect_mss(_m15b, "SELL", lookback=6):
+                            close_vol = round(volume * 0.50, 2)
+                            if close_vol >= min_lot and ticket_str.isdigit():
+                                result = close_position(int(ticket_str), close_vol)
+                                if result.startswith("OK") or result.startswith("PAPER"):
+                                    state.active_trades[ticket_str]["dist_exit_2_done"] = True
+                                    log.info(f"{symbol} BUY dist-exit 50% — M15 CHoCH SELL at {profit_in_r:.1f}R")
+                except Exception:
+                    pass
 
         elif pos_type == "SELL":
             profit_in_r = (open_price - current_price) / risk
 
-            # Partial TP1
-            if not tp1_taken and current_price <= tp1:
-                close_vol = round(volume * 0.5, 2)
+            # Partial TP1: close 65% — bank the majority immediately
+            if not tp1_taken and tp1 > 0 and current_price <= tp1:
+                close_vol = round(volume * 0.65, 2)
                 if close_vol >= min_lot:
                     if ticket_str.isdigit():
                         result = close_position(int(ticket_str), close_vol)
                     else:
                         result = "PAPER|partial_tp1"
-                    state.active_trades[ticket_str]["tp1_taken"] = True
-                    log.info(f"{symbol} TP1 hit — closed 50% ({close_vol} lots) | {result}")
+                    close_ok = result.startswith("OK") or result.startswith("PAPER")
+                    log.info(f"{symbol} TP1 hit — closed 65% ({close_vol} lots) | {result}")
+                    if close_ok:
+                        state.active_trades[ticket_str]["tp1_taken"] = True
+                        tp1_taken = True
+                        # Move SL to break-even immediately after TP1 hit
+                        new_sl = min(new_sl, open_price - pip_size)
+                        if tp2 > 0 and tp2 < current_tp:
+                            new_tp = tp2
+                            log.info(f"{symbol} Advancing MT5 TP to TP2 ({new_tp:.5f})")
 
             # Partial TP2
-            if tp1_taken and not tp2_taken and current_price <= tp2:
+            if tp1_taken and not tp2_taken and tp2 > 0 and current_price <= tp2:
                 close_vol = round(volume * 0.30, 2)
                 if close_vol >= min_lot:
                     if ticket_str.isdigit():
                         result = close_position(int(ticket_str), close_vol)
                     else:
                         result = "PAPER|partial_tp2"
-                    state.active_trades[ticket_str]["tp2_taken"] = True
+                    close_ok = result.startswith("OK") or result.startswith("PAPER")
                     log.info(f"{symbol} TP2 hit — closed 30% ({close_vol} lots) | {result}")
+                    if close_ok:
+                        state.active_trades[ticket_str]["tp2_taken"] = True
+                        tp2_taken = True
+                        # Runner: remove fixed TP3 — let smart trail manage it freely
+                        new_tp = 0
+                        log.info(f"{symbol} TP2 hit — runner released, smart trail managing")
 
-            # Trail to break-even - 1 pip
-            if profit_in_r >= 1.0 and current_sl > open_price:
-                new_sl = open_price - pip_size
-                log.info(f"{symbol} SELL: Moving SL to break-even ({new_sl:.5f})")
+            # Trail SL to break-even - 1 pip at 0.5R (early protection)
+            # Early loss cut for SELL — same logic as BUY
+            # Emergency exit: SL may not have fired via EA — close runaway losses
+            if not tp1_taken and profit_in_r < -1.5:
+                try:
+                    entry_ts = float(trade.get("entry_ts", 0)) or time.time()
+                    minutes_open = (time.time() - entry_ts) / 60
+                    if minutes_open > 30:
+                        log.warning(f"{symbol} SELL EMERGENCY EXIT — {profit_in_r:.2f}R runaway loss at {minutes_open:.0f}min")
+                        if ticket_str.isdigit():
+                            close_position(int(ticket_str), volume)
+                        continue
+                except Exception:
+                    pass
 
-            if profit_in_r >= 2.0 and current_sl > open_price - risk:
-                new_sl = min(new_sl, open_price - risk)
-                log.info(f"{symbol} SELL: Trailing SL to 1R ({new_sl:.5f})")
+            if not tp1_taken and profit_in_r < -0.4:
+                try:
+                    import time as _time
+                    entry_ts = float(trade.get("entry_ts", 0)) or _time.time()
+                    minutes_open = (_time.time() - entry_ts) / 60
+                    if minutes_open > 25:  # Tightened: cut losing trades at 25min (was 45)
+                        log.info(f"{symbol} SELL early exit — {profit_in_r:.2f}R adverse after {minutes_open:.0f}min — cutting loss")
+                        if ticket_str.isdigit():
+                            close_position(int(ticket_str), volume)
+                        continue
+                except Exception:
+                    pass
 
+            if profit_in_r >= 0.4 and current_sl > open_price:
+                new_sl = min(new_sl, open_price - pip_size)
+                if new_sl < current_sl:
+                    log.info(f"{symbol} SELL 0.4R: Moving SL to break-even ({new_sl:.5f})")
+
+            # Lock 0.5R profit at 1R — tightened from 0.3R
+            if profit_in_r >= 1.0 and current_sl > open_price - risk * 0.5:
+                new_sl = min(new_sl, open_price - risk * 0.5)
+                if new_sl < current_sl:
+                    log.info(f"{symbol} SELL 1R: Locking 0.5R profit in SL ({new_sl:.5f})")
+
+            # Lock 1.2R profit at 2R move
+            if profit_in_r >= 2.0 and current_sl > open_price - risk * 1.2:
+                new_sl = min(new_sl, open_price - risk * 1.2)
+                if new_sl < current_sl:
+                    log.info(f"{symbol} SELL 2R: Locking 1.2R profit in SL ({new_sl:.5f})")
+
+            # Tight trail at 3R — width varies by AI regime
             if profit_in_r >= 3.0:
-                new_sl = min(new_sl, current_price + risk * 0.5)
-                log.info(f"{symbol} SELL: Tight trail at 3R ({new_sl:.5f})")
+                _trail_width = 0.25 if _regime == "VOLATILE" else (0.4 if _regime == "TRENDING" else 0.35)
+                tight = current_price + risk * _trail_width
+                if tight < new_sl:
+                    new_sl = tight
+                    log.info(f"{symbol} SELL 3R: Tight trail ({new_sl:.5f}) [regime={_regime}]")
+
+            # Progressive trail beyond 3R
+            if profit_in_r > 3.0:
+                prog = current_price + risk * 0.3
+                if prog < new_sl:
+                    new_sl = prog
+
+            # Distribution phase exit: trim on H1 exhaustion or M15 CHoCH against position
+            if profit_in_r >= 1.0 and not trade.get("dist_exit_1_done"):
+                try:
+                    import ict_precision as _ict_ref
+                    _m15b = _ict_ref._parse_bars(sym_info.get("M15", []))
+                    _h1b  = _ict_ref._parse_bars(sym_info.get("H1",  []))
+                    _exh  = _ict_ref.detect_push_exhaustion(_h1b) if _h1b else {}
+                    if "EXHAUSTION" in str(_exh.get("signal", "")).upper():
+                        close_vol = round(volume * 0.25, 2)
+                        if close_vol >= min_lot and ticket_str.isdigit():
+                            result = close_position(int(ticket_str), close_vol)
+                            if result.startswith("OK") or result.startswith("PAPER"):
+                                state.active_trades[ticket_str]["dist_exit_1_done"] = True
+                                log.info(f"{symbol} SELL dist-exit 25% — H1 exhaustion at {profit_in_r:.1f}R")
+                    elif profit_in_r >= 2.0 and not trade.get("dist_exit_2_done"):
+                        if _m15b and _ict_ref.detect_mss(_m15b, "BUY", lookback=6):
+                            close_vol = round(volume * 0.50, 2)
+                            if close_vol >= min_lot and ticket_str.isdigit():
+                                result = close_position(int(ticket_str), close_vol)
+                                if result.startswith("OK") or result.startswith("PAPER"):
+                                    state.active_trades[ticket_str]["dist_exit_2_done"] = True
+                                    log.info(f"{symbol} SELL dist-exit 50% — M15 CHoCH BUY at {profit_in_r:.1f}R")
+                except Exception:
+                    pass
+
+        # ── Smart trail overlay (Phase 1) — gated behind rules.json smart_trail.enabled
+        # Never *loosens* the SL computed above — only tightens in our favour, or fires
+        # a should_close signal when the engine detects an opposing CHoCH in profit.
+        force_close_by_trail = False
+        if smart_trail_on:
+            try:
+                proposal = maybe_smart_trail(pos, charts, rules, state.last_scan_context)
+            except Exception as e:
+                log.warning(f"smart_trail error for {symbol}/{ticket_str}: {e}")
+                proposal = None
+
+            if proposal is not None:
+                # Record for dashboard/telemetry regardless of whether we act on it
+                state.last_trail_proposals[ticket_str] = {
+                    "symbol":       symbol,
+                    "direction":    pos_type,
+                    "ts":           datetime.now(timezone.utc).isoformat(),
+                    "current_sl":   current_sl,
+                    "legacy_sl":    new_sl,
+                    "proposed_sl":  proposal.new_sl,
+                    "should_close": bool(proposal.should_close),
+                    "reason":       proposal.reason,
+                    "layers":       list(proposal.layers_fired or []),
+                }
+
+                # should_close → fully close the position
+                if proposal.should_close and ticket_str.isdigit():
+                    close_position(int(ticket_str))
+                    log.info(f"{symbol} smart_trail CLOSE: {proposal.reason}")
+                    force_close_by_trail = True
+                else:
+                    # Overlay: take whichever SL is more protective for the side
+                    if pos_type == "BUY":
+                        overlay_sl = max(new_sl, proposal.new_sl)
+                    else:  # SELL
+                        overlay_sl = min(new_sl, proposal.new_sl)
+                    if overlay_sl != new_sl:
+                        log.info(f"{symbol} smart_trail overlay SL {new_sl:.5f}→{overlay_sl:.5f} "
+                                 f"({proposal.reason} | {','.join(proposal.layers_fired or [])})")
+                        new_sl = overlay_sl
+
+        if force_close_by_trail:
+            continue
 
         # Modify only when SL moves by at least 3 pips (prevents micro-update spam)
         min_move = max(risk * 0.05, pip_size * 3)
-        if abs(new_sl - current_sl) > min_move:
-            result = modify_position(int(ticket_str) if ticket_str.isdigit() else 0, new_sl, new_tp)
+        if abs(new_sl - current_sl) > min_move and ticket_str.isdigit():
+            result = modify_position(int(ticket_str), new_sl, new_tp)
             log.info(f"Modified {ticket_str}: SL {current_sl:.5f}→{new_sl:.5f} | {result}")
+
+
+# ── Stale Limit Order Cancellation ───────────────────────────────────────────
+def cancel_stale_limits(state: TraderState, data: dict):
+    """
+    Cancel BUY_LIMIT / SELL_LIMIT orders where price has blown through the entry
+    level by more than 10 pips — the setup is no longer valid at that point.
+
+    BUY_LIMIT becomes stale when current price > entry + 10 pips (missed the dip).
+    SELL_LIMIT becomes stale when current price < entry - 10 pips (missed the rally).
+    """
+    prices   = {p["symbol"]: p for p in data.get("prices", [])}
+    charts   = data.get("charts", {})
+    expired  = []
+
+    for ticket_str, trade in state.active_trades.items():
+        order_type = trade.get("order_type", "")
+        if order_type not in ("BUY_LIMIT", "SELL_LIMIT"):
+            continue
+
+        symbol    = trade.get("symbol", "")
+        entry     = trade.get("entry", 0)
+        if not symbol or entry == 0:
+            continue
+
+        sym_info  = charts.get(symbol, {})
+        pip_size  = sym_info.get("point", 0.0001) * 10
+        price_now = prices.get(symbol, {}).get("bid", 0)
+        if price_now == 0:
+            continue
+
+        stale = False
+        if order_type == "BUY_LIMIT" and price_now > entry + pip_size * 10:
+            stale = True
+            log.info(f"{symbol} BUY_LIMIT stale — price {price_now:.5f} blew past entry {entry:.5f} by {(price_now - entry)/pip_size:.1f} pips — cancelling")
+        elif order_type == "SELL_LIMIT" and price_now < entry - pip_size * 10:
+            stale = True
+            log.info(f"{symbol} SELL_LIMIT stale — price {price_now:.5f} blew past entry {entry:.5f} by {(entry - price_now)/pip_size:.1f} pips — cancelling")
+
+        if stale:
+            if ticket_str.isdigit():
+                result = send_command(f"DELETE|{ticket_str}|||||")
+                log.info(f"{symbol} Cancel pending order {ticket_str}: {result}")
+            expired.append(ticket_str)
+
+    for t in expired:
+        state.active_trades.pop(t, None)
 
 
 # ── Scale-In Logic ────────────────────────────────────────────────────────────
@@ -569,10 +1250,14 @@ def check_scale_in(state: TraderState, data: dict, equity: float, memory=None):
     charts         = data.get("charts", {})
 
     for ticket_str, trade in state.active_trades.items():
-        # Only scale into trades where TP1 taken + no previous scale-in
-        if not trade.get("tp1_taken", False):
-            continue
-        if trade.get("scaled_in", False):
+        # Read scaling rules (updated in rules.json)
+        _scale_rules = load_rules().get("scaling", {})
+        max_adds       = int(_scale_rules.get("max_adds", 3))
+        min_profit_r   = float(_scale_rules.get("min_add_profit_r", 0.75))
+
+        # Allow up to max_adds per position; no TP1 requirement (scale during move)
+        add_count = trade.get("scale_in_count", 0)
+        if add_count >= max_adds:
             continue
 
         symbol    = trade.get("symbol", "")
@@ -599,7 +1284,7 @@ def check_scale_in(state: TraderState, data: dict, equity: float, memory=None):
         else:
             profit_r = (open_price - current_price) / risk
 
-        if profit_r < 1.0:
+        if profit_r < min_profit_r:
             continue
 
         # Check push momentum on M15 or H1
@@ -624,6 +1309,12 @@ def check_scale_in(state: TraderState, data: dict, equity: float, memory=None):
                 (direction == "SELL" and push.get("direction") == "DOWN")
             )
         )
+
+        # Block scale-in if exhaustion is forming (prevent adding into distribution end)
+        exhaustion_h1 = push_h1.get("signal", "").upper()
+        if "EXHAUSTION" in exhaustion_h1:
+            log.debug(f"{symbol} scale-in blocked — H1 push exhaustion detected")
+            continue
 
         if not push_confirmed:
             log.debug(f"{symbol} scale-in skipped — no push momentum (phase={push.get('phase')})")
@@ -686,7 +1377,8 @@ TP:         {scale_tp:.5g}    (1.5× remaining to TP3)
         log.info(f"Scale-in order result: {result}")
 
         if result.startswith("OK") or result.startswith("PAPER"):
-            state.active_trades[ticket_str]["scaled_in"] = True
+            state.active_trades[ticket_str]["scale_in_count"] = add_count + 1
+            state.active_trades[ticket_str]["scaled_in"] = True  # backwards compat
             parts = result.split("|")
             if result.startswith("OK") and len(parts) > 1 and parts[1].isdigit():
                 scale_ticket = parts[1]
@@ -734,6 +1426,128 @@ TP:         {scale_tp:.5g}    (1.5× remaining to TP3)
                     log.warning(f"Memory scale-in log error: {e}")
 
 
+# ── Re-entry System ──────────────────────────────────────────────────────────
+def check_pending_reentries(state: TraderState, data: dict, equity: float):
+    """
+    After a trailing SL is hit in profit, re-enter the same setup at the
+    original (or better) entry price.  Better entry = same SL → improved RR.
+
+    Queued entries expire after 1 hour if price never pulls back.
+    """
+    if not state.pending_reentries:
+        return
+
+    positions = get_open_positions(data)
+    charts    = data.get("charts", {})
+    prices    = {p["symbol"]: p for p in data.get("prices", [])}
+    now       = time.time()
+    expired   = []
+
+    for symbol, reentry in list(state.pending_reentries.items()):
+        if now > reentry.get("valid_until", 0):
+            expired.append(symbol)
+            log.info(f"{symbol} Re-entry expired (1h window passed)")
+            continue
+
+        # Skip if symbol already has an open position or we're at trade cap
+        if any(p.get("symbol") == symbol for p in positions):
+            continue
+        if len(positions) >= MAX_OPEN_TRADES:
+            break
+
+        direction       = reentry["direction"]
+        original_entry  = reentry["entry"]
+        sl              = reentry["sl"]
+        if original_entry == 0 or sl == 0:
+            expired.append(symbol)
+            continue
+
+        sym_info = charts.get(symbol, {})
+        pip_size = sym_info.get("point", 0.0001) * 10
+        price_info = prices.get(symbol, {})
+        # Use bid for BUY (we're buying), ask for SELL
+        current_price = price_info.get("bid", 0) if direction == "BUY" else price_info.get("ask", 0)
+        if current_price == 0:
+            continue
+
+        # Only re-enter when price has pulled back to within 5 pips of original entry
+        # (for BUY: price must be <= original_entry + 5 pips;
+        #  for SELL: price must be >= original_entry - 5 pips)
+        tolerance = pip_size * 5
+        if direction == "BUY":
+            if current_price > original_entry + tolerance:
+                continue  # Price hasn't pulled back yet
+            entry      = min(current_price, original_entry)
+            order_type = "BUY" if current_price <= original_entry else "BUY_LIMIT"
+        else:
+            if current_price < original_entry - tolerance:
+                continue
+            entry      = max(current_price, original_entry)
+            order_type = "SELL" if current_price >= original_entry else "SELL_LIMIT"
+
+        # Validate SL is still on the correct side of entry
+        if direction == "BUY" and sl >= entry:
+            expired.append(symbol)
+            continue
+        if direction == "SELL" and sl <= entry:
+            expired.append(symbol)
+            continue
+
+        lot_size = calculate_lot_size(
+            equity=equity,
+            risk_pct=state.current_risk_pct,
+            entry=entry, sl=sl,
+            symbol=symbol, sym_info=sym_info,
+        )
+        if lot_size <= 0:
+            continue
+
+        tp = reentry.get("tp3") or reentry.get("tp2") or reentry.get("tp1")
+        comment = f"OMNI_REENTRY_{reentry.get('entry_type', 'ICT')}"
+
+        log.info(f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RE-ENTRY (stopped-in-profit recovery)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Symbol:    {symbol}  {direction}
+Original:  entry {original_entry:.5f}  SL {sl:.5f}
+Re-entry:  entry {entry:.5f}  SL {sl:.5f}  (improved RR)
+Lots:      {lot_size}  |  parent banked: ${reentry.get('profit_from_parent', 0):.2f}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+""")
+
+        result = place_order(symbol, direction, order_type, entry, sl, tp, lot_size, comment)
+        log.info(f"Re-entry order result: {result}")
+
+        if result.startswith("OK") or result.startswith("PAPER"):
+            parts = result.split("|")
+            ticket_key = (
+                parts[1]
+                if (result.startswith("OK") and len(parts) > 1 and parts[1].isdigit())
+                else f"REENTRY_{symbol}_{int(time.time())}"
+            )
+            state.active_trades[ticket_key] = {
+                "symbol":          symbol,
+                "direction":       direction,
+                "entry":           entry,
+                "sl":              sl,
+                "tp1":             reentry.get("tp1", 0),
+                "tp2":             reentry.get("tp2", 0),
+                "tp3":             reentry.get("tp3", 0),
+                "volume_original": lot_size,
+                "tp1_taken":       False,
+                "tp2_taken":       False,
+                "scaled_in":       False,
+                "last_profit":     0.0,
+                "memory_trade_id": None,
+                "entry_type":      f"REENTRY_{reentry.get('entry_type', 'ICT')}",
+            }
+            expired.append(symbol)
+
+    for sym in expired:
+        state.pending_reentries.pop(sym, None)
+
+
 # ── Setup Executor ────────────────────────────────────────────────────────────
 def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
                   memory=None) -> bool:
@@ -742,16 +1556,60 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
     direction = setup.direction
     entry     = setup.entry_price
     sl        = setup.sl_price
-    tp        = setup.tp1_price  # TP1 as the primary order TP (50% target)
+    # Use TP3 as the order's hard TP so MT5 keeps the full position open.
+    # The bot manages partial exits at TP1 (50%) and TP2 (30%) via close_position;
+    # the remaining 20% runner auto-closes when price reaches TP3.
+    # Fallback chain: tp3 → tp2 → tp1 (in case scanner only provides tp1)
+    tp        = setup.tp3_price or setup.tp2_price or setup.tp1_price
     session   = getattr(setup, "session", "")
 
-    # Session-aware confidence threshold — Asia requires higher bar
+    # Session streak gate — after 3 back-to-back losses in this session, require higher confidence
+    _sess_losses = state.session_loss_streak.get(session, 0)
+    if _sess_losses >= 3:
+        log.debug(f"{symbol}: session {session} has {_sess_losses} consecutive losses — raising confidence bar")
+
+    # Session-aware confidence threshold — Asia requires higher bar; streak penalty adds 10 pts per tier above 3
     effective_min_conf = MIN_CONFIDENCE_ASIA if session == "ASIA" else MIN_CONFIDENCE
+    effective_min_conf = min(85, effective_min_conf + max(0, (_sess_losses - 2) * 10))
     if setup.confidence < effective_min_conf:
         log.debug(f"{symbol}: confidence {setup.confidence} below {session} threshold {effective_min_conf}")
         return False
 
+    # ACCUMULATION (Asia) phase gate — only sweep-based entries allowed
+    # ICT: Asia builds the range; London manipulates it; NY distributes.
+    # Non-sweep entries during accumulation are counter to market maker intent.
+    _amd_gate = getattr(setup, "amd_phase", "")
+    if _amd_gate == "ACCUMULATION" and "SWEEP" not in setup.entry_type:
+        log.debug(f"{symbol}: ACCUMULATION phase — blocking {setup.entry_type} "
+                  f"(only SWEEP entries allowed during Asia)")
+        return False
+
+    # D1 bias alignment gate — backtest showed bias-aligned trades: 77.8% WR vs 32% overall.
+    # Block counter-bias sweep entries below confidence 72 (only A+ setups override bias).
+    _d1_bias = getattr(setup, "tf_bias", "NEUTRAL")
+    _dir = getattr(setup, "direction", "")
+    _bias_opposed = (
+        (_dir == "SELL" and _d1_bias == "BULLISH") or
+        (_dir == "BUY"  and _d1_bias == "BEARISH")
+    )
+    if _bias_opposed and setup.confidence < 72:
+        log.info(f"{symbol}: Counter-D1-bias ({_d1_bias}) {_dir} at confidence {setup.confidence} — blocked (need ≥72)")
+        return False
+
+    # Friday close block — no new positions after 15:00 UTC Friday (weekend gap risk)
+    _now_utc = datetime.now(timezone.utc)
+    if _now_utc.weekday() == 4 and _now_utc.hour >= 15:
+        log.debug(f"{symbol}: Friday 15:00+ UTC — blocking new entries (weekend gap risk)")
+        return False
+
+    # Per-symbol consecutive loss guard — pause after 2 back-to-back losses on same symbol
+    _sym_losses = state.sym_loss_streak.get(symbol, 0)
+    if _sym_losses >= 2:
+        log.debug(f"{symbol}: {_sym_losses} consecutive losses today — symbol paused")
+        return False
+
     # Apply adaptive confidence from trade memory
+    _setup_swept = getattr(setup, "liq_swept", False)
     if memory:
         try:
             patterns = [r for r in setup.reasons if "Pattern:" in r]
@@ -761,6 +1619,7 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
                 session=session,
                 patterns=pattern_names,
                 amd_phase=getattr(setup, "amd_phase", ""),
+                sweep_confirmed=_setup_swept,
             )
             adj_confidence = setup.confidence + adj
             if adj != 0:
@@ -774,6 +1633,13 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
             adj_confidence = setup.confidence
     else:
         adj_confidence = setup.confidence
+
+    # Symbol-specific confidence override (from rules.json symbol_overrides)
+    _rules_sym = load_rules().get("symbol_overrides", {}).get(symbol, {})
+    _sym_min_conf = _rules_sym.get("min_confidence", 0)
+    if _sym_min_conf > 0 and adj_confidence < _sym_min_conf:
+        log.info(f"{symbol}: confidence {adj_confidence} below symbol override {_sym_min_conf} — skipped")
+        return False
 
     # Skip if already traded this symbol recently
     if symbol in state.recently_traded:
@@ -790,14 +1656,14 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
     # ── Spread guard — skip trade if spread is abnormally wide ────────────
     # Spread in the prices array is in points; convert to pips for comparison.
     live_spread_pts = sym_info.get("spread", 0)
-    live_spread_pips = live_spread_pts * sym_info.get("point", 0.0001) / pip_size * live_spread_pts
-    # Simpler: spread field from OmniExport is already in points (integer ticks)
-    # 1 pip = 10 points for most symbols; for XAUUSD 1 pip = 1 point
+    # spread field from OmniExport is in points (integer ticks); 1 pip = 10 points for FX
     point = sym_info.get("point", 0.0001)
     if live_spread_pts > 0:
         if "XAU" in symbol or "GOLD" in symbol:
             max_spread = cfg.MAX_SPREAD_XAUUSD_PIPS
-        elif any(idx in symbol for idx in ("US30", "NAS", "DAX", "SPX")):
+        elif "XAG" in symbol or "SILVER" in symbol:
+            max_spread = cfg.MAX_SPREAD_XAUUSD_PIPS  # Silver spreads similar width to gold
+        elif any(idx in symbol for idx in ("US30", "NAS", "DAX", "SPX", "GER", "UK100")):
             max_spread = cfg.MAX_SPREAD_INDEX_PIPS
         else:
             max_spread = cfg.MAX_SPREAD_FOREX_PIPS
@@ -893,9 +1759,12 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
                     risk_usd=risk_usd,
                     invalidation=getattr(setup, "invalidation", 0),
                     adj_confidence=adj_confidence,
+                    sweep_confirmed=_setup_swept,
                 )
             except Exception as e:
                 log.warning(f"Memory log_entry error: {e}")
+
+        _current_spread = live_spread_pts * point if live_spread_pts > 0 else 0.0
 
         state.active_trades[ticket_key] = {
             "symbol":          symbol,
@@ -912,6 +1781,10 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
             "last_profit":     0.0,
             "memory_trade_id": trade_id_mem,
             "entry_type":      setup.entry_type,
+            "order_type":      order_type,   # stored so stale-limit checker can identify pending orders
+            "entry_ts":        time.time(),  # timestamp for early-exit timer
+            "session":         session,      # session at entry — used for session loss streak tracking
+            "entry_spread":    _current_spread,  # spread at time of order placement
         }
 
         if symbol not in state.recently_traded:
@@ -936,19 +1809,21 @@ def print_status(state: TraderState, data: dict, setups: list):
     dd_pct    = state.peak_drawdown
     in_filter = SESSION_FILTER is None or session in SESSION_FILTER
 
+    mode_str = f"RISK:{_RISK_MODE} | FREQ:{_FREQ_MODE}"
     print(f"""
-╔══════════════════════════════════════════════╗
-║  OMNI ICT AUTO-TRADER  {'[PAPER MODE]' if PAPER_MODE else '[LIVE]':>16}  ║
-╠══════════════════════════════════════════════╣
-║  Balance:  ${balance:>10,.2f}  Equity: ${equity:>9,.2f}  ║
-║  P&L:      ${profit:>+10,.2f}  Risk:   {state.current_risk_pct:>8.2f}%  ║
-║  Session:  {session:<10}  Phase:  {amd:<14}  ║
-╠══════════════════════════════════════════════╣
-║  Trades:   {state.total_trades:<5} W:{state.winning_trades} L:{state.losing_trades} WR:{win_rate:.0f}%         ║
-║  Profit:   ${state.total_profit:>+10,.2f}  Streak: {'W'+str(state.win_streak) if state.win_streak>0 else 'L'+str(state.loss_streak):<7}      ║
-║  Open:     {len(positions):<3} positions  MaxDD: {dd_pct:.1f}%            ║
-║  Setups:   {len(setups):<3} detected  Filter: {'ACTIVE' if in_filter else 'SESSION WAIT'}     ║
-╚══════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════╗
+║  OMNI ICT AUTO-TRADER  {'[PAPER]' if PAPER_MODE else '[LIVE]':>8}  {mode_str:<17}  ║
+╠══════════════════════════════════════════════════╣
+║  Balance:  ${balance:>10,.2f}    Equity:  ${equity:>10,.2f}  ║
+║  P&L:      ${profit:>+10,.2f}    Risk:    {state.current_risk_pct:>8.2f}%  ║
+║  Session:  {session:<10}    Phase:   {amd:<16}  ║
+╠══════════════════════════════════════════════════╣
+║  Trades:   {state.total_trades:<5} W:{state.winning_trades} L:{state.losing_trades} WR:{win_rate:.0f}%               ║
+║  Profit:   ${state.total_profit:>+10,.2f}    Streak: {'W'+str(state.win_streak) if state.win_streak>0 else 'L'+str(state.loss_streak):<7}        ║
+║  Open:     {len(positions):<3} / {MAX_OPEN_TRADES} max    MaxDD: {dd_pct:.1f}% / {MAX_DD_FROM_PEAK:.0f}%           ║
+║  Setups:   {len(setups):<3} detected  Filter: {'ACTIVE' if in_filter else 'SESSION WAIT'}                ║
+║  Params:   RR≥{MIN_RR}  Conf≥{MIN_CONFIDENCE}  SL≥{MIN_SL_PIPS}p  DailyLim:{DAILY_LOSS_LIMIT}%        ║
+╚══════════════════════════════════════════════════╝
 """)
 
     if state.trading_halted:
@@ -966,17 +1841,30 @@ def print_status(state: TraderState, data: dict, setups: list):
 # ── Main Loop ─────────────────────────────────────────────────────────────────
 def main():
     print(f"""
-╔══════════════════════════════════════════════════════════╗
-║          OMNI ICT AUTO-TRADER STARTING                   ║
-║                                                          ║
-║  Mode:     {'PAPER (simulated)' if PAPER_MODE else 'LIVE TRADING'}                              ║
-║  Risk:     {BASE_RISK_PCT}% base | {MIN_RISK_PCT}% min | {MAX_RISK_PCT}% max (compounding)     ║
-║  Symbols:  {', '.join(TRADE_SYMBOLS[:4])}...              ║
-║  Min RR:   {MIN_RR}:1    Min Confidence: {MIN_CONFIDENCE}/100           ║
-║  Max Open: {MAX_OPEN_TRADES} trades    Daily Loss Limit: {DAILY_LOSS_LIMIT}%       ║
-║  Max DD:   {MAX_DD_FROM_PEAK}% from peak equity                     ║
-║  Sessions: {', '.join(SESSION_FILTER) if SESSION_FILTER else 'All'}                              ║
-╚══════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════╗
+║               OMNI ICT AUTO-TRADER STARTING                  ║
+╠══════════════════════════════════════════════════════════════╣
+║  Trading:  {'PAPER (simulated — no real money)' if PAPER_MODE else '⚠  LIVE TRADING — REAL MONEY'}
+║
+║  ── RISK MODE: {_RISK_MODE:<10} ─────────────────────────────────────
+║  {RISK.description}
+║  Base risk: {BASE_RISK_PCT}%  |  Min: {MIN_RISK_PCT}%  |  Max: {MAX_RISK_PCT}%  (compounding)
+║  Daily loss limit: {DAILY_LOSS_LIMIT}%  |  Max drawdown: {MAX_DD_FROM_PEAK}% from peak
+║
+║  ── FREQUENCY MODE: {_FREQ_MODE:<10} ─────────────────────────────
+║  {FREQ.description}
+║  Min confidence: {MIN_CONFIDENCE} ({MIN_CONFIDENCE_ASIA} Asia)  |  Min RR: {MIN_RR}:1
+║  Max open trades: {MAX_OPEN_TRADES}  |  Zone entries: {'YES' if FREQ.allow_zone_entries else 'NO'}
+║  Allowed grades: {', '.join(FREQ.allowed_grades)} {'(+all in paper)' if PAPER_MODE else ''}
+║
+║  Symbols:  {', '.join(TRADE_SYMBOLS[:5])}{'...' if len(TRADE_SYMBOLS)>5 else ''}
+║  Sessions: {', '.join(SESSION_FILTER) if SESSION_FILTER else 'All (London, NY, Asia)'}
+╚══════════════════════════════════════════════════════════════╝
+
+  To change modes:
+    python auto_trader.py --risk LOW --freq CONSERVATIVE
+    python auto_trader.py --risk HIGH --freq AGGRESSIVE
+    OMNI_RISK_MODE=MODERATE OMNI_FREQ_MODE=NORMAL python auto_trader.py
 """)
 
     if not PAPER_MODE:
@@ -995,6 +1883,14 @@ def main():
         log.error("Make sure ict_precision.py is in the same folder")
         sys.exit(1)
 
+    # Import dual-TF selector (enabled via rules.json dual_tf.enabled)
+    _dual_tf_mod = None
+    try:
+        import dual_tf_selector as _dual_tf_mod
+        log.info("Dual-TF selector module loaded")
+    except ImportError as e:
+        log.warning(f"dual_tf_selector not available: {e}")
+
     # Import trade memory / AI learning engine
     try:
         from trade_memory import get_memory
@@ -1010,18 +1906,34 @@ def main():
     if not state.start_time:
         state.start_time = datetime.now().isoformat()
 
-    log.info(f"Trader started | Paper={PAPER_MODE} | Risk={state.current_risk_pct}%")
+    log.info(f"Trader started | Paper={PAPER_MODE} | Risk mode={_RISK_MODE} | Freq mode={_FREQ_MODE}")
+    log.info(f"Risk: {BASE_RISK_PCT}%–{MAX_RISK_PCT}% | Conf≥{MIN_CONFIDENCE} | RR≥{MIN_RR} | MaxOpen={MAX_OPEN_TRADES}")
     log.info(f"State loaded: {state.total_trades} trades, P&L: ${state.total_profit:.2f}")
 
+    # Write active modes into state so dashboard can display them
+    state_dict_extra = {
+        "risk_mode":  _RISK_MODE,
+        "freq_mode":  _FREQ_MODE,
+        "base_risk":  BASE_RISK_PCT,
+        "max_risk":   MAX_RISK_PCT,
+        "min_risk":   MIN_RISK_PCT,
+        "min_conf":   MIN_CONFIDENCE,
+        "min_rr":     MIN_RR,
+        "max_open":   MAX_OPEN_TRADES,
+        "daily_limit":DAILY_LOSS_LIMIT,
+        "max_dd":     MAX_DD_FROM_PEAK,
+    }
+
     # ── Startup reconciliation: sync active_trades with real MT5 positions ─
-    # If the bot was restarted, positions may have closed while it was down.
-    # Purge any tracked tickets that are no longer open in MT5.
+    # 1. Purge tracked tickets no longer open in MT5.
+    # 2. Register live MT5 positions not yet in active_trades.
+    # 3. Back-fill TP ladder for reconciled positions that lack it.
     _startup_data = load_mt5_data()
     if _startup_data:
-        _live_tickets = {
-            str(p.get("ticket"))
-            for p in _startup_data.get("positions", [])
-        }
+        _live_positions = _startup_data.get("positions", [])
+        _live_tickets   = {str(p.get("ticket")): p for p in _live_positions}
+
+        # 1. Remove stale
         _stale = [t for t in list(state.active_trades.keys())
                   if not t.startswith("PAPER_") and t not in _live_tickets]
         if _stale:
@@ -1031,6 +1943,39 @@ def main():
             )
             for t in _stale:
                 state.active_trades.pop(t, None)
+
+        # 2 & 3. Register untracked live positions; back-fill missing TP ladders
+        for tid, pos in _live_tickets.items():
+            if tid not in state.active_trades:
+                state.active_trades[tid] = {}
+                log.info(f"Reconciliation: registered untracked MT5 position {tid} ({pos.get('symbol')})")
+                # Infer tp1_taken: if live volume is <90% of the typical min lot it was
+                # likely partial-closed at TP1 before crash — mark it to skip re-close
+                live_vol = float(pos.get("volume", 0) or 0)
+                if live_vol > 0 and live_vol < 0.09:
+                    state.active_trades[tid]["tp1_taken"] = True
+                    log.info(f"Reconciliation: inferred tp1_taken for {tid} (vol={live_vol:.2f} suggests partial close)")
+
+            entry  = float(pos.get("open_price", 0) or 0)
+            sl     = float(pos.get("sl", 0) or 0)
+            mt5_tp = float(pos.get("tp", 0) or 0)
+            trade  = state.active_trades[tid]
+
+            # Back-fill TP ladder if not already set
+            if not trade.get("tp1") and entry > 0 and sl > 0 and mt5_tp > 0:
+                risk = abs(entry - sl)
+                pos_type = pos.get("type", "").upper()
+                direction = 1 if pos_type == "BUY" else -1
+                # Estimate TP1/TP2 from MT5's TP (treat it as TP3)
+                tp3 = mt5_tp
+                tp1 = entry + direction * risk * 1.5
+                tp2 = entry + direction * risk * 2.5
+                trade["tp1"] = round(tp1, 5)
+                trade["tp2"] = round(tp2, 5)
+                trade["tp3"] = round(tp3, 5)
+                log.info(f"Reconciliation: back-filled TP ladder for {tid} "
+                         f"TP1={tp1:.5f} TP2={tp2:.5f} TP3={tp3:.5f}")
+
         _tracked = len(state.active_trades)
         _live    = len(_live_tickets)
         log.info(f"Reconciliation complete: {_tracked} tracked / {_live} live MT5 positions")
@@ -1069,7 +2014,13 @@ def main():
 
             # ── Staleness guard — abort if data file is too old ────────
             try:
-                data_age = time.time() - os.path.getmtime(JSON_PATH)
+                # Prefer .tmp if it's fresher (EA writes .tmp then renames)
+                _tmp = JSON_PATH + ".tmp"
+                _mtime = max(
+                    os.path.getmtime(JSON_PATH) if os.path.exists(JSON_PATH) else 0,
+                    os.path.getmtime(_tmp) if os.path.exists(_tmp) else 0,
+                )
+                data_age = time.time() - _mtime
                 if data_age > cfg.MAX_DATA_AGE_SECS:
                     log.error(
                         f"MT5 data stale ({data_age:.0f}s old, max {cfg.MAX_DATA_AGE_SECS}s) — "
@@ -1099,6 +2050,9 @@ def main():
             # ── Daily reset (exactly once per UTC date) ────────────────
             reset_daily_if_new_day(state, equity)
 
+            # ── Auto-recovery from drawdown halt ───────────────────────
+            check_recovery_mode(state, equity, load_rules())
+
             # ── Daily loss + drawdown check ────────────────────────────
             if not check_daily_limits(state, equity):
                 log.warning(f"Trading halted: {state.halt_reason}")
@@ -1109,6 +2063,12 @@ def main():
 
             # ── Manage existing trades ─────────────────────────────────
             manage_open_trades(state, data, memory=memory)
+
+            # ── Cancel stale pending limit orders ──────────────────────
+            try:
+                cancel_stale_limits(state, data)
+            except Exception as e:
+                log.error(f"Stale limit check error: {e}", exc_info=True)
 
             # ── Session filter ─────────────────────────────────────────
             current_session = data.get("session", "")
@@ -1132,14 +2092,107 @@ def main():
                 except Exception as e:
                     log.error(f"Scale-in check error: {e}", exc_info=True)
 
+            # ── Re-entry check: fill any pending stopped-in-profit entries ─
+            if not state.trading_halted and state.pending_reentries:
+                try:
+                    check_pending_reentries(state, data, equity)
+                except Exception as e:
+                    log.error(f"Re-entry check error: {e}", exc_info=True)
+
             # ── Scan for ICT setups ────────────────────────────────────
             all_setups = []
             if can_trade or scan_count % 6 == 0:  # Always scan for display purposes
                 try:
+                    log.info(f"ICT scan #{scan_count} starting...")
+                    for _h in log.handlers: _h.flush()
                     all_setups = ict.scan_all_primary_symbols()
-                    # Filter by minimum RR; confidence check is session-aware inside execute_setup
-                    high_conf  = [s for s in all_setups
-                                  if s.confidence >= MIN_CONFIDENCE and s.rr_ratio >= MIN_RR]
+                    log.info(f"ICT scan #{scan_count} complete — {len(all_setups)} setups")
+
+                    # ── Merge dual-TF selector results ────────────────────
+                    if _dual_tf_mod:
+                        try:
+                            data = ict._DATA_CACHE.get("data", {})
+                            rules_json = load_rules()
+                            dual_tf_cfg = rules_json.get("dual_tf", {})
+                            if dual_tf_cfg.get("enabled", False):
+                                charts = data.get("charts", {})
+                                existing_keys = {(s.symbol, s.direction) for s in all_setups}
+                                for sym in cfg.TRADE_SYMBOLS:
+                                    sym_data = charts.get(sym, {})
+                                    if not sym_data:
+                                        continue
+                                    try:
+                                        from ict_precision import _parse_bars
+                                        h1_bars  = _parse_bars(sym_data.get("H1",  []))
+                                        m15_bars = _parse_bars(sym_data.get("M15", []))
+                                        if not h1_bars or not m15_bars:
+                                            continue
+                                        sel = _dual_tf_mod.select_trade(h1_bars, m15_bars, rules_json)
+                                        if sel.is_actionable:
+                                            direction = "BUY" if sel.direction == "BULL" else "SELL"
+                                            if (sym, direction) not in existing_keys:
+                                                risk_dist = abs((sel.entry_price or 0) - (sel.sl or 0))
+                                                tp1 = (sel.entry_price or 0) + (risk_dist * 1.5 if direction == "BUY" else -risk_dist * 1.5)
+                                                tp2 = (sel.entry_price or 0) + (risk_dist * 2.5 if direction == "BUY" else -risk_dist * 2.5)
+                                                tp3 = (sel.entry_price or 0) + (risk_dist * 4.0 if direction == "BUY" else -risk_dist * 4.0)
+                                                conf_int = max(40, min(100, int(sel.confidence * 100)))
+                                                dual_setup = ict.ICTSetup(
+                                                    symbol=sym,
+                                                    direction=direction,
+                                                    entry_type=f"DUAL_TF_{sel.entry_type.upper()}",
+                                                    entry_price=sel.entry_price or 0,
+                                                    sl_price=sel.sl or 0,
+                                                    tp1_price=tp1,
+                                                    tp2_price=tp2,
+                                                    tp3_price=tp3,
+                                                    confidence=conf_int,
+                                                    reasons=sel.reasons,
+                                                    rr_ratio=dual_tf_cfg.get("tp_rr", 2.0),
+                                                )
+                                                all_setups.append(dual_setup)
+                                                existing_keys.add((sym, direction))
+                                    except Exception as _e:
+                                        log.debug(f"dual_tf scan {sym}: {_e}")
+                        except Exception as e:
+                            log.warning(f"dual_tf merge error: {e}")
+
+                    # ── Apply frequency profile filters ───────────────────
+                    def _entry_conf_threshold(s) -> int:
+                        """Zone entries need extra confidence bar unless freq=AGGRESSIVE."""
+                        if "ZONE" in s.entry_type and not FREQ.allow_zone_entries:
+                            return 999  # effectively excluded
+                        if "ZONE" in s.entry_type:
+                            return max(MIN_CONFIDENCE + 10, 65)
+                        return MIN_CONFIDENCE
+
+                    def _grade_ok(s) -> bool:
+                        if not s.grade:
+                            return True
+                        if PAPER_MODE:
+                            return True  # paper: always allow all grades for testing
+                        return s.grade in FREQ.allowed_grades
+
+                    high_conf = [
+                        s for s in all_setups
+                        if s.confidence >= _entry_conf_threshold(s)
+                        and s.rr_ratio >= MIN_RR
+                        and _grade_ok(s)
+                    ]
+
+                    # Log triggered vs zone counts with grades for awareness
+                    triggered = [s for s in high_conf if "ZONE" not in s.entry_type]
+                    zones     = [s for s in high_conf if "ZONE" in s.entry_type]
+                    if triggered:
+                        log.info(f"LTF TRIGGERED setups: {len(triggered)} — executing "
+                                 f"[{_RISK_MODE}/{_FREQ_MODE}]")
+                        for s in triggered:
+                            log.info(f"  [{s.grade or '?'}] {s.symbol} {s.direction} "
+                                     f"conf={s.confidence} rr={s.rr_ratio} [{s.entry_type}]")
+                    if zones:
+                        log.debug(f"HTF ZONE setups watching: {len(zones)} (awaiting LTF trigger)")
+                        for s in zones:
+                            log.debug(f"  [{s.grade or '?'}] {s.symbol} {s.direction} "
+                                      f"conf={s.confidence} [{s.entry_type}]")
                 except Exception as e:
                     log.error(f"ICT scan error: {e}")
                     high_conf = []
@@ -1152,10 +2205,37 @@ def main():
 
                 # ── Execute high-confidence setups ─────────────────────
                 if can_trade:
+                    # Build a quick correlation map from open positions
+                    # USD pairs: EURUSD/GBPUSD/AUDUSD/NZDUSD BUY = USD short
+                    #            USDCAD/USDCHF/USDJPY BUY      = USD long
+                    _open_positions_now = get_open_positions(data)
+                    _usd_short_count = sum(
+                        1 for p in _open_positions_now
+                        if p.get("type") == "BUY"  and any(x in p.get("symbol","") for x in ("EURUSD","GBPUSD","AUDUSD","NZDUSD"))
+                        or p.get("type") == "SELL" and any(x in p.get("symbol","") for x in ("USDCAD","USDCHF","USDJPY"))
+                    )
+                    _usd_long_count = sum(
+                        1 for p in _open_positions_now
+                        if p.get("type") == "SELL" and any(x in p.get("symbol","") for x in ("EURUSD","GBPUSD","AUDUSD","NZDUSD"))
+                        or p.get("type") == "BUY"  and any(x in p.get("symbol","") for x in ("USDCAD","USDCHF","USDJPY"))
+                    )
+
                     for setup in high_conf:
                         if open_count >= MAX_OPEN_TRADES:
                             break
                         if setup.symbol in state.recently_traded:
+                            continue
+
+                        # Correlation exposure guard — max 2 positions in same USD direction
+                        _is_usd_short = (setup.direction == "BUY"  and any(x in setup.symbol for x in ("EURUSD","GBPUSD","AUDUSD","NZDUSD"))
+                                      or setup.direction == "SELL" and any(x in setup.symbol for x in ("USDCAD","USDCHF","USDJPY")))
+                        _is_usd_long  = (setup.direction == "SELL" and any(x in setup.symbol for x in ("EURUSD","GBPUSD","AUDUSD","NZDUSD"))
+                                      or setup.direction == "BUY"  and any(x in setup.symbol for x in ("USDCAD","USDCHF","USDJPY")))
+                        if _is_usd_short and _usd_short_count >= 2:
+                            log.debug(f"{setup.symbol} {setup.direction}: skipped — {_usd_short_count} correlated USD-short positions already open")
+                            continue
+                        if _is_usd_long and _usd_long_count >= 2:
+                            log.debug(f"{setup.symbol} {setup.direction}: skipped — {_usd_long_count} correlated USD-long positions already open")
                             continue
 
                         charts   = data.get("charts", {})
@@ -1171,10 +2251,15 @@ def main():
                         success = execute_setup(setup, equity, state, sym_info, memory=memory)
                         if success:
                             open_count += 1
+                            if _is_usd_short: _usd_short_count += 1
+                            if _is_usd_long:  _usd_long_count  += 1
                             log.info(f"Order placed: {setup.symbol} {setup.direction} @ {setup.entry_price:.5g}")
 
             # ── Persist state ──────────────────────────────────────────
-            save_state(state)
+            # Pass setups only when we actually ran a scan (non-empty),
+            # so we don't overwrite previous top_setups with [] on ticks
+            # where the ICT scan was skipped.
+            save_state(state, setups=all_setups if all_setups else None)
             time.sleep(SCAN_INTERVAL)
 
         except KeyboardInterrupt:

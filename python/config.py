@@ -16,6 +16,9 @@ import os
 import json
 import logging
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent / ".env")   # loads omni-ict/.env
 
 log = logging.getLogger("OmniConfig")
 
@@ -60,14 +63,18 @@ def _load_json_config() -> dict:
             # Support both flat config and account-array config
             if "accounts" in data and data["accounts"]:
                 acc = data["accounts"][0]   # Default to first account
-                return {
+                # Merge top-level settings (paper_mode, server, watchlist, etc.)
+                # with account-specific paths so nothing gets lost
+                merged = {k: v for k, v in data.items() if k != "accounts"}
+                merged.update({
                     "data_path":    acc.get("data_path", ""),
                     "cmd_path":     acc.get("cmd_path", ""),
                     "state_path":   acc.get("state_path", ""),
                     "log_path":     acc.get("log_path", ""),
                     "memory_path":  acc.get("memory_path", ""),
                     "journal_path": acc.get("journal_path", ""),
-                }
+                })
+                return merged
             return data
         except Exception as e:
             log.warning(f"config.json load error: {e}")
@@ -92,7 +99,8 @@ def _getfloat(env_key: str, json_key: str, default: float) -> float:
     v = os.getenv(env_key)
     if v is not None:
         try: return float(v)
-        except ValueError: pass
+        except ValueError:
+            log.warning("env %s='%s' is not a valid float; using default %s", env_key, v, default)
     return float(_jcfg.get(json_key, default))
 
 
@@ -100,7 +108,8 @@ def _getint(env_key: str, json_key: str, default: int) -> int:
     v = os.getenv(env_key)
     if v is not None:
         try: return int(v)
-        except ValueError: pass
+        except ValueError:
+            log.warning("env %s='%s' is not a valid int; using default %s", env_key, v, default)
     return int(_jcfg.get(json_key, default))
 
 
@@ -125,6 +134,10 @@ class _Config:
     MIN_SL_PIPS:      int   = _getint  ("OMNI_MIN_SL_PIPS",   "min_sl_pips",      10)
     MAX_OPEN_TRADES:  int   = _getint  ("OMNI_MAX_TRADES",    "max_open_trades",  3)
     SCAN_INTERVAL:    int   = _getint  ("OMNI_SCAN_INTERVAL", "scan_interval",    10)
+    CLAUDE_MODEL:     str   = _get     ("OMNI_CLAUDE_MODEL",  "claude_model",     "claude-sonnet-4-6")
+    MAX_TRAIL_PIPS:   int   = _getint  ("OMNI_MAX_TRAIL_PIPS","max_trail_pips",   150)
+    MT5_STALE_SEC:    int   = _getint  ("OMNI_MT5_STALE_SEC", "mt5_max_stale_sec",30)
+    MT5_RETRY_MAX:    int   = _getint  ("OMNI_MT5_RETRY_MAX", "retry_attempts",   5)
 
     # ── Spread guard (skip trade if live spread > this multiple of normal) ─────
     MAX_SPREAD_XAUUSD_PIPS: float = _getfloat("OMNI_MAX_SPREAD_XAU",  "max_spread_xau",  35.0)
@@ -205,6 +218,9 @@ class _Config:
         if not cmd_dir.exists():
             log.error(f"Command path directory not found: {cmd_dir}")
             ok = False
+        elif not os.access(cmd_dir, os.W_OK):
+            log.error(f"Command path directory not writable: {cmd_dir}")
+            ok = False
 
         if not Path(self.STATE_PATH).parent.exists():
             log.error(f"State file directory not found: {Path(self.STATE_PATH).parent}")
@@ -213,7 +229,21 @@ class _Config:
         if self.PAPER_MODE:
             log.info("PAPER MODE enabled — no real orders will be placed")
         else:
-            log.warning("LIVE MODE — real orders will be placed on the MT5 account!")
+            log.critical("⚠⚠⚠ LIVE MODE ⚠⚠⚠ — real orders will be placed on the MT5 account!")
+
+        # Risk range sanity check
+        if self.MIN_RISK_PCT > self.BASE_RISK_PCT or self.BASE_RISK_PCT > self.MAX_RISK_PCT:
+            log.error(
+                "Risk range invalid: MIN_RISK_PCT=%.2f BASE_RISK_PCT=%.2f MAX_RISK_PCT=%.2f "
+                "— must satisfy MIN <= BASE <= MAX",
+                self.MIN_RISK_PCT, self.BASE_RISK_PCT, self.MAX_RISK_PCT,
+            )
+            ok = False
+
+        if self.MAX_TRAIL_PIPS < 30:
+            log.warning("MAX_TRAIL_PIPS=%d is suspiciously tight", self.MAX_TRAIL_PIPS)
+        if self.BASE_RISK_PCT > 3.0:
+            log.warning("BASE_RISK_PCT=%.2f is dangerously high", self.BASE_RISK_PCT)
 
         log.info(f"MT5 data path:  {self.JSON_PATH}")
         log.info(f"Command path:   {self.CMD_PATH}")

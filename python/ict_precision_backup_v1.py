@@ -9,7 +9,6 @@ import json
 import re
 import os
 import math
-import time
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Optional
@@ -106,7 +105,6 @@ class ICTSetup:
     invalidation: float = 0.0  # Price that invalidates setup
     confluence: ConfluenceScore = field(default_factory=ConfluenceScore)
     grade:      str = ""     # A+, A, B+, B, C — derived from confluence layers
-    liq_swept:  bool = False # True if a liquidity sweep preceded this entry
 
 
 # ── Module-level data cache (keyed on file mtime) ─────────────────────────────
@@ -449,259 +447,49 @@ def judas_swing_bonus(touches: int) -> int:
     return 0        # Single touch — standard sweep, no extra bonus
 
 
-def _has_recent_sweep(bars: list, liq_highs: list, liq_lows: list,
-                      lookback: int = 25, tolerance_pct: float = 0.0015) -> tuple:
-    """
-    Checks whether any liquidity level was swept within the last `lookback` bars.
-    Returns (swept_high, swept_low) booleans used to gate FVG/CHoCH entries.
-    ICT: a stop hunt must precede any retracement entry into an imbalance.
-    """
-    recent = bars[:lookback]
-    swept_high = False
-    swept_low  = False
-    # Allow close within 30% of the tolerance band above/below the level — catches
-    # sweeps where price closes just a pip or two above/below after the wick.
-    close_tol = tolerance_pct * 0.3
-    for level in liq_highs[:6]:
-        if level <= 0:
-            continue
-        for b in recent:
-            if b.h > level * (1 + tolerance_pct) and b.c < level * (1 + close_tol):
-                swept_high = True
-                break
-        if swept_high:
-            break
-    for level in liq_lows[:6]:
-        if level <= 0:
-            continue
-        for b in recent:
-            if b.l < level * (1 - tolerance_pct) and b.c > level * (1 - close_tol):
-                swept_low = True
-                break
-        if swept_low:
-            break
-    return swept_high, swept_low
-
-
-_chop_cooldown_ts: dict = {}   # symbol → timestamp when chop was last flagged
-_CHOP_COOLDOWN_SECS = 4 * 3600  # skip FVG/CHoCH entries for 4 H1 bars after chop
-
-# Load distribution intervals from rules.json once at import time
-_dist_intervals: dict = {}
-try:
-    _rules_path = os.path.join(os.path.dirname(__file__), "rules.json")
-    with open(_rules_path) as _rf:
-        _dist_intervals = json.load(_rf).get("distribution_intervals", {})
-except Exception:
-    pass
-
-
-def _snap_to_interval(price: float, interval: float, direction: str) -> float:
-    """Snap TP to nearest institutional distribution level (round number grid)."""
-    if interval <= 0:
-        return price
-    lower = math.floor(price / interval) * interval
-    upper = lower + interval
-    if direction == "BUY":
-        return lower if (price - lower) < interval * 0.7 else upper
-    else:
-        return upper if (upper - price) < interval * 0.7 else lower
-
-
-def is_market_choppy(bars: list, lookback: int = 20, chop_ratio: float = 2.5,
-                     symbol: str = "") -> bool:
-    """
-    Returns True when H1 price is consolidating in a tight range — skip new entries.
-    Condition: total H-L range across lookback bars < chop_ratio × avg bar range.
-    Metals and indices are naturally more volatile so use a tighter ratio (2.0).
-    """
-    if not bars or len(bars) < lookback:
-        return False
-    # Adjust ratio for high-volatility instruments — don't flag normal gold swings as chop
-    sym = symbol.upper()
-    if any(x in sym for x in ("XAU", "XAG", "US30", "NAS", "SPX", "GER", "UK")):
-        effective_ratio = 2.0  # metals/indices move more — require tighter range to count as chop
-    else:
-        effective_ratio = chop_ratio
-    recent = bars[:lookback]
-    total_range   = max(b.h for b in recent) - min(b.l for b in recent)
-    avg_bar_range = sum(b.h - b.l for b in recent) / len(recent)
-    return avg_bar_range > 0 and total_range < avg_bar_range * effective_ratio
-
-
-def detect_inverted_fvg(bars: list, direction: str) -> dict:
-    """
-    Inverted FVG (CISD — Change in State of Delivery):
-    Price closes aggressively THROUGH a prior opposing FVG, confirming directional intent.
-
-    BUY: current bar closes above a bearish FVG → bullish intent confirmed
-    SELL: current bar closes below a bullish FVG → bearish intent confirmed
-
-    This is the 'LTF FVG close-through = institutional commitment' model.
-    """
-    if not bars or len(bars) < 5:
-        return {"detected": False}
-    current = bars[0]
-    if direction == "BUY":
-        for i in range(1, min(8, len(bars) - 2)):
-            b_now, b_prev2 = bars[i], bars[i + 2]
-            if b_now.h < b_prev2.l:  # bearish FVG exists between these bars
-                fvg_low, fvg_high = b_now.h, b_prev2.l
-                if current.c > fvg_high:  # closed above it → bullish intent
-                    return {
-                        "detected": True, "type": "INVERTED_BISI",
-                        "fvg_low": fvg_low, "fvg_high": fvg_high,
-                        "reason": (f"Inverted FVG: closed above bearish imbalance "
-                                   f"{fvg_low:.5g}–{fvg_high:.5g} (CISD BUY)"),
-                        "bonus": 18,
-                    }
-    elif direction == "SELL":
-        for i in range(1, min(8, len(bars) - 2)):
-            b_now, b_prev2 = bars[i], bars[i + 2]
-            if b_now.l > b_prev2.h:  # bullish FVG exists
-                fvg_low, fvg_high = b_prev2.h, b_now.l
-                if current.c < fvg_low:  # closed below it → bearish intent
-                    return {
-                        "detected": True, "type": "INVERTED_SIBI",
-                        "fvg_low": fvg_low, "fvg_high": fvg_high,
-                        "reason": (f"Inverted FVG: closed below bullish imbalance "
-                                   f"{fvg_low:.5g}–{fvg_high:.5g} (CISD SELL)"),
-                        "bonus": 18,
-                    }
-    return {"detected": False}
-
-
-def detect_cisd(bars: list, direction: str) -> dict:
-    """
-    Change in State of Delivery:
-    A 3-bar same-direction delivery is engulfed by a single opposing candle
-    covering 50%+ of the delivery range — signals institutional order-flow shift.
-    """
-    if not bars or len(bars) < 4:
-        return {"detected": False}
-    current = bars[0]
-    prior   = bars[1:4]
-    if direction == "BUY" and all(b.bearish for b in prior):
-        d_range = max(b.h for b in prior) - min(b.l for b in prior)
-        if current.bullish and d_range > 0 and current.body >= d_range * 0.5:
-            return {"detected": True, "type": "CISD_BUY",
-                    "reason": "CISD: Bullish candle engulfed 3-bar bearish delivery", "bonus": 15}
-    elif direction == "SELL" and all(b.bullish for b in prior):
-        d_range = max(b.h for b in prior) - min(b.l for b in prior)
-        if current.bearish and d_range > 0 and current.body >= d_range * 0.5:
-            return {"detected": True, "type": "CISD_SELL",
-                    "reason": "CISD: Bearish candle engulfed 3-bar bullish delivery", "bonus": 15}
-    return {"detected": False}
-
-
 def detect_sweep_high(bars: list[Bar], level: float, tolerance_pct: float = 0.001) -> bool:
     """
     Bullish sweep then reversal:
-    Any bar in the window wicked above level and that bar (or a later bar) closed back below.
-    bars[0] = most recent. Searches full window so sweeps from up to 8 bars ago are valid.
+    Most recent bars wick above level then closed back below.
+    Stop hunt of buy-stops above equal highs → expect DOWN move.
     """
     if len(bars) < 3:
         return False
-    threshold = level * (1 + tolerance_pct)
-    for i, b in enumerate(bars):
-        if b.h > threshold:
-            # Sweep bar found at index i — check if it or any more-recent bar (j < i) closed below
-            if b.c < level:
-                return True
-            for j in range(i):
-                if bars[j].c < level:
-                    return True
-    return False
+    b0, b1 = bars[0], bars[1]
+    swept = b1.h > level * (1 + tolerance_pct)
+    reversed_close = b1.c < level or b0.c < level
+    return swept and reversed_close
 
 
 def detect_sweep_low(bars: list[Bar], level: float, tolerance_pct: float = 0.001) -> bool:
     """
     Bearish sweep then reversal:
-    Any bar wicked below level and that bar (or a later bar) closed back above.
-    bars[0] = most recent. Searches full window for sweeps up to 8 bars old.
+    Price swept below level (hit sell-stops) then closed back above → expect UP move.
     """
     if len(bars) < 3:
         return False
-    threshold = level * (1 - tolerance_pct)
-    for i, b in enumerate(bars):
-        if b.l < threshold:
-            if b.c > level:
-                return True
-            for j in range(i):
-                if bars[j].c > level:
-                    return True
-    return False
-
-
-def detect_turtle_soup(bars: list, level: float, direction: str,
-                       lookback: int = 4, min_break_atr_pct: float = 0.25) -> bool:
-    """
-    Turtle Soup (ICT stop-run reversal):
-    Price breaks sharply through a swing level — triggering retail turtle breakout traders —
-    then closes back inside within 1-3 bars. Classic liquidity grab signature.
-
-    direction='SELL': price broke above `level` then closed back below (bearish reversal).
-    direction='BUY':  price broke below `level` then closed back above (bullish reversal).
-
-    min_break_atr_pct: minimum break distance as % of ATR to qualify as "sharp".
-    Returns True if turtle soup pattern is present in recent bars.
-    """
-    if len(bars) < lookback + 1:
-        return False
-    atr_val = _calc_atr(bars[:lookback + 5])
-    min_break = atr_val * min_break_atr_pct if atr_val > 0 else level * 0.001
-
-    recent = bars[:lookback]
-    if direction == "SELL":
-        # Look for a bar that broke above level by at least min_break, then closed back below
-        for i, b in enumerate(recent[1:], 1):
-            if b.h > level + min_break:           # sharp break above level
-                # Check if subsequent bar(s) closed back below the level
-                for j in range(i):
-                    if recent[j].c < level:
-                        return True
-    else:  # BUY
-        for i, b in enumerate(recent[1:], 1):
-            if b.l < level - min_break:           # sharp break below level
-                for j in range(i):
-                    if recent[j].c > level:
-                        return True
-    return False
+    b0, b1 = bars[0], bars[1]
+    swept = b1.l < level * (1 - tolerance_pct)
+    reversed_close = b1.c > level or b0.c > level
+    return swept and reversed_close
 
 
 # ── Order Block Finder ────────────────────────────────────────────────────────
 
-def _calc_atr(bars: list, period: int = 14) -> float:
-    """Average True Range over `period` bars. bars[0] = most recent."""
-    if len(bars) < 2:
-        return 0.0
-    trs = []
-    for i in range(min(period, len(bars) - 1)):
-        tr = max(bars[i].h, bars[i + 1].c) - min(bars[i].l, bars[i + 1].c)
-        trs.append(tr)
-    return sum(trs) / len(trs) if trs else 0.0
-
-
 def find_bullish_ob(bars: list[Bar], start: int = 0, search: int = 15) -> Optional[tuple[float, float]]:
     """
     Bullish OB: last bearish candle before a strong bullish impulse.
-    Excludes high-volatility bars (range >= 2×ATR) — LuxAlgo parsed H/L concept:
-    news/spike bars are not institutional OBs.
+    Returns (ob_low, ob_high) — price zone to enter long.
     """
-    atr_val = _calc_atr(bars[:search + 5])
     for i in range(start, min(start + search, len(bars) - 2)):
         b = bars[i]
         b_next = bars[i + 1] if i + 1 < len(bars) else None
         if b_next is None:
             continue
-        # Skip volatility spike bars — not institutional positioning
-        if atr_val > 0 and (b.h - b.l) >= 2 * atr_val:
-            continue
+        # Bearish candle followed by strong bullish move
         if b.bearish and b_next.bullish:
             impulse = b_next.body / (b.range + 0.0001)
-            # LuxAlgo confluence filter: impulse candle must be body-dominated
-            b_next_body_pct = b_next.body / (b_next.range + 0.0001)
-            if impulse > 0.6 and b_next_body_pct > 0.4:
+            if impulse > 0.6:  # Strong impulse
                 return (b.l, b.h)
     return None
 
@@ -709,20 +497,16 @@ def find_bullish_ob(bars: list[Bar], start: int = 0, search: int = 15) -> Option
 def find_bearish_ob(bars: list[Bar], start: int = 0, search: int = 15) -> Optional[tuple[float, float]]:
     """
     Bearish OB: last bullish candle before a strong bearish impulse.
-    Excludes high-volatility bars — LuxAlgo parsed H/L concept.
+    Returns (ob_low, ob_high) — price zone to enter short.
     """
-    atr_val = _calc_atr(bars[:search + 5])
     for i in range(start, min(start + search, len(bars) - 2)):
         b = bars[i]
         b_next = bars[i + 1] if i + 1 < len(bars) else None
         if b_next is None:
             continue
-        if atr_val > 0 and (b.h - b.l) >= 2 * atr_val:
-            continue
         if b.bullish and b_next.bearish:
             impulse = b_next.body / (b.range + 0.0001)
-            b_next_body_pct = b_next.body / (b_next.range + 0.0001)
-            if impulse > 0.6 and b_next_body_pct > 0.4:
+            if impulse > 0.6:
                 return (b.l, b.h)
     return None
 
@@ -748,80 +532,39 @@ def find_bearish_fvg(bars: list[Bar]) -> Optional[tuple[float, float]]:
 # ── Bias Detector ─────────────────────────────────────────────────────────────
 
 def get_d1_bias(bars: list[Bar]) -> str:
-    """D1 trend direction using HH/HL vs LH/LL swing structure (ICT correct)."""
-    if len(bars) < 6:
+    """D1 trend direction based on recent structure."""
+    if len(bars) < 5:
         return "NEUTRAL"
-
-    recent = bars[:30]
-    swing_highs = find_swing_highs(recent, lookback=2)
-    swing_lows  = find_swing_lows(recent, lookback=2)
-
-    if len(swing_highs) >= 2 and len(swing_lows) >= 2:
-        # bars[0]=newest → swing_highs[0] = most recent swing high (smallest index)
-        h1, h2 = swing_highs[0][1], swing_highs[1][1]
-        l1, l2 = swing_lows[0][1],  swing_lows[1][1]
-        hh = h1 > h2   # Higher High
-        hl = l1 > l2   # Higher Low
-        lh = h1 < h2   # Lower High
-        ll = l1 < l2   # Lower Low
-        if hh and hl:
-            return "BULLISH"
-        if lh and ll:
-            return "BEARISH"
-
-    # Fallback: 3-swing momentum check
-    if len(swing_highs) >= 2:
-        if swing_highs[0][1] > swing_highs[1][1]:
-            return "BULLISH"
-        if swing_highs[0][1] < swing_highs[1][1]:
-            return "BEARISH"
-
-    # Final fallback: close momentum over last 10 bars
-    if len(bars) >= 10:
-        if bars[0].c > bars[9].c * 1.001:
-            return "BULLISH"
-        if bars[0].c < bars[9].c * 0.999:
-            return "BEARISH"
+    # Check if making higher highs and higher lows
+    recent = bars[:10]
+    highs = [b.h for b in recent]
+    lows  = [b.l for b in recent]
+    # Simple: compare first half vs second half
+    mid = len(recent) // 2
+    if not mid:
+        return "NEUTRAL"
+    avg_h1 = sum(highs[:mid]) / mid
+    avg_h2 = sum(highs[mid:]) / mid
+    avg_l1 = sum(lows[:mid]) / mid
+    avg_l2 = sum(lows[mid:]) / mid
+    if avg_h1 > avg_h2 and avg_l1 > avg_l2:
+        return "BULLISH"
+    elif avg_h1 < avg_h2 and avg_l1 < avg_l2:
+        return "BEARISH"
     return "NEUTRAL"
 
 
 def get_h4_structure(bars: list[Bar]) -> str:
-    """H4 market structure: BOS (trend continuation) + CHoCH (trend reversal)."""
+    """H4 market structure (BOS detection)."""
     if len(bars) < 10:
         return "RANGING"
     swing_highs = find_swing_highs(bars, lookback=2)
     swing_lows  = find_swing_lows(bars, lookback=2)
-    if not swing_highs or not swing_lows:
-        return "RANGING"
-
     current = bars[0].c
-    # Most recent swings (smallest index = most recent bar)
-    last_sh_idx, last_sh = swing_highs[0]
-    last_sl_idx, last_sl = swing_lows[0]
 
-    # BOS: break of previous swing high/low in the direction of the current trend
-    prev_sh = swing_highs[1][1] if len(swing_highs) > 1 else last_sh
-    prev_sl = swing_lows[1][1]  if len(swing_lows)  > 1 else last_sl
-
-    # BOS Bullish: current price broke above previous swing high (trend continuation up)
-    if current > prev_sh and (last_sl > swing_lows[1][1] if len(swing_lows) > 1 else True):
+    if swing_highs and current > swing_highs[-1][1]:
         return "BOS_BULLISH"
-    # BOS Bearish: current price broke below previous swing low (trend continuation down)
-    if current < prev_sl and (last_sh < swing_highs[1][1] if len(swing_highs) > 1 else True):
-        return "BOS_BEARISH"
-
-    # CHoCH: Change of Character — prior swing broken against the prevailing structure
-    # CHoCH Bullish: bearish structure broken — price broke ABOVE the last swing high
-    if last_sl_idx < last_sh_idx and current > last_sh:
-        return "CHOCH_BULL"
-    # CHoCH Bearish: bullish structure broken — price broke BELOW the last swing low
-    if last_sh_idx < last_sl_idx and current < last_sl:
-        return "CHOCH_BEAR"
-
-    # Simple BOS fallback
-    if current > last_sh:
-        return "BOS_BULLISH"
-    if current < last_sl:
+    if swing_lows and current < swing_lows[-1][1]:
         return "BOS_BEARISH"
     return "RANGING"
 
@@ -838,33 +581,30 @@ def detect_mss(bars: list[Bar], direction: str, lookback: int = 8) -> bool:
         return False
     recent = bars[:lookback]
     if direction == "BUY":
-        # BUY MSS: price made a LL then broke above the last LH that formed BEFORE the LL.
-        # bars[0]=newest, higher index=older. OLDER bars have HIGHER index.
+        # Find the most recent swing low, then check if price broke above the swing high before it
         lows  = find_swing_lows(recent,  lookback=2)
         highs = find_swing_highs(recent, lookback=2)
         if not lows or not highs:
             return False
-        last_low_idx = lows[0][0]   # most recent swing low index
-        # We need the swing high that is OLDER than the low (higher index = older bar)
-        highs_before_low = [(i, p) for i, p in highs if i > last_low_idx]
-        if not highs_before_low:
+        last_low_idx  = lows[0][0]
+        # Look for a swing high that formed AFTER the low
+        highs_after = [(i, p) for i, p in highs if i < last_low_idx]
+        if not highs_after:
             return False
-        pivot_high = highs_before_low[0][1]   # the Lower High preceding the Lower Low
-        return recent[0].c > pivot_high   # CHoCH up: broke above the preceding LH
+        pivot_high = highs_after[0][1]
+        return recent[0].c > pivot_high   # Current close broke above pivot = MSS up
 
     else:  # SELL
-        # SELL MSS: price made a HH then broke below the last HL that formed BEFORE the HH.
         highs = find_swing_highs(recent, lookback=2)
         lows  = find_swing_lows(recent,  lookback=2)
         if not highs or not lows:
             return False
-        last_high_idx = highs[0][0]   # most recent swing high index
-        # We need the swing low that is OLDER than the high (higher index = older bar)
-        lows_before_high = [(i, p) for i, p in lows if i > last_high_idx]
-        if not lows_before_high:
+        last_high_idx = highs[0][0]
+        lows_after = [(i, p) for i, p in lows if i < last_high_idx]
+        if not lows_after:
             return False
-        pivot_low = lows_before_high[0][1]   # the Higher Low preceding the Higher High
-        return recent[0].c < pivot_low   # CHoCH down: broke below the preceding HL
+        pivot_low = lows_after[0][1]
+        return recent[0].c < pivot_low    # Current close broke below pivot = MSS down
 
 
 def get_ltf_entry(
@@ -1015,20 +755,6 @@ def get_ltf_entry(
     return result
 
 
-def _pivot_tag_levels(reasons: list, d1_piv: dict, w1_piv: dict,
-                      entry: float, tp1: float, tp2: float, direction: str) -> None:
-    """Append a note to reasons when a TP target is near a pivot level."""
-    all_pivs = {**d1_piv, **{f"W1_{k}": v for k, v in w1_piv.items()}}
-    tol = entry * 0.001  # 0.1% tolerance
-    for tp_label, tp_val in [("TP1", tp1), ("TP2", tp2)]:
-        for label, pval in all_pivs.items():
-            if pval > 0 and abs(tp_val - pval) <= tol:
-                period = "W1" if label.startswith("W1_") else "D1"
-                key = label.replace("W1_", "")
-                reasons.append(f"{tp_label} aligns with {period} pivot {key.upper()} @ {pval:.5g}")
-                break
-
-
 # ── Main Setup Scanner ────────────────────────────────────────────────────────
 
 def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
@@ -1108,8 +834,8 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
     push_exh = push_exh_m15 if push_exh_m15["phase"] != "NEUTRAL" else push_exh_h1
 
     # ── Step 2e: Support / Resistance Analysis ───────────────────────
-    sr_info_h1  = find_key_levels(h1_bars, symbol=symbol)
-    sr_info_h4  = find_key_levels(h4_bars, tolerance_pct=0.003, symbol=symbol)
+    sr_info_h1  = find_key_levels(h1_bars)
+    sr_info_h4  = find_key_levels(h4_bars, tolerance_pct=0.003)
 
     # ── Step 2f: Opening Gaps (NDOG / NWOG) ─────────────────────────
     opening_gaps = get_opening_gap_levels(sym_data)
@@ -1143,27 +869,8 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
     gap_lows  = ([opening_gaps["ndog"]["low"]]  if "ndog" in opening_gaps else []) + \
                 ([opening_gaps["nwog"]["low"]  ] if "nwog" in opening_gaps else [])
 
-    # Daily pivot points from previous day's D1 bar
-    d1_pivots: dict = {}
-    if len(d1_bars) >= 2:
-        prev = d1_bars[1]  # prior closed day
-        d1_pivots = calculate_pivot_points(prev.h, prev.l, prev.c)
-
-    # Weekly pivot points from previous week's W1 bar
-    w1_pivots: dict = {}
-    if w1_bars and len(w1_bars) >= 2:
-        prev_w = w1_bars[1]
-        w1_pivots = calculate_pivot_points(prev_w.h, prev_w.l, prev_w.c)
-
-    # Pivot resistance levels (above price) → add to liq_highs
-    pivot_highs = [v for k, v in {**d1_pivots, **w1_pivots}.items()
-                   if k in ("r1","r2","r3","fib_r1","fib_r2","fib_r3","pp") and v > 0]
-    # Pivot support levels (below price) → add to liq_lows
-    pivot_lows  = [v for k, v in {**d1_pivots, **w1_pivots}.items()
-                   if k in ("s1","s2","s3","fib_s1","fib_s2","fib_s3","pp") and v > 0]
-
-    liq_highs = sorted(set(h4_eq_highs + h1_eq_highs + [pdh, pwh, pmh] + gap_highs + pivot_highs), reverse=True)
-    liq_lows  = sorted(set(h4_eq_lows  + h1_eq_lows  + [pdl, pwl, pml] + gap_lows  + pivot_lows))
+    liq_highs = sorted(set(h4_eq_highs + h1_eq_highs + [pdh, pwh, pmh] + gap_highs), reverse=True)
+    liq_lows  = sorted(set(h4_eq_lows  + h1_eq_lows  + [pdl, pwl, pml] + gap_lows))
     liq_highs = [l for l in liq_highs if l > current_price * 0.99]
     liq_lows  = [l for l in liq_lows  if l < current_price * 1.01 and l > 0]
 
@@ -1180,40 +887,13 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
     prices_list = data.get("prices", [])
     prices_dict_all = {p["symbol"]: p for p in prices_list}
 
-    # ── Precompute sweep context & chop state ────────────────────────
-    # Used to gate FVG/CHoCH entries: ICT requires a stop hunt (sweep)
-    # to have occurred BEFORE entering from an imbalance zone.
-    _sweep_bars_gate = m15_bars if m15_bars else h1_bars
-    _sweep_tol_gate  = _sweep_tolerance(symbol)
-    if _sweep_bars_gate:
-        _recently_swept_high, _recently_swept_low = _has_recent_sweep(
-            _sweep_bars_gate, liq_highs, liq_lows,
-            lookback=25, tolerance_pct=_sweep_tol_gate,
-        )
-    else:
-        _recently_swept_high = _recently_swept_low = False
-
-    # Chop filter: suppress new setups when H1 is range-bound
-    _now = time.time()
-    _h1_choppy = is_market_choppy(h1_bars, lookback=20, chop_ratio=2.5, symbol=symbol)
-    if _h1_choppy:
-        _chop_cooldown_ts[symbol] = _now
-    elif symbol in _chop_cooldown_ts and _now - _chop_cooldown_ts[symbol] < _CHOP_COOLDOWN_SECS:
-        _h1_choppy = True  # Within 4-bar cooldown after chop — still suppress FVG/CHoCH
-
     # ── Step 4: Sweep Detection on M15/H1 ───────────────────────────
-    _atr_local = _calc_atr(h1_bars[-20:], period=14) if h1_bars else 0.0
 
     # BEARISH SETUP: Sweep of high → SELL from OB below sweep
     for level in liq_highs[:5]:  # Check top 5 liquidity highs
         sweep_bars = m15_bars if m15_bars else h1_bars
         tol = _sweep_tolerance(symbol)
         if detect_sweep_high(sweep_bars, level, tolerance_pct=tol):
-            # Displacement check: last bar must show bearish conviction, not a doji/inside bar
-            _sweep_last = sweep_bars[-1] if sweep_bars else None
-            if _sweep_last and _sweep_last.range > 0 and (_sweep_last.body / _sweep_last.range) < 0.28:
-                continue  # Spinning top after sweep = no institutional follow-through
-
             sweep_touches = count_sweep_touches_high(sweep_bars, level, tolerance_pct=tol)
             # Find bearish OB to sell from
             ob = find_bearish_ob(h1_bars, start=0, search=10)
@@ -1223,24 +903,16 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
             if ob:
                 ob_low, ob_high = ob
 
-                # Proximity gate: OB must be close to swept level — stale OBs don't hold
-                if _atr_local > 0 and abs(ob_high - level) > _atr_local * 2:
-                    continue
-
                 # Pinpoint OB entry using precision levels
                 ob_prec = get_ob_precision_entry(ob_low, ob_high, "SELL")
                 entry = ob_prec["ote_50"]   # Enter at OB midpoint (50% OTE)
 
                 # Tight SL: just above swept level (the manipulation wick extreme)
                 # Invalidation = price returning above the swept high means setup is wrong
-                # SL: just above the actual sweep wick extreme (ICT structural SL)
-                sweep_extreme_high = max((b.h for b in sweep_bars[:4]), default=level * 1.002)
-                sl = max(sweep_extreme_high, level) * 1.001
-                # Ensure SL is at minimum above the OB top
-                sl = max(sl, ob_high + (ob_high - ob_low) * 0.3)
-                # ATR cap: SL cannot be more than 1.5× ATR from entry — prevents runaway risk
-                if _atr_local > 0:
-                    sl = min(sl, entry + _atr_local * 1.5)
+                sweep_extreme_high = max(b.h for b in sweep_bars[:3]) if sweep_bars else ob_high
+                sl = max(ob_high + (ob_high - ob_low) * 0.3,  # minimum: just above OB top
+                         level * (1 + tol * 0.5))              # target: just above swept level
+                sl = min(sl, sweep_extreme_high * 1.001)       # cap: just above sweep wick
                 risk = sl - entry
                 if risk <= 0:
                     continue
@@ -1268,56 +940,12 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                 elif w1_bias not in ("NEUTRAL", d1_bias) and w1_bias != "NEUTRAL":
                     confidence = max(0, confidence - 10)
 
-                # LuxAlgo Strong High: sweeping with-trend institutional resistance = A+ signal
-                if d1_bias == "BEARISH" and level in liq_highs[:3]:
-                    confidence = min(100, confidence + 8)
-
-                # Turtle Soup: sharp break above level + close back below = stop-run confirmed
-                _turtle = detect_turtle_soup(m15_bars or h1_bars, level, "SELL")
-                if _turtle:
-                    confidence = min(100, confidence + 12)
-
-                # Inducement: swept level is a known equal high = institutional stop hunt confirmed
-                _is_inducement = level in h1_eq_highs or level in h4_eq_highs
-                if _is_inducement:
-                    confidence = min(100, confidence + 10)
-
                 # Judas swing multi-touch bonus
                 j_bonus = judas_swing_bonus(sweep_touches)
                 if j_bonus:
                     confidence = min(100, confidence + j_bonus)
 
-                # OTE precision: high-confidence setups get deepest entry (tighter SL, better RR)
-                if confidence >= 70:
-                    _deep_entry = ob_prec["ote_79"]
-                    _deep_risk  = sl - _deep_entry
-                    if _deep_risk > 0:
-                        entry = _deep_entry
-                        risk  = _deep_risk
-                        tp1   = entry - risk * 1.5
-                        tp2   = entry - risk * 2.5
-                        tp3   = entry - risk * 4.0
-
-                # Snap TPs to institutional distribution grid
-                _dist = _dist_intervals.get(symbol, _dist_intervals.get("default", 0.0))
-                if _dist > 0:
-                    tp1 = _snap_to_interval(tp1, _dist, "SELL")
-                    tp2 = _snap_to_interval(tp2, _dist, "SELL")
-
-                # RR guard: TP snapping must not collapse RR below 1.3:1
-                if abs(tp1 - entry) < risk * 1.3:
-                    continue
-
-                # Multi-confluence gate: bare sweep alone is never enough
-                # Need at least 1 of: turtle soup, inducement, D1 alignment, W1 alignment
-                _sell_confirmers = sum([
-                    bool(_turtle), _is_inducement,
-                    d1_bias == "BEARISH", w1_bias == "BEARISH",
-                ])
-                if _sell_confirmers == 0:
-                    continue
-
-                if confidence >= 60:
+                if confidence >= 45:
                     pattern_names = [p.get("pattern","") for p in detected_patterns if p.get("direction") == "SELL"]
                     judas_tag = "" if sweep_touches < 2 else f" | Judas {sweep_touches}-touch sweep"
                     reasons = [
@@ -1333,8 +961,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                         reasons.append(f"Momentum: {push_exh['signal']}")
                     if sr_info_h1.get("phase_at_resistance"):
                         reasons.append(f"S/R: {sr_info_h1['phase_at_resistance']}")
-                    if _is_inducement:
-                        reasons.append("Inducement confirmed — swept level is equal high liquidity pool")
                     reasons.extend(extra_reasons)
                     if level == pdh:
                         reasons.insert(0, "Previous Day High swept — HIGH PRIORITY")
@@ -1342,9 +968,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                         reasons.insert(0, "Previous Week High swept — HIGH PRIORITY")
                     elif level == pmh:
                         reasons.insert(0, "Previous Month High swept")
-
-                    # Tag nearest pivot levels if within TP range
-                    _pivot_tag_levels(reasons, d1_pivots, w1_pivots, entry, tp1, tp2, "SELL")
 
                     rr = _blended_rr(abs(sl - entry), tp1, tp2, tp3, entry)
                     cs = _build_confluence(
@@ -1376,11 +999,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
         sweep_bars = m15_bars if m15_bars else h1_bars
         tol = _sweep_tolerance(symbol)
         if detect_sweep_low(sweep_bars, level, tolerance_pct=tol):
-            # Displacement check: last bar must show bullish conviction, not a doji/inside bar
-            _sweep_last = sweep_bars[-1] if sweep_bars else None
-            if _sweep_last and _sweep_last.range > 0 and (_sweep_last.body / _sweep_last.range) < 0.28:
-                continue  # Spinning top after sweep = no institutional follow-through
-
             sweep_touches = count_sweep_touches_low(sweep_bars, level, tolerance_pct=tol)
             ob = find_bullish_ob(h1_bars, start=0, search=10)
             if not ob:
@@ -1389,22 +1007,15 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
             if ob:
                 ob_low, ob_high = ob
 
-                # Proximity gate: OB must be close to swept level — stale OBs don't hold
-                if _atr_local > 0 and abs(ob_low - level) > _atr_local * 2:
-                    continue
-
                 # Pinpoint OB entry using precision levels
                 ob_prec = get_ob_precision_entry(ob_low, ob_high, "BUY")
                 entry = ob_prec["ote_50"]   # Enter at OB midpoint (50% OTE)
 
                 # Tight SL: just below swept level (invalidation = price returning below sweep)
-                sweep_extreme_low = min((b.l for b in sweep_bars[:4]), default=ob_low)
+                sweep_extreme_low = min(b.l for b in sweep_bars[:3]) if sweep_bars else ob_low
                 sl = min(ob_low - (ob_high - ob_low) * 0.3,   # minimum: just below OB bottom
                          level * (1 - tol * 0.5))              # target: just below swept level
                 sl = max(sl, sweep_extreme_low * 0.999)        # cap: just below sweep wick
-                # ATR cap: SL cannot be more than 1.5× ATR from entry — prevents runaway risk
-                if _atr_local > 0:
-                    sl = max(sl, entry - _atr_local * 1.5)
                 risk = entry - sl
                 if risk <= 0:
                     continue
@@ -1430,55 +1041,12 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                 elif w1_bias not in ("NEUTRAL", d1_bias) and w1_bias != "NEUTRAL":
                     confidence = max(0, confidence - 10)
 
-                # LuxAlgo Strong Low: sweeping with-trend institutional support = A+ signal
-                if d1_bias == "BULLISH" and level in liq_lows[:3]:
-                    confidence = min(100, confidence + 8)
-
-                # Turtle Soup: sharp break below level + close back above = stop-run confirmed
-                _turtle = detect_turtle_soup(m15_bars or h1_bars, level, "BUY")
-                if _turtle:
-                    confidence = min(100, confidence + 12)
-
-                # Inducement: swept level is a known equal low = institutional stop hunt confirmed
-                _is_inducement = level in h1_eq_lows or level in h4_eq_lows
-                if _is_inducement:
-                    confidence = min(100, confidence + 10)
-
                 # Judas swing multi-touch bonus
                 j_bonus = judas_swing_bonus(sweep_touches)
                 if j_bonus:
                     confidence = min(100, confidence + j_bonus)
 
-                # OTE precision: high-confidence setups get deepest entry (tighter SL, better RR)
-                if confidence >= 70:
-                    _deep_entry = ob_prec["ote_79"]
-                    _deep_risk  = _deep_entry - sl
-                    if _deep_risk > 0:
-                        entry = _deep_entry
-                        risk  = _deep_risk
-                        tp1   = entry + risk * 1.5
-                        tp2   = entry + risk * 2.5
-                        tp3   = entry + risk * 4.0
-
-                # Snap TPs to institutional distribution grid
-                _dist = _dist_intervals.get(symbol, _dist_intervals.get("default", 0.0))
-                if _dist > 0:
-                    tp1 = _snap_to_interval(tp1, _dist, "BUY")
-                    tp2 = _snap_to_interval(tp2, _dist, "BUY")
-
-                # RR guard: TP snapping must not collapse RR below 1.3:1
-                if abs(tp1 - entry) < risk * 1.3:
-                    continue
-
-                # Multi-confluence gate: bare sweep alone is never enough
-                _buy_confirmers = sum([
-                    bool(_turtle), _is_inducement,
-                    d1_bias == "BULLISH", w1_bias == "BULLISH",
-                ])
-                if _buy_confirmers == 0:
-                    continue
-
-                if confidence >= 60:
+                if confidence >= 45:
                     pattern_names = [p.get("pattern","") for p in detected_patterns if p.get("direction") == "BUY"]
                     judas_tag = "" if sweep_touches < 2 else f" | Judas {sweep_touches}-touch sweep"
                     reasons = [
@@ -1494,8 +1062,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                         reasons.append(f"Momentum: {push_exh['signal']}")
                     if sr_info_h1.get("phase_at_support"):
                         reasons.append(f"S/R: {sr_info_h1['phase_at_support']}")
-                    if _is_inducement:
-                        reasons.append("Inducement confirmed — swept level is equal low liquidity pool")
                     reasons.extend(extra_reasons)
                     if level == pdl:
                         reasons.insert(0, "Previous Day Low swept — HIGH PRIORITY")
@@ -1503,8 +1069,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                         reasons.insert(0, "Previous Week Low swept — HIGH PRIORITY")
                     elif level == pml:
                         reasons.insert(0, "Previous Month Low swept")
-
-                    _pivot_tag_levels(reasons, d1_pivots, w1_pivots, entry, tp1, tp2, "BUY")
 
                     rr = _blended_rr(abs(entry - sl), tp1, tp2, tp3, entry)
                     cs = _build_confluence(
@@ -1531,15 +1095,9 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                         confluence=cs, grade=cs.grade,
                     ))
 
-    # ── Step 5: FVG Entries — sweep context gated ───────────────────
-    # ICT: FVG retracement entries are only valid AFTER liquidity has been
-    # swept. Without a confirmed sweep, entries into imbalances are premature.
-    # When no sweep: confidence is penalized (-20) and threshold raised to 65.
-    # If CISD or Inverted FVG is detected, partial credit restores threshold.
-    if _h1_choppy:
-        pass  # Skip FVG entries in choppy/ranging markets entirely
+    # ── Step 5: FVG Entries (no sweep needed) ───────────────────────
     # Bullish FVG on H1 with D1 bullish bias
-    elif d1_bias == "BULLISH" or h4_struct in ("BOS_BULLISH", "CHOCH_BULL"):
+    if d1_bias == "BULLISH" or h4_struct in ("BOS_BULLISH", "CHOCH_BULL"):
         fvg = find_bullish_fvg(h1_bars[:8])
         if fvg:
             fvg_low, fvg_high = fvg
@@ -1569,12 +1127,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                     )
                     confidence = max(40, confidence - 5)
 
-                    # ── Sweep gate: penalize FVG entries without prior stop hunt ──
-                    # ICT: enter from an imbalance ONLY after liquidity has been swept
-                    if not _recently_swept_low:
-                        confidence = max(0, confidence - 20)
-                    _fvg_buy_min = 68 if not _recently_swept_low else 58  # raised: swept 45→58, unswept 65→68
-
                     # W1 alignment bonus/penalty
                     if w1_bias == d1_bias and w1_bias != "NEUTRAL":
                         confidence = min(100, confidence + 15)
@@ -1585,19 +1137,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                     iofed = analyze_iofed(h1_bars, "BUY", fvg_low, fvg_high)
                     if iofed["fvg_in_ote"]:
                         confidence = min(100, confidence + 20)
-
-                    # Inverted FVG / CISD: close-through of opposing imbalance = intent signal
-                    _ltf_bars_buy = m15_bars if m15_bars else h1_bars
-                    _inv_fvg_buy  = detect_inverted_fvg(_ltf_bars_buy, "BUY")
-                    _cisd_buy     = detect_cisd(_ltf_bars_buy, "BUY")
-                    if _inv_fvg_buy["detected"]:
-                        confidence = min(100, confidence + _inv_fvg_buy["bonus"])
-                        if not _recently_swept_low:
-                            _fvg_buy_min = 63  # Inv FVG = partial sweep: discount 68→63
-                    if _cisd_buy["detected"]:
-                        confidence = min(100, confidence + _cisd_buy["bonus"])
-                        if not _recently_swept_low:
-                            _fvg_buy_min = min(_fvg_buy_min, 63)  # CISD caps at 63, never below
 
                     # LTF confirmed → precision entry, boost confidence
                     # LTF unconfirmed → zone identified, reduce confidence (awaiting trigger)
@@ -1611,7 +1150,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                             confidence = min(100, confidence + 5)
                         etype = "H1_FVG_ZONE_BUY"
 
-                    if confidence >= _fvg_buy_min:
+                    if confidence >= 45:
                         rr = _blended_rr(abs(final_entry - final_sl), tp1, tp2, tp3, final_entry)
                         pat_names = [p.get("pattern","") for p in detected_patterns if p.get("direction")=="BUY"]
                         reasons = [
@@ -1621,11 +1160,8 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                             f"Entry: {final_entry:.5g} | SL: {final_sl:.5g}",
                             f"Session: {session} | AMD: {amd_phase}",
                             f"Quarter: {fvg_q['quarter']} ({fvg_q['pct']:.0f}%)",
-                            f"Sweep confirmed: {'YES' if _recently_swept_low else 'NO (CISD/IOFED required)'}",
                         ]
                         if iofed["fvg_in_ote"]: reasons.append(f"IOFED: {iofed['reason']}")
-                        if _inv_fvg_buy["detected"]: reasons.append(_inv_fvg_buy["reason"])
-                        if _cisd_buy["detected"]:    reasons.append(_cisd_buy["reason"])
                         if ltf["m15_mss"]: reasons.append("M15 MSS confirmed")
                         if ltf["m5_fvg"]:  reasons.append("M5 FVG entry trigger")
                         if ltf["m1_mss"]:  reasons.append("M1 MSS — execution confirmed")
@@ -1635,7 +1171,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                         cs = _build_confluence(
                             symbol, "BUY", d1_bias, h4_struct, amd_phase,
                             gmt_hour, gmt_min, etype,
-                            liq_swept=_recently_swept_low, h4_eq_highs=h4_eq_highs, h4_eq_lows=h4_eq_lows,
+                            liq_swept=False, h4_eq_highs=h4_eq_highs, h4_eq_lows=h4_eq_lows,
                             current_price=current_price, fvg_low=fvg_low, fvg_high=fvg_high,
                             h1_bars=h1_bars, ltf_confirmed=ltf["confirmed"],
                             prices_dict=prices_dict_all,
@@ -1654,10 +1190,9 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                             rr_ratio=round(rr, 2), tf_bias=d1_bias,
                             invalidation=round(final_sl * 0.999, 5),
                             confluence=cs, grade=cs.grade,
-                            liq_swept=_recently_swept_low,
                         ))
 
-    if not _h1_choppy and (d1_bias == "BEARISH" or h4_struct in ("BOS_BEARISH", "CHOCH_BEAR")):
+    if d1_bias == "BEARISH" or h4_struct in ("BOS_BEARISH", "CHOCH_BEAR"):
         fvg = find_bearish_fvg(h1_bars[:8])
         if fvg:
             fvg_low, fvg_high = fvg
@@ -1684,11 +1219,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                     )
                     confidence = max(40, confidence - 5)
 
-                    # ── Sweep gate: penalize FVG entries without prior stop hunt ──
-                    if not _recently_swept_high:
-                        confidence = max(0, confidence - 20)
-                    _fvg_sell_min = 68 if not _recently_swept_high else 58  # raised: swept 45→58, unswept 65→68
-
                     if w1_bias == d1_bias and w1_bias != "NEUTRAL":
                         confidence = min(100, confidence + 15)
                     elif w1_bias not in ("NEUTRAL", d1_bias) and w1_bias != "NEUTRAL":
@@ -1697,19 +1227,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                     iofed = analyze_iofed(h1_bars, "SELL", fvg_low, fvg_high)
                     if iofed["fvg_in_ote"]:
                         confidence = min(100, confidence + 20)
-
-                    # Inverted FVG / CISD: close-through of opposing imbalance = intent signal
-                    _ltf_bars_sell = m15_bars if m15_bars else h1_bars
-                    _inv_fvg_sell  = detect_inverted_fvg(_ltf_bars_sell, "SELL")
-                    _cisd_sell     = detect_cisd(_ltf_bars_sell, "SELL")
-                    if _inv_fvg_sell["detected"]:
-                        confidence = min(100, confidence + _inv_fvg_sell["bonus"])
-                        if not _recently_swept_high:
-                            _fvg_sell_min = 63  # Inv FVG = partial sweep: discount 68→63
-                    if _cisd_sell["detected"]:
-                        confidence = min(100, confidence + _cisd_sell["bonus"])
-                        if not _recently_swept_high:
-                            _fvg_sell_min = min(_fvg_sell_min, 63)  # CISD caps at 63, never below
 
                     if ltf["confirmed"]:
                         confidence = min(100, confidence + 10)
@@ -1721,7 +1238,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                             confidence = min(100, confidence + 5)
                         etype = "H1_FVG_ZONE_SELL"
 
-                    if confidence >= _fvg_sell_min:
+                    if confidence >= 45:
                         rr = _blended_rr(abs(final_sl - final_entry), tp1, tp2, tp3, final_entry)
                         pat_names = [p.get("pattern","") for p in detected_patterns if p.get("direction")=="SELL"]
                         reasons = [
@@ -1731,11 +1248,8 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                             f"Entry: {final_entry:.5g} | SL: {final_sl:.5g}",
                             f"Session: {session} | AMD: {amd_phase}",
                             f"Quarter: {fvg_q['quarter']} ({fvg_q['pct']:.0f}%)",
-                            f"Sweep confirmed: {'YES' if _recently_swept_high else 'NO (CISD/IOFED required)'}",
                         ]
                         if iofed["fvg_in_ote"]: reasons.append(f"IOFED: {iofed['reason']}")
-                        if _inv_fvg_sell["detected"]: reasons.append(_inv_fvg_sell["reason"])
-                        if _cisd_sell["detected"]:    reasons.append(_cisd_sell["reason"])
                         if ltf["m15_mss"]: reasons.append("M15 MSS confirmed")
                         if ltf["m5_fvg"]:  reasons.append("M5 FVG entry trigger")
                         if ltf["m1_mss"]:  reasons.append("M1 MSS — execution confirmed")
@@ -1745,7 +1259,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                         cs = _build_confluence(
                             symbol, "SELL", d1_bias, h4_struct, amd_phase,
                             gmt_hour, gmt_min, etype,
-                            liq_swept=_recently_swept_high, h4_eq_highs=h4_eq_highs, h4_eq_lows=h4_eq_lows,
+                            liq_swept=False, h4_eq_highs=h4_eq_highs, h4_eq_lows=h4_eq_lows,
                             current_price=current_price, fvg_low=fvg_low, fvg_high=fvg_high,
                             h1_bars=h1_bars, ltf_confirmed=ltf["confirmed"],
                             prices_dict=prices_dict_all,
@@ -1764,12 +1278,10 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                             rr_ratio=round(rr, 2), tf_bias=d1_bias,
                             invalidation=round(final_sl * 1.001, 5),
                             confluence=cs, grade=cs.grade,
-                            liq_swept=_recently_swept_high,
                         ))
 
     # ── Step 6: Breaker Block Setups ─────────────────────────────────
-    # Breaker blocks are mitigated OBs — they require the same sweep context as FVGs.
-    if bull_breaker and (d1_bias == "BULLISH" or h4_struct == "BOS_BULLISH") and not _h1_choppy:
+    if bull_breaker and (d1_bias == "BULLISH" or h4_struct == "BOS_BULLISH"):
         bb       = bull_breaker
         h1_entry = bb["ce"]
         h1_sl    = _structural_sl(h1_bars, h1_entry, "BUY", bb["ob_low"])
@@ -1791,9 +1303,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
             )
             conf += bb["confidence_bonus"]
             conf = min(conf, 100)
-            # Sweep gate for breaker blocks (same principle as FVG entries)
-            if not _recently_swept_low:
-                conf = max(0, conf - 15)
             if w1_bias == d1_bias and w1_bias != "NEUTRAL":
                 conf = min(100, conf + 15)
             elif w1_bias not in ("NEUTRAL", d1_bias) and w1_bias != "NEUTRAL":
@@ -1818,7 +1327,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
             cs = _build_confluence(
                 symbol, "BUY", d1_bias, h4_struct, amd_phase,
                 gmt_hour, gmt_min, etype,
-                liq_swept=_recently_swept_low, h4_eq_highs=h4_eq_highs, h4_eq_lows=h4_eq_lows,
+                liq_swept=False, h4_eq_highs=h4_eq_highs, h4_eq_lows=h4_eq_lows,
                 current_price=current_price, fvg_low=bb["ob_low"], fvg_high=bb["ob_high"],
                 h1_bars=h1_bars, ltf_confirmed=ltf["confirmed"], prices_dict=prices_dict_all,
             )
@@ -1833,10 +1342,9 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                 rr_ratio=round(rr, 2), tf_bias=d1_bias,
                 invalidation=round(final_sl * 0.999, 5),
                 confluence=cs, grade=cs.grade,
-                liq_swept=_recently_swept_low,
             ))
 
-    if bear_breaker and (d1_bias == "BEARISH" or h4_struct == "BOS_BEARISH") and not _h1_choppy:
+    if bear_breaker and (d1_bias == "BEARISH" or h4_struct == "BOS_BEARISH"):
         bb       = bear_breaker
         h1_entry = bb["ce"]
         h1_sl    = _structural_sl(h1_bars, h1_entry, "SELL", bb["ob_high"])
@@ -1858,9 +1366,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
             )
             conf += bb["confidence_bonus"]
             conf = min(conf, 100)
-            # Sweep gate for bearish breaker
-            if not _recently_swept_high:
-                conf = max(0, conf - 15)
             if w1_bias == d1_bias and w1_bias != "NEUTRAL":
                 conf = min(100, conf + 15)
             elif w1_bias not in ("NEUTRAL", d1_bias) and w1_bias != "NEUTRAL":
@@ -1885,7 +1390,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
             cs = _build_confluence(
                 symbol, "SELL", d1_bias, h4_struct, amd_phase,
                 gmt_hour, gmt_min, etype,
-                liq_swept=_recently_swept_high, h4_eq_highs=h4_eq_highs, h4_eq_lows=h4_eq_lows,
+                liq_swept=False, h4_eq_highs=h4_eq_highs, h4_eq_lows=h4_eq_lows,
                 current_price=current_price, fvg_low=bb["ob_low"], fvg_high=bb["ob_high"],
                 h1_bars=h1_bars, ltf_confirmed=ltf["confirmed"], prices_dict=prices_dict_all,
             )
@@ -1900,14 +1405,13 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                 rr_ratio=round(rr, 2), tf_bias=d1_bias,
                 invalidation=round(final_sl * 1.001, 5),
                 confluence=cs, grade=cs.grade,
-                liq_swept=_recently_swept_high,
             ))
 
     # ── Step 7: Silver Bullet Model ───────────────────────────────────
-    # Only fires during 10-11 AM EST or 2-3 PM EST windows (London/NY sessions).
-    # Blocked during ACCUMULATION (Asia) — Silver Bullet is a NY/London model only.
+    # Only fires during 10-11 AM EST or 2-3 PM EST windows.
+    # Requires: identified draw on liquidity + MSS + first FVG in direction.
     sb_window = is_silver_bullet_window(gmt_hour, gmt_min)
-    if sb_window and amd_phase != "ACCUMULATION":
+    if sb_window:
         sb_bonus, sb_reason = _score_silver_bullet_bonus(gmt_hour, gmt_min)
 
         # Silver Bullet BUY: in SB window, D1/H4 bullish, first BISI FVG above current price
@@ -1930,11 +1434,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                         eqh_eql=eqh_eql_info,
                     )
                     conf = min(conf + sb_bonus, 100)
-                    fvg_mit = fvg.get("mitigation_pct", 0)
-                    if fvg_mit > 60:
-                        continue  # Skip FVGs that are more than 60% filled
-                    if fvg_mit > 30:
-                        conf = max(0, conf - 8)  # Penalise partially filled zones
                     iofed = analyze_iofed(h1_bars, "BUY", fvg["low"], fvg["high"])
                     if iofed["fvg_in_ote"]:
                         conf = min(100, conf + 20)
@@ -1949,7 +1448,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                     cs = _build_confluence(
                         symbol, "BUY", d1_bias, h4_struct, amd_phase,
                         gmt_hour, gmt_min, sb_etype,
-                        liq_swept=_recently_swept_low, h4_eq_highs=h4_eq_highs, h4_eq_lows=h4_eq_lows,
+                        liq_swept=False, h4_eq_highs=h4_eq_highs, h4_eq_lows=h4_eq_lows,
                         current_price=current_price, fvg_low=fvg["low"], fvg_high=fvg["high"],
                         h1_bars=h1_bars, ltf_confirmed=False, prices_dict=prices_dict_all,
                     )
@@ -1964,7 +1463,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                         rr_ratio=round(rr, 2), tf_bias=d1_bias,
                         invalidation=round(sl * 0.999, 5),
                         confluence=cs, grade=cs.grade,
-                        liq_swept=_recently_swept_low,
                     ))
                     break   # Only take first qualifying FVG
 
@@ -1988,11 +1486,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                         eqh_eql=eqh_eql_info,
                     )
                     conf = min(conf + sb_bonus, 100)
-                    fvg_mit = fvg.get("mitigation_pct", 0)
-                    if fvg_mit > 60:
-                        continue  # Skip FVGs that are more than 60% filled
-                    if fvg_mit > 30:
-                        conf = max(0, conf - 8)  # Penalise partially filled zones
                     iofed = analyze_iofed(h1_bars, "SELL", fvg["low"], fvg["high"])
                     if iofed["fvg_in_ote"]:
                         conf = min(100, conf + 20)
@@ -2007,7 +1500,7 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                     cs = _build_confluence(
                         symbol, "SELL", d1_bias, h4_struct, amd_phase,
                         gmt_hour, gmt_min, sb_etype,
-                        liq_swept=_recently_swept_high, h4_eq_highs=h4_eq_highs, h4_eq_lows=h4_eq_lows,
+                        liq_swept=False, h4_eq_highs=h4_eq_highs, h4_eq_lows=h4_eq_lows,
                         current_price=current_price, fvg_low=fvg["low"], fvg_high=fvg["high"],
                         h1_bars=h1_bars, ltf_confirmed=False, prices_dict=prices_dict_all,
                     )
@@ -2022,7 +1515,6 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                         rr_ratio=round(rr, 2), tf_bias=d1_bias,
                         invalidation=round(sl * 1.001, 5),
                         confluence=cs, grade=cs.grade,
-                        liq_swept=_recently_swept_high,
                     ))
                     break
 
@@ -2128,27 +1620,19 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                             patterns=detected_patterns, sr_info=sr_info_h1,
                             push_exh=push_exh, eqh_eql=eqh_eql_info,
                         )
-                    # Sweep gate for CHoCH: penalize when no sweep preceded the CHoCH
-                    _choch_swept = (_recently_swept_low  if choch_dir == "BUY"
-                                    else _recently_swept_high)
-                    if not _choch_swept:
-                        choch_conf = max(0, choch_conf - 15)
+                    choch_conf = max(60, choch_conf)  # CHoCH entry starts at 60 base
                     if w1_bias == d1_bias and w1_bias != "NEUTRAL":
                         choch_conf = min(100, choch_conf + 15)
-                    _choch_min = 60 if _choch_swept else 72  # Higher bar without sweep
-                    if choch_conf >= _choch_min:
+                    if choch_conf >= 50:
                         setups.append(ICTSetup(
                             symbol=symbol, direction=choch_dir,
                             entry_type=f"CHOCH_ENTRY_{choch_dir}",
                             entry_price=round(entry, 5), sl_price=round(sl, 5),
                             tp1_price=round(tp1, 5), tp2_price=round(tp2, 5), tp3_price=round(tp3, 5),
                             confidence=min(100, choch_conf),
-                            reasons=[
-                                f"M15 CHoCH {choch_dir} — structure shift confirmed",
-                                f"Entry zone: {z_low:.5g}–{z_high:.5g}",
-                                f"Session: {session} | AMD: {amd_phase}",
-                                f"Sweep context: {'confirmed' if _choch_swept else 'NOT confirmed — high bar applied'}",
-                            ] + choch_extra[:3],
+                            reasons=[f"M15 CHoCH {choch_dir} — structure shift confirmed",
+                                     f"Entry zone: {z_low:.5g}–{z_high:.5g}",
+                                     f"Session: {session} | AMD: {amd_phase}"] + choch_extra[:3],
                             session=session, amd_phase=amd_phase,
                             rr_ratio=round(abs(tp1 - entry) / max(risk, 0.00001), 2),
                             tf_bias=d1_bias,
@@ -2211,44 +1695,6 @@ def get_quarter_position(price: float, period_high: float, period_low: float) ->
         "equilibrium":  round(equilibrium, 5),
         "period_high":  period_high,
         "period_low":   period_low,
-    }
-
-
-def calculate_pivot_points(high: float, low: float, close: float) -> dict:
-    """
-    Standard and Fibonacci pivot points from the prior period (day/week).
-
-    Standard:  PP = (H+L+C)/3,  R1/R2/R3,  S1/S2/S3
-    Fibonacci: PP same, levels use 0.382/0.618/1.0 ratios
-
-    Returns dict with keys: pp, r1, r2, r3, s1, s2, s3,
-                             fib_r1, fib_r2, fib_r3, fib_s1, fib_s2, fib_s3
-    Filters out zero values.
-    """
-    if high <= 0 or low <= 0 or close <= 0 or high <= low:
-        return {}
-    rng = high - low
-    pp  = (high + low + close) / 3.0
-    r1  = 2 * pp - low
-    r2  = pp + rng
-    r3  = high + 2 * (pp - low)
-    s1  = 2 * pp - high
-    s2  = pp - rng
-    s3  = low - 2 * (high - pp)
-
-    fib_r1 = pp + rng * 0.382
-    fib_r2 = pp + rng * 0.618
-    fib_r3 = pp + rng * 1.000
-    fib_s1 = pp - rng * 0.382
-    fib_s2 = pp - rng * 0.618
-    fib_s3 = pp - rng * 1.000
-
-    return {
-        "pp":     round(pp, 5),
-        "r1":     round(r1, 5),  "r2": round(r2, 5),  "r3": round(r3, 5),
-        "s1":     round(s1, 5),  "s2": round(s2, 5),  "s3": round(s3, 5),
-        "fib_r1": round(fib_r1, 5), "fib_r2": round(fib_r2, 5), "fib_r3": round(fib_r3, 5),
-        "fib_s1": round(fib_s1, 5), "fib_s2": round(fib_s2, 5), "fib_s3": round(fib_s3, 5),
     }
 
 
@@ -3609,7 +3055,7 @@ def analyze_iofed(bars: list, direction: str, fvg_low: float, fvg_high: float) -
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def find_key_levels(bars: list[Bar], tolerance_pct: float = 0.002,
-                    min_touches: int = 2, symbol: str = "") -> dict:
+                    min_touches: int = 2) -> dict:
     """
     Identify significant support and resistance levels from price structure.
 
@@ -3661,7 +3107,7 @@ def find_key_levels(bars: list[Bar], tolerance_pct: float = 0.002,
     nearest_res = min((r["level"] for r in resistances), default=0)
 
     # Round numbers (psychological S/R)
-    round_levels = _get_round_levels(current_price, symbol)
+    round_levels = _get_round_levels(current_price)
 
     # Phase at nearest levels
     push_exh = detect_push_exhaustion(bars)
@@ -3696,35 +3142,17 @@ def find_key_levels(bars: list[Bar], tolerance_pct: float = 0.002,
     }
 
 
-def _get_round_levels(price: float, symbol: str = "") -> list[float]:
-    """
-    Identify nearby psychological round number levels, symbol-aware.
-    JPY pairs (100–200 range) use step=1.0 (not 10.0) for key levels like 150.00, 151.00.
-    Gold uses step=50 (1800, 1850, 1900). Silver uses step=1.0 or 0.50.
-    """
+def _get_round_levels(price: float) -> list[float]:
+    """Identify nearby psychological round number levels."""
     if price <= 0:
         return []
 
-    sym = symbol.upper()
-    # Symbol-specific overrides
-    if "XAU" in sym or "GOLD" in sym:
-        step = 50.0    # Gold: 1800, 1850, 1900, 1950
-    elif "XAG" in sym or "SILVER" in sym:
-        step = 0.50    # Silver: 22.50, 23.00, 23.50
-    elif "JPY" in sym:
-        step = 1.0     # JPY: 149.00, 150.00, 151.00 (not 140, 150, 160)
-    elif any(x in sym for x in ("NAS", "US30", "DOW", "SPX", "GER", "UK100", "DAX")):
-        step = 500.0   # Indices at 18000–40000: use 500-point psychological levels
-    elif price >= 1000:
-        step = 50.0    # Crude oil / other commodities
-    elif price >= 100:
-        step = 10.0
-    elif price >= 10:
-        step = 1.0
-    elif price >= 1:
-        step = 0.10
-    else:
-        step = 0.010
+    # Determine appropriate step based on price magnitude
+    if price >= 1000:   step = 50.0    # Gold: 1800, 1850, 1900
+    elif price >= 100:  step = 10.0
+    elif price >= 10:   step = 1.0
+    elif price >= 1:    step = 0.10
+    else:               step = 0.010
 
     base = round(price / step) * step
     return [round(base + i * step, 5) for i in range(-3, 4) if base + i * step != price]
@@ -3780,27 +3208,24 @@ def _score_buy_setup_full(d1_bias: str, h4_struct: str, amd: str, session: str,
             score -= 12
             reasons.append(f"Q4 Premium zone ({pct:.0f}%) — avoid BUY here")
 
-        # OTE BUY zone: 21–38% of period range (61.8–79% pullback from high)
-        pct = quarter_info.get("pct", 50)
-        if 21 <= pct <= 38:
-            ote_l = quarter_info.get("ote_low", 0)
-            ote_h = quarter_info.get("ote_high", 0)
-            score += 15
-            reasons.append(f"Price in OTE Fibonacci BUY zone ({ote_l:.5g}–{ote_h:.5g}) — highest precision entry")
+        eq = quarter_info.get("equilibrium", 0)
+        if eq > 0 and quarter_info.get("ote_low", 0) > 0:
+            ote_l = quarter_info["ote_low"]
+            ote_h = quarter_info["ote_high"]
+            price = quarter_info.get("period_low", 0)
+            if price and ote_l <= price <= ote_h:
+                score += 15
+                reasons.append(f"Price in OTE Fibonacci zone ({ote_l:.5g}–{ote_h:.5g}) — highest precision entry")
 
-    # Technical Patterns — capped to prevent score inflation
-    # Single pattern cap: 8 pts. Total pattern contribution cap: 16 pts.
-    _pat_total_buy = 0
+    # Technical Patterns
     for p in (patterns or []):
-        if isinstance(p, dict) and _pat_total_buy < 16:
+        if isinstance(p, dict):
             pat_dir = p.get("direction", "")
-            bonus   = min(8, p.get("confidence_bonus", 8))
+            bonus   = p.get("confidence_bonus", 10)
             name    = p.get("pattern", "")
             if pat_dir == "BUY":
-                actual = min(bonus, 16 - _pat_total_buy)
-                score += actual
-                _pat_total_buy += actual
-                reasons.append(f"Pattern: {name} (+{actual} confluence)")
+                score += bonus
+                reasons.append(f"Pattern: {name} ({'+' + str(bonus)} confluence)")
 
     # S/R Context
     if sr_info:
@@ -3885,29 +3310,25 @@ def _score_sell_setup_full(d1_bias: str, h4_struct: str, amd: str, session: str,
             score -= 12
             reasons.append(f"Q1 Discount zone ({pct:.0f}%) — avoid SELL here")
 
-        # OTE SELL zone: 62–79% of period range from low (21–38% from high)
-        pct = quarter_info.get("pct", 50)
-        if 62 <= pct <= 79:
+        if quarter_info.get("ote_low", 0) > 0:
+            ote_l = quarter_info["ote_low"]
+            ote_h = quarter_info["ote_high"]
             p_high = quarter_info.get("period_high", 0)
-            p_low  = quarter_info.get("period_low", 0)
-            if p_high and p_low:
-                rng = p_high - p_low
-                ote_sell_l = p_high - rng * 0.38
-                ote_sell_h = p_high - rng * 0.21
-                score += 15
-                reasons.append(f"Price in OTE Fibonacci SELL zone ({ote_sell_l:.5g}–{ote_sell_h:.5g}) — highest precision entry")
+            if p_high:
+                ote_sell_l = p_high - (quarter_info["period_high"] - quarter_info["period_low"]) * 0.38
+                ote_sell_h = p_high - (quarter_info["period_high"] - quarter_info["period_low"]) * 0.21
+                if ote_sell_l <= p_high <= ote_sell_h:
+                    score += 15
+                    reasons.append("Price in OTE Fibonacci SELL zone — highest precision entry")
 
-    _pat_total_sell = 0
     for p in (patterns or []):
-        if isinstance(p, dict) and _pat_total_sell < 16:
+        if isinstance(p, dict):
             pat_dir = p.get("direction", "")
-            bonus   = min(8, p.get("confidence_bonus", 8))
+            bonus   = p.get("confidence_bonus", 10)
             name    = p.get("pattern", "")
             if pat_dir == "SELL":
-                actual = min(bonus, 16 - _pat_total_sell)
-                score += actual
-                _pat_total_sell += actual
-                reasons.append(f"Pattern: {name} (+{actual} confluence)")
+                score += bonus
+                reasons.append(f"Pattern: {name} (+{bonus} confluence)")
 
     if sr_info:
         phase_res = sr_info.get("phase_at_resistance", "")
@@ -3964,27 +3385,20 @@ def fvg_consequent_encroachment(fvg_low: float, fvg_high: float) -> float:
 def find_all_bullish_fvgs(bars: list[Bar], max_fvgs: int = 5) -> list[dict]:
     """
     Find all unmitigated bullish FVGs (BISI — Buyside Imbalance Sellside Inefficiency).
-    LuxAlgo auto-threshold: skip FVGs smaller than 30% of ATR (noise filter).
+    Returns list of dicts with low, high, ce (50%), and whether it's been partially filled.
     """
     fvgs = []
     current_price = bars[0].c if bars else 0
-    atr_val = _calc_atr(bars)
-    min_size = atr_val * 0.3 if atr_val > 0 else 0  # LuxAlgo cumulative mean threshold
     for i in range(len(bars) - 2):
         b0, b2 = bars[i], bars[i + 2]
-        if b0.l > b2.h:
+        if b0.l > b2.h:   # Gap: candle[i].low > candle[i+2].high
             low  = b2.h
             high = b0.l
-            if min_size > 0 and (high - low) < min_size:
-                continue  # Filter noise FVG below ATR threshold
             ce   = fvg_consequent_encroachment(low, high)
-            if current_price > low:
+            # Skip if fully mitigated (price has traded through it)
+            if current_price > low:   # Price is above → still below FVG? No — if price above high, FVG filled
                 if current_price > high:
-                    continue
-            if current_price > low:
-                mitigation_pct = min(100.0, (current_price - low) / (high - low) * 100)
-            else:
-                mitigation_pct = 0.0
+                    continue   # Fully above — already mitigated
             fvgs.append({
                 "type":        "BISI",
                 "direction":   "BUY",
@@ -3993,8 +3407,7 @@ def find_all_bullish_fvgs(bars: list[Bar], max_fvgs: int = 5) -> list[dict]:
                 "ce":          ce,
                 "size":        round(high - low, 5),
                 "bar_index":   i,
-                "mitigated":   current_price < low,
-                "mitigation_pct": round(mitigation_pct, 1),
+                "mitigated":   current_price < low,   # Price hasn't returned yet
             })
         if len(fvgs) >= max_fvgs:
             break
@@ -4004,27 +3417,18 @@ def find_all_bullish_fvgs(bars: list[Bar], max_fvgs: int = 5) -> list[dict]:
 def find_all_bearish_fvgs(bars: list[Bar], max_fvgs: int = 5) -> list[dict]:
     """
     Find all unmitigated bearish FVGs (SIBI — Sellside Imbalance Buyside Inefficiency).
-    LuxAlgo auto-threshold: skip FVGs smaller than 30% of ATR (noise filter).
     """
     fvgs = []
     current_price = bars[0].c if bars else 0
-    atr_val = _calc_atr(bars)
-    min_size = atr_val * 0.3 if atr_val > 0 else 0
     for i in range(len(bars) - 2):
         b0, b2 = bars[i], bars[i + 2]
-        if b0.h < b2.l:
+        if b0.h < b2.l:   # Gap: candle[i].high < candle[i+2].low
             low  = b0.h
             high = b2.l
-            if min_size > 0 and (high - low) < min_size:
-                continue
             ce   = fvg_consequent_encroachment(low, high)
             if current_price < high:
                 if current_price < low:
-                    continue
-            if current_price < high:
-                mitigation_pct = min(100.0, (high - current_price) / (high - low) * 100)
-            else:
-                mitigation_pct = 0.0
+                    continue   # Fully below — already mitigated
             fvgs.append({
                 "type":        "SIBI",
                 "direction":   "SELL",
@@ -4034,7 +3438,6 @@ def find_all_bearish_fvgs(bars: list[Bar], max_fvgs: int = 5) -> list[dict]:
                 "size":        round(high - low, 5),
                 "bar_index":   i,
                 "mitigated":   current_price > high,
-                "mitigation_pct": round(mitigation_pct, 1),
             })
         if len(fvgs) >= max_fvgs:
             break

@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  com.omni.ict.autonomy.plist — macOS LaunchAgent for OMNI-ICT.
+
+  Install (per-user, runs while you are logged in):
+      1. Edit the ABSOLUTE PATHS below to match your install location.
+         - WorkingDirectory
+         - ProgramArguments[0]  (path to start_autonomous.command)
+         - StandardOutPath / StandardErrorPath
+      2. cp com.omni.ict.autonomy.plist ~/Library/LaunchAgents/
+      3. launchctl load  ~/Library/LaunchAgents/com.omni.ict.autonomy.plist
+      4. launchctl start com.omni.ict.autonomy
+
+  Stop:    launchctl stop   com.omni.ict.autonomy
+  Remove:  launchctl unload ~/Library/LaunchAgents/com.omni.ict.autonomy.plist
+
+  Notes:
+   - RunAtLoad=true  means the agent starts the watchdog immediately on login.
+   - KeepAlive       restarts the watchdog if it ever exits (defense-in-depth —
+                     the watchdog already restarts its own children).
+   - ThrottleInterval limits restart frequency to avoid thrash if the agent
+                     itself keeps crashing (e.g. misconfigured path).
+   - Nice=10         de-prioritises OMNI if the Mac is under heavy load.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.omni.ict.autonomy</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/owner/omni-ict/venv/bin/python3</string>
+    <string>/Users/owner/omni-ict/python/watchdog.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/owner/omni-ict</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+    <key>Crashed</key>
+    <true/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>Nice</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/owner/omni-ict/logs/launchagent.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/owner/omni-ict/logs/launchagent.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>OMNI_PAPER_MODE</key>
+    <string>true</string>
+    <key>OMNI_TELEGRAM_TOKEN</key>
+    <string>8672119323:AAFnChUW2ktZez8pJPqEe0I458BdIfZRJ0k</string>
+  </dict>
+
+  <!--
+    Optional: restrict to specific hours (e.g. only during trading week).
+    Remove this block if you want 24/7 supervision.
+    The example below starts the watchdog only on weekdays at 02:00 local time.
+    Note: StartCalendarInterval + RunAtLoad together mean the agent runs at
+    load AND on the schedule. Remove RunAtLoad if you only want scheduled runs.
+  -->
+  <!--
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>
+  </array>
+  -->
+</dict>
+</plist>

@@ -48,7 +48,10 @@ void OnTimer()
    // Delete command file before executing — prevents duplicate execution on crash/retry
    FileDelete(CMD_FILE, FILE_COMMON);
 
-   if(StringLen(StringTrimRight(StringTrimLeft(cmd))) == 0) return;
+   string trimmed = cmd;
+   StringTrimLeft(trimmed);
+   StringTrimRight(trimmed);
+   if(StringLen(trimmed) == 0) return;
 
    string result = ProcessCommand(cmd);
    WriteResult(result);
@@ -123,28 +126,28 @@ string CmdOpen(string &p[])
       req.action = TRADE_ACTION_PENDING;
       req.type   = ORDER_TYPE_BUY_LIMIT;
       req.price  = price;
-      req.type_filling = SELECT_FILLING_FOK;
+      req.type_filling = SelectFilling(symbol);
      }
    else if(otype == "BUY_STOP")
      {
       req.action = TRADE_ACTION_PENDING;
       req.type   = ORDER_TYPE_BUY_STOP;
       req.price  = price;
-      req.type_filling = SELECT_FILLING_FOK;
+      req.type_filling = SelectFilling(symbol);
      }
    else if(otype == "SELL_LIMIT")
      {
       req.action = TRADE_ACTION_PENDING;
       req.type   = ORDER_TYPE_SELL_LIMIT;
       req.price  = price;
-      req.type_filling = SELECT_FILLING_FOK;
+      req.type_filling = SelectFilling(symbol);
      }
    else if(otype == "SELL_STOP")
      {
       req.action = TRADE_ACTION_PENDING;
       req.type   = ORDER_TYPE_SELL_STOP;
       req.price  = price;
-      req.type_filling = SELECT_FILLING_FOK;
+      req.type_filling = SelectFilling(symbol);
      }
    else
       return "ERROR|unknown order type: " + otype;
@@ -286,9 +289,13 @@ void WriteResult(string result)
 //+------------------------------------------------------------------+
 ENUM_ORDER_TYPE_FILLING SelectFilling(string symbol)
   {
-   uint filling = (uint)SymbolInfoInteger(symbol, SYMBOL_FILLING_FLAGS);
-   if((filling & SYMBOL_FILLING_FOK) != 0) return ORDER_FILLING_FOK;
-   if((filling & SYMBOL_FILLING_IOC) != 0) return ORDER_FILLING_IOC;
+   // SYMBOL_FILLING_MODE bitmask: bit0=FOK(1), bit1=IOC(2).
+   // When both bits are 0 the broker uses RETURN mode (MetaQuotes demo default).
+   long filling = (long)SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) != 0)
+      return ORDER_FILLING_FOK;
+   if((filling & SYMBOL_FILLING_IOC) != 0)
+      return ORDER_FILLING_IOC;
    return ORDER_FILLING_RETURN;
   }
 //+------------------------------------------------------------------+

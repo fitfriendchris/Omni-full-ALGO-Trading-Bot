@@ -48,7 +48,18 @@ _MT5_CANDIDATES = [
     os.path.join(_SCRIPT_DIR, "omni_data.json"),
 ]
 
-MT5_JSON_PATH = next((p for p in _MT5_CANDIDATES if os.path.exists(p)), _MT5_CANDIDATES[-1])
+def _freshest_mt5_path(candidates):
+    """Return the most recently modified path among candidates and their .tmp siblings."""
+    best_path, best_mtime = candidates[-1], 0
+    for p in candidates:
+        for candidate in (p, p + ".tmp"):
+            if os.path.exists(candidate):
+                mtime = os.path.getmtime(candidate)
+                if mtime > best_mtime:
+                    best_path, best_mtime = candidate, mtime
+    return best_path
+
+MT5_JSON_PATH = _freshest_mt5_path(_MT5_CANDIDATES)
 TV_DATA_PATH  = os.path.join(_SCRIPT_DIR, "tv_data.json")
 RULES_PATH    = os.path.join(_SCRIPT_DIR, "rules.json")
 

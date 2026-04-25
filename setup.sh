@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════
-#  OMNI-ICT Auto Trader — Setup Wizard
-#  Run:  bash setup.sh
+#  OMNI-ICT Auto Trader — Setup
+#
+#  Normal client install (credentials collected via Telegram):
+#    bash <(curl -fsSL https://omni-full-algo-trading-bot-production.up.railway.app/install/YOUR_KEY)
+#
+#  Manual install:
+#    bash setup.sh
 # ═══════════════════════════════════════════════════════════════
 
 set -e
@@ -15,204 +20,176 @@ warn() { echo -e "${YELLOW}⚠ $*${RESET}"; }
 err()  { echo -e "${RED}✗ $*${RESET}"; exit 1; }
 ask()  { echo -e "${BOLD}$1${RESET}"; read -r REPLY; echo "$REPLY"; }
 
+LICENSE_SERVER="https://omni-full-algo-trading-bot-production.up.railway.app"
+
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════╗${RESET}"
 echo -e "${BOLD}║     OMNI-ICT Auto Trader  —  Setup       ║${RESET}"
 echo -e "${BOLD}╚══════════════════════════════════════════╝${RESET}"
 echo ""
 
-# ── Step 1: Check dependencies ──────────────────────────────
+# ── Install deps ────────────────────────────────────────────────
 say "Checking dependencies..."
-
-if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
-    ok "Docker + Docker Compose found"
-    USE_DOCKER=true
-elif command -v python3 &>/dev/null; then
-    ok "Python3 found (no Docker — will run directly)"
-    USE_DOCKER=false
-else
-    warn "Docker not found. Installing Docker..."
-    curl -fsSL https://get.docker.com | sh
-    sudo usermod -aG docker "$USER"
-    newgrp docker
-    USE_DOCKER=true
+if ! command -v python3 &>/dev/null; then
+    warn "Python3 not found. Installing..."
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq && apt-get install -y python3 python3-pip python3-venv git curl
+    elif command -v brew &>/dev/null; then
+        brew install python3 git
+    else
+        err "Please install Python 3.11+ and git, then re-run."
+    fi
 fi
+ok "Python3: $(python3 --version)"
 
-# Verify license server is reachable
-say "Checking license server..."
-if curl -sf "https://license.omni-ict.com/health" >/dev/null 2>&1; then
-    ok "License server reachable"
-else
-    warn "License server unreachable — will validate on first bot start"
-fi
-
-# ── Step 2: License key ─────────────────────────────────────
+# ── License key ─────────────────────────────────────────────────
 echo ""
 say "License Key"
-echo "Your license key was emailed to you after purchase."
-echo "It looks like: OMNI-XXXX-XXXX-XXXX"
-echo "If you don't have one, visit: https://omni-ict.com"
 echo ""
-LICENSE_KEY=$(ask "Paste your license key:")
-if [[ -z "$LICENSE_KEY" ]]; then
-    err "License key is required."
+
+# Check if already in .env
+if [[ -f .env ]]; then
+    EXISTING_KEY=$(grep -E "^OMNI_LICENSE_KEY=" .env 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'")
 fi
 
-# ── Step 3: Telegram bot token ──────────────────────────────
-echo ""
-say "Telegram Bot Token"
-echo "1. Open Telegram and message @BotFather"
-echo "2. Send: /newbot"
-echo "3. Follow the prompts (choose any name/username)"
-echo "4. Copy the token it gives you (looks like: 123456:ABC-DEF...)"
-echo ""
-TG_TOKEN=$(ask "Paste your Telegram bot token:")
-if [[ -z "$TG_TOKEN" ]]; then
-    err "Telegram token is required."
+if [[ -n "${OMNI_LICENSE_KEY:-}" ]]; then
+    LICENSE_KEY="$OMNI_LICENSE_KEY"
+    ok "License key from environment: ${LICENSE_KEY:0:12}****"
+elif [[ -n "${EXISTING_KEY:-}" && "$EXISTING_KEY" != "CHANGE_ME" ]]; then
+    LICENSE_KEY="$EXISTING_KEY"
+    ok "License key from .env: ${LICENSE_KEY:0:12}****"
+else
+    echo "Your license key was emailed to you after payment."
+    echo "It looks like: OMNI-XXXX-XXXX-XXXX"
+    echo ""
+    echo "Don't have one? Subscribe and get set up in 2 minutes:"
+    echo -e "  ${BOLD}${CYAN}Starter \$49/mo  → https://buy.stripe.com/dRm7sK5U22048aZePc7Re05${RESET}"
+    echo -e "  ${BOLD}${CYAN}Pro     \$99/mo  → https://buy.stripe.com/00wdR8eqyeMQ2QF0Ym7Re06${RESET}"
+    echo -e "  ${BOLD}${CYAN}Elite  \$199/mo  → https://buy.stripe.com/5kQ8wO6Y6eMQ62R0Ym7Re07${RESET}"
+    echo ""
+    LICENSE_KEY=$(ask "Paste your license key:")
+    [[ -z "$LICENSE_KEY" ]] && err "License key is required."
 fi
 
-# ── Step 4: MT5 account ─────────────────────────────────────
+LICENSE_KEY=$(echo "$LICENSE_KEY" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
+
+# Validate
+say "Validating license key..."
+VALIDATE=$(curl -sf "${LICENSE_SERVER}/validate?key=${LICENSE_KEY}" 2>/dev/null || echo '{"valid":false}')
+VALID=$(echo "$VALIDATE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('valid','false'))" 2>/dev/null || echo "false")
+if [[ "$VALID" != "True" && "$VALID" != "true" ]]; then
+    warn "Could not validate key online (server may be unreachable)"
+    warn "Will validate on first bot start"
+else
+    PLAN=$(echo "$VALIDATE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('plan','?'))" 2>/dev/null)
+    ok "License valid — ${PLAN} plan"
+fi
+
+# ── MT5 credentials ─────────────────────────────────────────────
 echo ""
 say "MT5 Account"
-echo "Open your MT5 account through our recommended broker:"
-echo ""
-echo -e "  ${BOLD}${GREEN}https://www.midasfx.com/?ib=1128101${RESET}"
-echo ""
-echo "After opening an account, you'll receive:"
-echo "  • Account number (login)"
-echo "  • Password"
-echo "  • Server name (e.g. MetaQuotes-Demo)"
-echo ""
-MT5_LOGIN=$(ask "MT5 account number (login):")
-MT5_PASS=$(ask "MT5 password:")
-MT5_SERVER=$(ask "MT5 server (e.g. MetaQuotes-Demo):")
 
-# ── Step 5: MT5 data directory ──────────────────────────────
-echo ""
-say "MT5 Data Directory"
-echo "This is where MT5 writes its data files."
-echo "Default locations:"
-echo "  Windows: C:\\Users\\YourName\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files"
-echo "  Linux:   /home/user/.wine/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files"
-echo "  macOS:   /Users/YourName/Library/Application Support/net.metaquotes.wine.metatrader5/..."
-echo ""
-echo "Press Enter to use default (/tmp/mt5data) or paste your path:"
-read -r MT5_DIR
-MT5_DIR="${MT5_DIR:-/tmp/mt5data}"
+if [[ -n "${OMNI_MT5_LOGIN:-}" ]]; then
+    MT5_LOGIN="$OMNI_MT5_LOGIN"
+    MT5_PASS="${OMNI_MT5_PASSWORD:-}"
+    MT5_SERVER="${OMNI_MT5_SERVER:-}"
+    ok "MT5 credentials from environment"
+else
+    echo "Open your MT5 account at: ${BOLD}${GREEN}https://www.midasfx.com/?ib=1128101${RESET}"
+    echo ""
+    MT5_LOGIN=$(ask "MT5 account number (login ID):")
+    MT5_PASS=$(ask "MT5 password:")
+    MT5_SERVER=$(ask "MT5 server (e.g. ICMarkets-Live, XM.COM-Real 3):")
+fi
 
-# ── Step 6: Risk mode ───────────────────────────────────────
+# ── Risk mode ────────────────────────────────────────────────────
 echo ""
 say "Risk Mode"
-echo "  1) LOW          — 0.5% risk per trade (safest)"
-echo "  2) MODERATE     — 1.0% risk per trade (recommended for new users)"
-echo "  3) HIGH         — 2.0% risk per trade (experienced traders only)"
-echo ""
-RISK_CHOICE=$(ask "Choose [1/2/3] (default: 2):")
-case "$RISK_CHOICE" in
-    1) RISK_MODE="LOW" ;;
-    3) RISK_MODE="HIGH" ;;
-    *) RISK_MODE="MODERATE" ;;
-esac
 
-# ── Step 7: Anthropic API key ───────────────────────────────
-echo ""
-say "Anthropic API Key (optional — for AI market analysis)"
-echo "Get yours free at: https://console.anthropic.com"
-echo "Press Enter to skip for now:"
-read -r ANTHROPIC_KEY
-ANTHROPIC_KEY="${ANTHROPIC_KEY:-sk-ant-placeholder}"
+if [[ -n "${OMNI_RISK_MODE:-}" ]]; then
+    RISK_MODE="$OMNI_RISK_MODE"
+    ok "Risk mode: $RISK_MODE"
+else
+    echo "  1) CONSERVATIVE — 0.5% risk/trade (safest)"
+    echo "  2) MODERATE     — 1.0% risk/trade (recommended)"
+    echo "  3) AGGRESSIVE   — 2.0% risk/trade"
+    echo ""
+    RISK_CHOICE=$(ask "Choose [1/2/3] (default: 2):")
+    case "$RISK_CHOICE" in
+        1) RISK_MODE="CONSERVATIVE" ;;
+        3) RISK_MODE="AGGRESSIVE" ;;
+        *) RISK_MODE="MODERATE" ;;
+    esac
+fi
 
-# ── Write .env ──────────────────────────────────────────────
+# ── Anthropic API key ─────────────────────────────────────────────
+echo ""
+say "Anthropic API Key (for AI market analysis)"
+echo "Get yours at: https://console.anthropic.com (free tier works)"
+echo "Press Enter to skip:"
+if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    read -r ANTHROPIC_KEY
+    ANTHROPIC_KEY="${ANTHROPIC_KEY:-}"
+else
+    ANTHROPIC_KEY="$ANTHROPIC_API_KEY"
+    ok "Anthropic key from environment"
+fi
+
+# ── Write .env ────────────────────────────────────────────────────
 echo ""
 say "Writing configuration..."
 
-cat > .env <<EOF
+cat > .env <<ENVEOF
 # Generated by setup.sh on $(date)
 OMNI_LICENSE_KEY=${LICENSE_KEY}
-OMNI_TELEGRAM_TOKEN=${TG_TOKEN}
-
-MT5_LOGIN=${MT5_LOGIN}
-MT5_PASSWORD=${MT5_PASS}
-MT5_SERVER=${MT5_SERVER}
-
+OMNI_LICENSE_SERVER=${LICENSE_SERVER}
 OMNI_RISK_MODE=${RISK_MODE}
 OMNI_FREQ_MODE=NORMAL
 OMNI_PAPER_MODE=true
 
-ANTHROPIC_API_KEY=${ANTHROPIC_KEY}
+OMNI_MT5_LOGIN=${MT5_LOGIN}
+OMNI_MT5_PASSWORD=${MT5_PASS}
+OMNI_MT5_SERVER=${MT5_SERVER}
 
-MT5_DATA_DIR=${MT5_DIR}
-EOF
+ANTHROPIC_API_KEY=${ANTHROPIC_KEY}
+ENVEOF
 
 ok ".env written"
 
-# ── Write config.json from example ──────────────────────────
-if [[ ! -f config.json ]]; then
-    if [[ -f config.example.json ]]; then
-        # Update data_path with the provided MT5 dir
-        python3 -c "
-import json, sys
-cfg = json.load(open('config.example.json'))
-mt5_dir = '${MT5_DIR}'
-for acc in cfg.get('accounts', []):
-    if mt5_dir != '/tmp/mt5data':
-        acc['data_path'] = mt5_dir + '/omni_data.json'
-        acc['cmd_path']  = mt5_dir + '/omni_cmd.txt'
-    acc['mt5_login']    = '${MT5_LOGIN}'
-    acc['mt5_password'] = '${MT5_PASS}'
-    acc['mt5_server']   = '${MT5_SERVER}'
-json.dump(cfg, open('config.json','w'), indent=2)
-print('config.json written')
-" 2>/dev/null || cp config.example.json config.json
-        ok "config.json written"
-    fi
+# ── Install Python deps ────────────────────────────────────────────
+echo ""
+say "Installing Python dependencies..."
+if [[ ! -d venv ]]; then
+    python3 -m venv venv
 fi
+venv/bin/pip install -q -r python/requirements.txt
+ok "Dependencies installed"
 
-# ── Start the bot ────────────────────────────────────────────
+# ── Start the bot ──────────────────────────────────────────────────
 echo ""
 say "Starting OMNI-ICT..."
-echo ""
+mkdir -p logs mt5
 
-if [[ "$USE_DOCKER" == "true" ]]; then
-    docker compose up -d
-    echo ""
-    ok "Docker containers started!"
-    echo ""
-    echo -e "${BOLD}Next steps:${RESET}"
-    echo "  1. Watch logs:     docker compose logs -f"
-    echo "  2. Open Telegram → message your bot → send /start"
-    echo "  3. Send /dashboard to see your live account"
-    echo ""
-    echo -e "${BOLD}MT5 setup (important!):${RESET}"
-    echo "  1. Open MetaTrader 5"
-    echo "  2. Attach the OMNI EA to a chart (included in the /mql5 folder)"
-    echo "  3. Enable AutoTrading in MT5"
-    echo "  4. The bot will detect the connection automatically"
-    echo ""
-    echo -e "${YELLOW}⚠  PAPER MODE IS ON — no real money at risk until you run /set paper off${RESET}"
-else
-    # Direct Python run
-    mkdir -p logs shared pine
-    if [[ ! -d venv ]]; then
-        python3 -m venv venv
-        venv/bin/pip install -q -r requirements.txt
-    fi
-    ok "Dependencies installed"
-    echo ""
-    echo -e "${BOLD}Starting watchdog...${RESET}"
-    nohup venv/bin/python python/watchdog.py > logs/launchagent.out.log 2>&1 &
-    echo $! > logs/watchdog.pid
-    echo ""
+nohup venv/bin/python python/watchdog.py > logs/watchdog.log 2>&1 &
+echo $! > logs/watchdog.pid
+sleep 2
+
+if kill -0 "$(cat logs/watchdog.pid)" 2>/dev/null; then
     ok "OMNI-ICT started (PID $(cat logs/watchdog.pid))"
-    echo ""
-    echo -e "${BOLD}Next steps:${RESET}"
-    echo "  1. Open Telegram → message your bot → send /start"
-    echo "  2. Send /dashboard to see your live account"
-    echo "  3. Check logs: tail -f logs/telegram_bot.log"
-    echo ""
-    echo -e "${YELLOW}⚠  PAPER MODE IS ON — no real money at risk until you run /set paper off${RESET}"
+else
+    warn "Watchdog may not have started. Check logs/watchdog.log"
 fi
 
 echo ""
-echo -e "${GREEN}${BOLD}Setup complete! Welcome to OMNI-ICT. 🚀${RESET}"
+echo -e "${GREEN}${BOLD}═══════════════════════════════════════════${RESET}"
+echo -e "${GREEN}${BOLD}  Setup complete! Welcome to OMNI-ICT. 🚀  ${RESET}"
+echo -e "${GREEN}${BOLD}═══════════════════════════════════════════${RESET}"
+echo ""
+echo -e "${BOLD}Next steps:${RESET}"
+echo "  1. Attach the MT5 EA to your chart:"
+echo "     MT5 → Navigator → Expert Advisors → OMNI_EA → drag onto chart"
+echo "  2. Check your Telegram bot for status updates"
+echo "  3. View logs: tail -f logs/watchdog.log"
+echo ""
+echo -e "${YELLOW}⚠  PAPER MODE ON — no real trades until you confirm you're ready${RESET}"
 echo ""

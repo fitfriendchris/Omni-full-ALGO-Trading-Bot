@@ -1,0 +1,23 @@
+{
+  "webhook_secret": "whsec_maKBoLZxvVeBawYCyFD0RxCauafvZyLs",
+  "plans": [
+    {
+      "plan": "starter",
+      "product_id": "prod_UP1lPLck38llbP",
+      "price_id": "price_1TQDhfAGTN2oTXlILb6Q7T7X",
+      "price_usd": 49.0
+    },
+    {
+      "plan": "pro",
+      "product_id": "prod_UP1l9w8zpqKG6y",
+      "price_id": "price_1TQDhgAGTN2oTXlIzugTjEcC",
+      "price_usd": 99.0
+    },
+    {
+      "plan": "elite",
+      "product_id": "prod_UP1l0jI4lvOhuL",
+      "price_id": "price_1TQDhgAGTN2oTXlILzGrGfdK",
+      "price_usd": 199.0
+    }
+  ]
+}

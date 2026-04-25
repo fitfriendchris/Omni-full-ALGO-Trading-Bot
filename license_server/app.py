@@ -98,6 +98,28 @@ def init_db():
                 result     TEXT
             )
         """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS client_sessions (
+                license_key      TEXT PRIMARY KEY,
+                telegram_chat_id INTEGER,
+                mt5_login        TEXT,
+                mt5_server       TEXT,
+                mt5_password     TEXT,
+                risk_mode        TEXT DEFAULT 'MODERATE',
+                onboarding_step  TEXT DEFAULT 'awaiting_key',
+                created_at       REAL
+            )
+        """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS client_relay (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_key  TEXT NOT NULL,
+                direction    TEXT NOT NULL,
+                content      TEXT NOT NULL,
+                ts           REAL NOT NULL,
+                delivered    INTEGER DEFAULT 0
+            )
+        """)
         db.commit()
     log.info("Database ready: %s", DB_PATH)
 
@@ -291,19 +313,31 @@ def _send_welcome_email(email: str, key: str, plan: str):
             "content": [{"type": "text/html", "value": f"""
 <h2>Welcome to OMNI-ICT! 🚀</h2>
 <p>Thank you for subscribing to the <strong>{plan.title()}</strong> plan.</p>
+
 <h3>Your License Key</h3>
 <p style="font-size:20px;font-family:monospace;background:#f4f4f4;padding:12px;border-radius:6px;">
   <strong>{key}</strong>
 </p>
-<h3>Getting Started</h3>
+
+<h3>Get Started in 3 Steps</h3>
 <ol>
-  <li>Open your MT5 account through our recommended broker:<br>
+  <li><strong>Open MT5 through our recommended broker</strong> (if you haven't already):<br>
       <a href="https://www.midasfx.com/?ib=1128101">https://www.midasfx.com/?ib=1128101</a></li>
-  <li>Download and run the setup wizard — full instructions at:<br>
-      <a href="https://omni-ict.com/start">https://omni-ict.com/start</a></li>
-  <li>Paste your license key when prompted</li>
+  <li><strong>Message our Telegram bot</strong> to complete setup — no technical knowledge needed:<br>
+      <a href="https://t.me/OMNI_ICT_setup_bot">t.me/OMNI_ICT_setup_bot</a><br>
+      The bot will guide you step by step and generate your personalized install command.</li>
+  <li><strong>Run the one-line install command</strong> on your VPS — the bot gives it to you.</li>
 </ol>
-<p>Need help? Join our community: <a href="https://t.me/omni_ict_community">t.me/omni_ict_community</a></p>
+
+<p>
+  <a href="https://t.me/OMNI_ICT_setup_bot"
+     style="display:inline-block;background:#0088cc;color:#fff;font-weight:bold;
+            padding:12px 24px;border-radius:8px;text-decoration:none;font-size:16px;">
+    👉 Start Setup on Telegram
+  </a>
+</p>
+
+<p>Need help? Join the community: <a href="https://t.me/OMNI_ICT_community">t.me/OMNI_ICT_community</a></p>
 <p style="color:#888;font-size:12px;">Keep this key private. Your subscription renews automatically each month.</p>
 """}]
         }).encode()
@@ -407,14 +441,212 @@ def health():
     return jsonify({"status": "ok", "ts": time.time()})
 
 
+# ── Client relay API (used by omni_bridge.py on client VPS) ───
+
+@app.route("/client/notify", methods=["POST"])
+def client_notify():
+    """Bridge posts trade alerts / status updates here."""
+    data = request.json or {}
+    key  = (data.get("key") or "").strip().upper()
+    msg  = data.get("message", "")
+    if not key or not msg:
+        return jsonify({"error": "key and message required"}), 400
+    with get_db() as db:
+        row = db.execute("SELECT status FROM licenses WHERE key=?", (key,)).fetchone()
+        if not row or row["status"] != "active":
+            return jsonify({"error": "invalid key"}), 403
+        db.execute("INSERT INTO client_relay (license_key, direction, content, ts) VALUES (?,?,?,?)",
+                   (key, "from_client", msg, time.time()))
+        db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/client/poll/<key>", methods=["GET"])
+def client_poll(key):
+    """Bridge polls here for pending commands from the community bot."""
+    key = key.strip().upper()
+    with get_db() as db:
+        row = db.execute("SELECT status FROM licenses WHERE key=?", (key,)).fetchone()
+        if not row or row["status"] != "active":
+            return jsonify({"error": "invalid key"}), 403
+        cmds = db.execute(
+            "SELECT id, content FROM client_relay WHERE license_key=? AND direction='to_client' AND delivered=0 ORDER BY ts",
+            (key,)
+        ).fetchall()
+        ids = [r["id"] for r in cmds]
+        if ids:
+            db.execute(f"UPDATE client_relay SET delivered=1 WHERE id IN ({','.join('?'*len(ids))})", ids)
+            db.commit()
+    return jsonify({"commands": [{"id": r["id"], "text": r["content"]} for r in cmds]})
+
+
+@app.route("/client/respond", methods=["POST"])
+def client_respond():
+    """Bridge posts command results back here; community bot relays to user."""
+    data = request.json or {}
+    key  = (data.get("key") or "").strip().upper()
+    msg  = data.get("result", "")
+    if not key or not msg:
+        return jsonify({"error": "key and result required"}), 400
+    with get_db() as db:
+        db.execute("INSERT INTO client_relay (license_key, direction, content, ts) VALUES (?,?,?,?)",
+                   (key, "from_client", msg, time.time()))
+        db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/client/session", methods=["POST"])
+def client_session():
+    """Community bot registers/updates a client session."""
+    data = request.json or {}
+    key  = (data.get("key") or "").strip().upper()
+    if not key:
+        return jsonify({"error": "key required"}), 400
+    with get_db() as db:
+        row = db.execute("SELECT status FROM licenses WHERE key=?", (key,)).fetchone()
+        if not row or row["status"] != "active":
+            return jsonify({"error": "invalid or inactive key"}), 403
+        existing = db.execute("SELECT license_key FROM client_sessions WHERE license_key=?", (key,)).fetchone()
+        fields = {k: v for k, v in data.items() if k != "key" and v is not None}
+        if existing:
+            if fields:
+                sets = ", ".join(f"{k}=?" for k in fields)
+                db.execute(f"UPDATE client_sessions SET {sets} WHERE license_key=?",
+                           list(fields.values()) + [key])
+        else:
+            db.execute(
+                "INSERT INTO client_sessions (license_key, telegram_chat_id, onboarding_step, created_at) VALUES (?,?,?,?)",
+                (key, data.get("telegram_chat_id"), data.get("onboarding_step", "awaiting_login"), time.time())
+            )
+        db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/client/session/<key>", methods=["GET"])
+def get_client_session(key):
+    key = key.strip().upper()
+    with get_db() as db:
+        row = db.execute("SELECT * FROM client_sessions WHERE license_key=?", (key,)).fetchone()
+        if not row:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(dict(row))
+
+
+@app.route("/client/messages/<key>", methods=["GET"])
+def client_messages(key):
+    """Community bot polls here for client-side updates to relay."""
+    key = key.strip().upper()
+    token = request.headers.get("X-Admin-Token") or request.args.get("token")
+    if token != ADMIN_TOKEN:
+        abort(401)
+    with get_db() as db:
+        msgs = db.execute(
+            "SELECT id, content FROM client_relay WHERE license_key=? AND direction='from_client' AND delivered=0 ORDER BY ts",
+            (key,)
+        ).fetchall()
+        ids = [r["id"] for r in msgs]
+        if ids:
+            db.execute(f"UPDATE client_relay SET delivered=1 WHERE id IN ({','.join('?'*len(ids))})", ids)
+            db.commit()
+    return jsonify({"messages": [{"id": r["id"], "text": r["content"]} for r in msgs]})
+
+
+@app.route("/install/<key>")
+def install_script(key):
+    """Returns a personalized bash install script for the client."""
+    key = key.strip().upper()
+    with get_db() as db:
+        lic = db.execute("SELECT * FROM licenses WHERE key=?", (key,)).fetchone()
+        ses = db.execute("SELECT * FROM client_sessions WHERE license_key=?", (key,)).fetchone()
+
+    if not lic or lic["status"] != "active":
+        return "echo 'Invalid or inactive license key.'", 400, {"Content-Type": "text/plain"}
+
+    mt5_login    = (ses and ses["mt5_login"])    or "YOUR_MT5_LOGIN"
+    mt5_server   = (ses and ses["mt5_server"])   or "YOUR_MT5_SERVER"
+    mt5_password = (ses and ses["mt5_password"]) or "YOUR_MT5_PASSWORD"
+    risk_mode    = (ses and ses["risk_mode"])     or "MODERATE"
+    server_url   = request.host_url.rstrip("/")
+
+    script = f"""#!/usr/bin/env bash
+set -e
+echo ""
+echo "═══════════════════════════════════════════"
+echo "  OMNI-ICT Auto Trader — Personalized Setup"
+echo "═══════════════════════════════════════════"
+echo ""
+
+# Install deps
+if ! command -v python3 &>/dev/null; then
+  apt-get update -qq && apt-get install -y python3 python3-pip python3-venv git curl
+fi
+
+# Clone or update
+if [ -d omni-ict ]; then
+  cd omni-ict && git pull -q
+else
+  git clone -q https://github.com/fitfriendchris/Omni-full-ALGO-Trading-Bot.git omni-ict
+  cd omni-ict
+fi
+
+# Create venv
+python3 -m venv venv
+venv/bin/pip install -q -r python/requirements.txt
+
+# Write .env
+cat > .env << 'ENVEOF'
+OMNI_LICENSE_KEY={key}
+OMNI_LICENSE_SERVER={server_url}
+OMNI_MT5_LOGIN={mt5_login}
+OMNI_MT5_SERVER={mt5_server}
+OMNI_MT5_PASSWORD={mt5_password}
+OMNI_RISK_MODE={risk_mode}
+OMNI_PAPER_MODE=true
+ENVEOF
+
+echo ""
+echo "✓ Installed and configured."
+echo ""
+echo "NEXT STEPS:"
+echo "  1. Open MT5 and attach the OMNI EA to your chart"
+echo "     (File → open data folder → MQL5/Experts → paste OMNI_EA.mq5)"
+echo "  2. Start the bot:"
+echo "     cd omni-ict && venv/bin/python python/watchdog.py"
+echo ""
+echo "  Your bot will send updates via @OMNI_ICT_setup_bot on Telegram."
+echo ""
+"""
+    return script, 200, {
+        "Content-Type": "text/plain",
+        "Content-Disposition": f"inline; filename=install_{key}.sh"
+    }
+
+
 # ── Init on import (works with gunicorn) ──────────────────────
 init_db()
+
+
+# ── Start community bot in background ─────────────────────────
+def _start_community_bot():
+    import threading
+    bot_token = os.getenv("COMMUNITY_BOT_TOKEN", "")
+    if not bot_token:
+        log.warning("COMMUNITY_BOT_TOKEN not set — community bot disabled")
+        return
+    try:
+        from community_bot import run_bot
+        t = threading.Thread(target=run_bot, daemon=True, name="community_bot")
+        t.start()
+        log.info("Community bot started in background thread")
+    except Exception as e:
+        log.error("Failed to start community bot: %s", e)
+
+_start_community_bot()
 
 
 # ── Main ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    init_db()
     port = int(os.getenv("PORT", 5000))
     log.info("License server starting on port %d", port)
     app.run(host="0.0.0.0", port=port, debug=False)

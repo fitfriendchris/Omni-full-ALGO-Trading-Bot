@@ -102,6 +102,17 @@ def _default_specs(project_root: Path) -> list[ServiceSpec]:
             restart=True,
             max_restarts=50,
         ),
+        # omni_bridge — used instead of telegram_bot for SaaS clients.
+        # Polls central license server for commands; posts alerts back.
+        # Only starts if OMNI_TELEGRAM_TOKEN is NOT set (client mode).
+        ServiceSpec(
+            name="omni_bridge",
+            argv=[PY, "-u", str(HERE / "omni_bridge.py")],
+            cwd=HERE,
+            env={"PYTHONUNBUFFERED": "1"},
+            restart=True,
+            max_restarts=100,
+        ),
     ]
 
 
@@ -398,6 +409,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     specs = _default_specs(PROJECT_ROOT)
+
+    # Choose telegram_bot OR omni_bridge — never both.
+    # If OMNI_TELEGRAM_TOKEN is set → owner / personal setup → use telegram_bot.
+    # Otherwise → SaaS client mode → use omni_bridge (relays via license server).
+    has_tg_token = bool(os.getenv("OMNI_TELEGRAM_TOKEN", ""))
+    specs = [s for s in specs if not (
+        (s.name == "omni_bridge" and has_tg_token) or
+        (s.name == "telegram_bot" and not has_tg_token)
+    )]
+
     if args.only:
         specs = [s for s in specs if s.name in set(args.only)]
         if not specs:

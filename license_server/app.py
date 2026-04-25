@@ -407,6 +407,10 @@ def health():
     return jsonify({"status": "ok", "ts": time.time()})
 
 
+# ── Init on import (works with gunicorn) ──────────────────────
+init_db()
+
+
 # ── Main ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":

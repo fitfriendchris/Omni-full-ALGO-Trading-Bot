@@ -324,20 +324,20 @@ def _send_welcome_email(email: str, key: str, plan: str):
   <li><strong>Open MT5 through our recommended broker</strong> (if you haven't already):<br>
       <a href="https://www.midasfx.com/?ib=1128101">https://www.midasfx.com/?ib=1128101</a></li>
   <li><strong>Message our Telegram bot</strong> to complete setup — no technical knowledge needed:<br>
-      <a href="https://t.me/OMNI_ICT_setup_bot">t.me/OMNI_ICT_setup_bot</a><br>
+      <a href="https://t.me/OmniAutoTraderICTbot">t.me/OmniAutoTraderICTbot</a><br>
       The bot will guide you step by step and generate your personalized install command.</li>
   <li><strong>Run the one-line install command</strong> on your VPS — the bot gives it to you.</li>
 </ol>
 
 <p>
-  <a href="https://t.me/OMNI_ICT_setup_bot"
+  <a href="https://t.me/OmniAutoTraderICTbot"
      style="display:inline-block;background:#0088cc;color:#fff;font-weight:bold;
             padding:12px 24px;border-radius:8px;text-decoration:none;font-size:16px;">
     👉 Start Setup on Telegram
   </a>
 </p>
 
-<p>Need help? Join the community: <a href="https://t.me/OMNI_ICT_community">t.me/OMNI_ICT_community</a></p>
+<p>Need help? Join the community: <a href="https://t.me/omni_ict_community">t.me/omni_ict_community</a></p>
 <p style="color:#888;font-size:12px;">Keep this key private. Your subscription renews automatically each month.</p>
 """}]
         }).encode()
@@ -613,7 +613,9 @@ echo "     (File → open data folder → MQL5/Experts → paste OMNI_EA.mq5)"
 echo "  2. Start the bot:"
 echo "     cd omni-ict && venv/bin/python python/watchdog.py"
 echo ""
-echo "  Your bot will send updates via @OMNI_ICT_setup_bot on Telegram."
+echo "  Trade alerts and commands → @OmniAutoTraderICTbot"
+echo "  Community & support       → @omni_ict_community"
+echo "  Announcements             → @OMNI_ICT_CHANNEL"
 echo ""
 """
     return script, 200, {

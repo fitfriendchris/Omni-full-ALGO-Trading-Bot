@@ -35,13 +35,15 @@ if not SERVER_URL:
 
 BASE_URL    = f"https://api.telegram.org/bot{TOKEN}"
 
-BROKER_URL  = "https://www.midasfx.com/?ib=1128101"
-WEBSITE_URL = "https://fitfriendchris.github.io/Omni-full-ALGO-Trading-Bot/"
-GITHUB_URL  = "https://github.com/fitfriendchris/Omni-full-ALGO-Trading-Bot"
-GUIDE_URL   = f"{GITHUB_URL}/blob/main/STARTUP_GUIDE.md"
-BUY_STARTER = "https://buy.stripe.com/dRm7sK5U22048aZePc7Re05"
-BUY_PRO     = "https://buy.stripe.com/00wdR8eqyeMQ2QF0Ym7Re06"
-BUY_ELITE   = "https://buy.stripe.com/5kQ8wO6Y6eMQ62R0Ym7Re07"
+BROKER_URL   = "https://www.midasfx.com/?ib=1128101"
+WEBSITE_URL  = "https://fitfriendchris.github.io/Omni-full-ALGO-Trading-Bot/"
+GITHUB_URL   = "https://github.com/fitfriendchris/Omni-full-ALGO-Trading-Bot"
+GUIDE_URL    = f"{GITHUB_URL}/blob/main/STARTUP_GUIDE.md"
+COMMUNITY_URL = "https://t.me/omni_ict_community"
+CHANNEL_URL   = "https://t.me/OMNI_ICT_CHANNEL"
+BUY_STARTER  = "https://buy.stripe.com/dRm7sK5U22048aZePc7Re05"
+BUY_PRO      = "https://buy.stripe.com/00wdR8eqyeMQ2QF0Ym7Re06"
+BUY_ELITE    = "https://buy.stripe.com/5kQ8wO6Y6eMQ62R0Ym7Re07"
 
 COMMON_SERVERS = [
     "ICMarkets-Live",
@@ -141,6 +143,8 @@ def send_sales(chat_id: int) -> None:
         [{"text": "🥇 Elite — $199/mo", "url": BUY_ELITE}],
         [{"text": "📖 Setup Guide", "url": GUIDE_URL},
          {"text": "🌐 Website", "url": WEBSITE_URL}],
+        [{"text": "💬 Community Group", "url": COMMUNITY_URL},
+         {"text": "📢 Announcements", "url": CHANNEL_URL}],
         [{"text": "🏦 Open MT5 Account (MidasFX)", "url": BROKER_URL}],
         [{"text": "✅ I already have a license key", "callback_data": "have_key"}],
     ]}
@@ -215,13 +219,15 @@ def send_install_command(chat_id: int, key: str) -> None:
         "• Write your .env with all your credentials\n"
         "• Show you how to attach the MT5 EA\n\n"
         "🖥️ <b>Need a VPS?</b> A $5/mo Contabo or DigitalOcean works great.\n\n"
-        "Once your bot is running, come back here and use:\n"
-        "/pnl /equity /trades /halt /resume\n\n"
-        "Welcome to OMNI-ICT! 🚀"
+        "Once your bot is running, control it right here:\n"
+        "/pnl /equity /trades /halt /resume /status\n\n"
+        "Join the community while you set up 👇"
     )
     keyboard = {"inline_keyboard": [
-        [{"text": "📖 Full Setup Guide", "url": GUIDE_URL}],
-        [{"text": "🏦 Get MT5 Account (MidasFX)", "url": BROKER_URL}],
+        [{"text": "💬 Join Community Group", "url": COMMUNITY_URL}],
+        [{"text": "📢 Follow Announcements", "url": CHANNEL_URL}],
+        [{"text": "📖 Full Setup Guide", "url": GUIDE_URL},
+         {"text": "🏦 Open MT5 (MidasFX)", "url": BROKER_URL}],
     ]}
     send(chat_id, text, reply_markup=keyboard)
 

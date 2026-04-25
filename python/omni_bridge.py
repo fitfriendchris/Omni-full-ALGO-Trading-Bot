@@ -4,7 +4,7 @@ omni_bridge.py — OMNI-ICT License Server Bridge
 Replaces telegram_bot.py for distributed clients.
 
 Instead of each client running their own Telegram bot, this process:
-  - Polls the central license server for commands sent via @OMNI_ICT_setup_bot
+  - Polls the central license server for commands sent via @OmniAutoTraderICTbot
   - Executes commands by reading/writing local MT5 state files
   - Posts trade alerts and responses back to the server
   - The community bot then relays everything to the client's Telegram chat

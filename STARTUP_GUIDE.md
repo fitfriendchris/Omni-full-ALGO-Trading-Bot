@@ -88,7 +88,7 @@ sudo usermod -aG docker $USER
 newgrp docker
 
 # 2. Clone the bot
-git clone https://github.com/YOUR_REPO/omni-ict.git
+git clone https://github.com/fitfriendchris/Omni-full-ALGO-Trading-Bot.git omni-ict
 cd omni-ict
 
 # 3. Run the setup wizard
@@ -104,7 +104,7 @@ If you prefer to run without Docker:
 sudo apt update && sudo apt install -y python3 python3-pip python3-venv git
 
 # 2. Clone the bot
-git clone https://github.com/YOUR_REPO/omni-ict.git
+git clone https://github.com/fitfriendchris/Omni-full-ALGO-Trading-Bot.git omni-ict
 cd omni-ict
 
 # 3. Run the setup wizard

@@ -48,11 +48,19 @@ except ImportError:
     STRIPE_AVAILABLE = False
 
 app = Flask(__name__)
+
+# Load .env if present (local dev)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("license_server")
 
-DB_PATH    = Path(os.getenv("DB_PATH", "licenses.db"))
+DB_PATH    = Path(os.getenv("DB_PATH", "/data/licenses.db" if Path("/data").exists() else "licenses.db"))
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "change-this-secret")
 WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 

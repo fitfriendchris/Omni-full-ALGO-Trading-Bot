@@ -1,0 +1,55 @@
+name: Build Release ZIP
+
+on:
+  push:
+    tags:
+      - 'v*'          # triggers on v1.0, v1.1, etc.
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build customer ZIP
+        run: |
+          # Build a clean ZIP with only what customers need
+          # Excludes: .env, config.json, logs, state files, .git
+          zip -r omni-ict-release.zip . \
+            --exclude "*.env" \
+            --exclude "config.json" \
+            --exclude ".git/*" \
+            --exclude "logs/*" \
+            --exclude "shared/*" \
+            --exclude "python/__pycache__/*" \
+            --exclude "python/*.pyc" \
+            --exclude "python/trader_state*.json" \
+            --exclude "python/trade_memory*.json" \
+            --exclude "python/ai_state.json" \
+            --exclude "python/telegram_chat_id.txt" \
+            --exclude "python/active_account.txt" \
+            --exclude "venv/*" \
+            --exclude ".claw/*" \
+            --exclude "*.log"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: omni-ict-release.zip
+          body: |
+            ## OMNI-ICT Auto Trader
+
+            ### Installation
+            1. Download `omni-ict-release.zip` below
+            2. Extract and run: `bash setup.sh`
+            3. Enter your license key when prompted
+
+            **New MT5 account?** Open one at: https://www.midasfx.com/?ib=1128101
+
+            ### What's New
+            See commit history for changes in this release.
+          draft: false
+          prerelease: false

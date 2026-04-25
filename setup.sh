@@ -31,7 +31,19 @@ elif command -v python3 &>/dev/null; then
     ok "Python3 found (no Docker — will run directly)"
     USE_DOCKER=false
 else
-    err "Neither Docker nor Python3 found. Install Docker Desktop from https://docker.com"
+    warn "Docker not found. Installing Docker..."
+    curl -fsSL https://get.docker.com | sh
+    sudo usermod -aG docker "$USER"
+    newgrp docker
+    USE_DOCKER=true
+fi
+
+# Verify license server is reachable
+say "Checking license server..."
+if curl -sf "https://license.omni-ict.com/health" >/dev/null 2>&1; then
+    ok "License server reachable"
+else
+    warn "License server unreachable — will validate on first bot start"
 fi
 
 # ── Step 2: License key ─────────────────────────────────────

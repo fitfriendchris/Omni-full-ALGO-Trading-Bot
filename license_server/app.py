@@ -266,12 +266,50 @@ def _handle_payment_failed(invoice):
 
 
 def _send_welcome_email(email: str, key: str, plan: str):
-    """Send the license key to the customer. Extend with SendGrid/Mailgun."""
-    log.info("TODO: email license key %s to %s (plan=%s)", key, email, plan)
-    # Example using SendGrid:
-    # import sendgrid
-    # sg = sendgrid.SendGridAPIClient(os.getenv("SENDGRID_API_KEY"))
-    # sg.client.mail.send.post(request_body={...})
+    """Send the license key email via SendGrid (if configured)."""
+    log.info("License key for %s: %s  plan=%s", email, key, plan)
+    sendgrid_key = os.getenv("SENDGRID_API_KEY", "")
+    from_email   = os.getenv("FROM_EMAIL", "noreply@omni-ict.com")
+    if not sendgrid_key or not email:
+        log.warning("SendGrid not configured or no email — key not emailed: %s", key)
+        return
+    try:
+        import urllib.request as _ur
+        body = json.dumps({
+            "personalizations": [{"to": [{"email": email}]}],
+            "from": {"email": from_email, "name": "OMNI-ICT"},
+            "subject": "Your OMNI-ICT License Key",
+            "content": [{"type": "text/html", "value": f"""
+<h2>Welcome to OMNI-ICT! 🚀</h2>
+<p>Thank you for subscribing to the <strong>{plan.title()}</strong> plan.</p>
+<h3>Your License Key</h3>
+<p style="font-size:20px;font-family:monospace;background:#f4f4f4;padding:12px;border-radius:6px;">
+  <strong>{key}</strong>
+</p>
+<h3>Getting Started</h3>
+<ol>
+  <li>Open your MT5 account through our recommended broker:<br>
+      <a href="https://www.midasfx.com/?ib=1128101">https://www.midasfx.com/?ib=1128101</a></li>
+  <li>Download and run the setup wizard — full instructions at:<br>
+      <a href="https://omni-ict.com/start">https://omni-ict.com/start</a></li>
+  <li>Paste your license key when prompted</li>
+</ol>
+<p>Need help? Join our community: <a href="https://t.me/omni_ict_community">t.me/omni_ict_community</a></p>
+<p style="color:#888;font-size:12px;">Keep this key private. Your subscription renews automatically each month.</p>
+"""}]
+        }).encode()
+        req = _ur.Request(
+            "https://api.sendgrid.com/v3/mail/send",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {sendgrid_key}",
+                "Content-Type": "application/json",
+            }
+        )
+        with _ur.urlopen(req, timeout=10) as r:
+            log.info("Welcome email sent to %s (status %s)", email, r.status)
+    except Exception as e:
+        log.error("Failed to send welcome email to %s: %s", email, e)
 
 
 # ── Admin API ─────────────────────────────────────────────────

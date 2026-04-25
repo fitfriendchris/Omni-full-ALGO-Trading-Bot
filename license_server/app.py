@@ -60,7 +60,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("license_server")
 
-DB_PATH    = Path(os.getenv("DB_PATH", "/data/licenses.db" if Path("/data").exists() else "licenses.db"))
+DB_PATH    = Path(os.getenv("DB_PATH", "/app/licenses.db"))
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "change-this-secret")
 WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 
@@ -74,6 +74,7 @@ def get_db():
 
 
 def init_db():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_db() as db:
         db.execute("""
             CREATE TABLE IF NOT EXISTS licenses (

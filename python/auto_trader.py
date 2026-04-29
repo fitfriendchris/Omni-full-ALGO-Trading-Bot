@@ -2332,6 +2332,13 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
     result = place_order(symbol, direction, order_type, entry, sl, tp, lot_size, comment)
     log.info(f"Order result: {result}")
 
+    # On EA error, backoff 60 s so the bot doesn't spam the same command every scan
+    if result.startswith("ERROR") or result.startswith("TIMEOUT"):
+        log.warning(f"{symbol}: order rejected ({result}) — 60 s backoff")
+        if isinstance(state.recently_traded, dict):
+            state.recently_traded[symbol] = time.time() + 60
+        return False
+
     if result.startswith("OK") or result.startswith("PAPER"):
         parts = result.split("|")
         if result.startswith("OK") and len(parts) > 1 and parts[1].isdigit():

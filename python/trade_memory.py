@@ -178,6 +178,13 @@ class TradeMemory:
                 for k, v in td.items():
                     if hasattr(r, k):
                         setattr(r, k, v)
+                # Backfill close_ts for legacy records saved before the field existed
+                if r.close_ts <= 0 and r.close_time:
+                    try:
+                        from datetime import datetime, timezone
+                        r.close_ts = datetime.fromisoformat(r.close_time).timestamp()
+                    except Exception:
+                        pass
                 self.trades[tid] = r
             self._rebuild_buckets()
             log.info(f"TradeMemory loaded: {len(self.trades)} trades")
@@ -411,13 +418,14 @@ class TradeMemory:
             """
             Compute confidence adjustment for an iterable of closed TradeRecords
             using recency-weighted win rate and average R.
-            Mirrors the original _adj_from_bucket thresholds exactly.
+            Only WIN and LOSS records count — BREAKEVEN (auto-closed at 0 profit,
+            flat exits, etc.) are excluded so they cannot drag down win rate.
             """
             weighted_wins  = 0.0
             weighted_total = 0.0
             weighted_r     = 0.0
             for t in trades_iter:
-                if t.status not in ("WIN", "LOSS", "BREAKEVEN"):
+                if t.status not in ("WIN", "LOSS"):
                     continue
                 w = _recency_weight(t)
                 weighted_total += w

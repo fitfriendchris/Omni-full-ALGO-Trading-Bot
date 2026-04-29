@@ -91,7 +91,7 @@ def _default_specs(project_root: Path) -> list[ServiceSpec]:
             name="auto_trader",
             argv=[PY, "-u", str(HERE / "auto_trader.py"), "--risk", "MODERATE", "--freq", "AGGRESSIVE"],
             cwd=HERE,
-            env={"PYTHONUNBUFFERED": "1"},
+            env={"PYTHONUNBUFFERED": "1", "OMNI_PAPER_MODE": "false"},
             restart=True,
         ),
         ServiceSpec(

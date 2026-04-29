@@ -563,6 +563,85 @@ async def get_status():
     }
 
 
+# ── Control endpoints (used by Telegram Mini App) ─────────────────────────────
+
+_HALT_PATH             = SCRIPT_DIR / "python" / "HALT"
+_TRADING_DISABLED_PATH = SCRIPT_DIR / "python" / "TRADING_DISABLED"
+_ENV_PATH              = SCRIPT_DIR / ".env"
+
+
+def _env_set(key: str, value: str) -> None:
+    lines = []
+    if _ENV_PATH.exists():
+        lines = _ENV_PATH.read_text().splitlines()
+    updated = False
+    for i, line in enumerate(lines):
+        if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
+            lines[i] = f"{key}={value}"
+            updated = True
+            break
+    if not updated:
+        lines.append(f"{key}={value}")
+    _ENV_PATH.write_text("\n".join(lines) + "\n")
+
+
+@app.post("/api/control/halt")
+async def control_halt():
+    _HALT_PATH.write_text(f"HALT via WebApp at {datetime.now(timezone.utc).isoformat()}")
+    return {"ok": True, "halted": True}
+
+
+@app.post("/api/control/resume")
+async def control_resume():
+    _HALT_PATH.unlink(missing_ok=True)
+    return {"ok": True, "halted": False}
+
+
+@app.post("/api/control/trading/{state}")
+async def control_trading(state: str):
+    if state not in ("on", "off"):
+        raise HTTPException(400, "state must be 'on' or 'off'")
+    if state == "off":
+        _TRADING_DISABLED_PATH.write_text(f"DISABLED via WebApp at {datetime.now(timezone.utc).isoformat()}")
+    else:
+        _TRADING_DISABLED_PATH.unlink(missing_ok=True)
+    return {"ok": True, "trading_enabled": state == "on"}
+
+
+@app.post("/api/control/setrisk/{mode}")
+async def control_setrisk(mode: str):
+    mode = mode.upper()
+    if mode not in ("LOW", "MODERATE", "HIGH"):
+        raise HTTPException(400, "mode must be LOW, MODERATE, or HIGH")
+    _env_set("OMNI_RISK_MODE", mode)
+    return {"ok": True, "risk_mode": mode}
+
+
+@app.post("/api/control/setfreq/{mode}")
+async def control_setfreq(mode: str):
+    mode = mode.upper()
+    if mode not in ("CONSERVATIVE", "NORMAL", "AGGRESSIVE"):
+        raise HTTPException(400, "mode must be CONSERVATIVE, NORMAL, or AGGRESSIVE")
+    _env_set("OMNI_FREQ_MODE", mode)
+    return {"ok": True, "freq_mode": mode}
+
+
+@app.post("/api/control/close/{account_id}/{ticket}")
+async def control_close_position(account_id: str, ticket: str):
+    acc = ACCOUNTS.get(account_id)
+    if not acc:
+        raise HTTPException(404, f"Account '{account_id}' not found")
+    cmd_path = acc.get("cmd_path", "")
+    if not cmd_path:
+        raise HTTPException(500, "No cmd_path configured for account")
+    try:
+        with open(cmd_path, "w") as f:
+            f.write(f"CLOSE|{ticket}")
+        return {"ok": True, "ticket": ticket}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 
 # ── WebSocket (per account) ────────────────────────────────────────────────────
 

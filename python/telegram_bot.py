@@ -72,6 +72,8 @@ WATCHDOG_STATE  = LOG_DIR / "watchdog_state.json"
 ALERTS_PATH     = LOG_DIR / "alerts.json"
 HALT_PATH       = HERE / "HALT"
 
+WEBAPP_URL      = os.getenv("OMNI_WEBAPP_URL", "")   # public HTTPS URL for Mini App
+
 POLL_TIMEOUT    = 30     # Telegram long-poll seconds
 ALERT_POLL_S    = 5      # how often to check for new alerts/trades (was 10)
 TG_CLOSE_PATH   = HERE / "tg_close_cmd.txt"   # bot writes ticket; auto_trader reads+deletes
@@ -140,7 +142,7 @@ def get_updates(offset: int, timeout: int = POLL_TIMEOUT) -> list[dict]:
 # ── Inline keyboard builders ──────────────────────────────────────────────────
 
 def _main_kb() -> dict:
-    return {"inline_keyboard": [
+    rows = [
         [
             {"text": "📊 Refresh",   "callback_data": "cb:dashboard"},
             {"text": "📈 Trades",    "callback_data": "cb:trades"},
@@ -156,7 +158,10 @@ def _main_kb() -> dict:
             {"text": "▶️ Resume",    "callback_data": "cb:resume"},
             {"text": "❓ Help",      "callback_data": "cb:help"},
         ],
-    ]}
+    ]
+    if WEBAPP_URL:
+        rows.append([{"text": "📱 Open Dashboard", "web_app": {"url": WEBAPP_URL}}])
+    return {"inline_keyboard": rows}
 
 
 def _back_kb() -> dict:

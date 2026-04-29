@@ -1114,8 +1114,9 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
     }
 
     # Detect closed trades (were in active_trades, no longer in open positions)
+    # PAPER_ tickets never appear in MT5 positions — skip them here; simulation below handles them
     closed_tickets = [t for t in list(state.active_trades.keys())
-                      if t not in position_tickets]
+                      if t not in position_tickets and not t.startswith("PAPER_")]
 
     any_closed = False
     for ticket in closed_tickets:

@@ -1,491 +1,849 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>OMNI ICT — Telegram Dashboard</title>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>OMNI-ICT</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-  :root {
-    --bg:    var(--tg-theme-bg-color, #0f1419);
-    --fg:    var(--tg-theme-text-color, #e7e9ea);
-    --hint:  var(--tg-theme-hint-color, #71767b);
-    --link:  var(--tg-theme-link-color, #1d9bf0);
-    --btn:   var(--tg-theme-button-color, #1d9bf0);
-    --btn-fg:var(--tg-theme-button-text-color, #fff);
-    --card:  var(--tg-theme-secondary-bg-color, #16202a);
-    --good:  #22c55e;
-    --bad:   #ef4444;
-    --warn:  #eab308;
-    --border:rgba(127,127,127,.18);
-  }
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  body {
-    margin: 0; padding: 0;
-    background: var(--bg);
-    color: var(--fg);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", system-ui, sans-serif;
-    font-size: 14px;
-    line-height: 1.4;
-    padding-top: env(safe-area-inset-top);
-    padding-bottom: env(safe-area-inset-bottom);
-  }
-  .tabs {
-    display: flex;
-    background: var(--card);
-    border-bottom: 1px solid var(--border);
-    position: sticky; top: 0; z-index: 5;
-  }
-  .tab {
-    flex: 1;
-    padding: 12px 4px;
-    text-align: center;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--hint);
-    cursor: pointer;
-    user-select: none;
-  }
-  .tab.active { color: var(--btn); border-bottom: 2px solid var(--btn); }
-  .pane { padding: 14px; display: none; }
-  .pane.active { display: block; }
-  h2 { font-size: 13px; font-weight: 600; color: var(--hint); text-transform: uppercase; letter-spacing: .04em; margin: 14px 0 8px; }
-  h2:first-child { margin-top: 0; }
-  .card {
-    background: var(--card);
-    border-radius: 12px;
-    padding: 12px 14px;
-    margin-bottom: 10px;
-    border: 1px solid var(--border);
-  }
-  .row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; }
-  .row + .row { border-top: 1px solid var(--border); }
-  .label { color: var(--hint); font-size: 12px; }
-  .value { font-weight: 600; font-variant-numeric: tabular-nums; }
-  .pos { color: var(--good); }
-  .neg { color: var(--bad); }
-  .neutral { color: var(--hint); }
-  .pill {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 999px;
-    font-size: 11px;
-    font-weight: 600;
-    background: rgba(127,127,127,.15);
-  }
-  .pill.good { background: color-mix(in srgb, var(--good) 22%, transparent); color: var(--good); }
-  .pill.bad  { background: color-mix(in srgb, var(--bad) 22%,  transparent); color: var(--bad); }
-  .pill.warn { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
-  .big {
-    font-size: 24px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .btn {
-    display: block;
-    width: 100%;
-    padding: 12px;
-    border: none;
-    border-radius: 10px;
-    background: var(--btn);
-    color: var(--btn-fg);
-    font-weight: 600;
-    font-size: 14px;
-    cursor: pointer;
-    margin-bottom: 8px;
-  }
-  .btn.ghost { background: var(--card); color: var(--fg); border: 1px solid var(--border); }
-  .btn.danger { background: var(--bad); }
-  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
-  .toolbar .btn { flex: 1; min-width: 95px; margin-bottom: 0; }
-  .small { font-size: 12px; color: var(--hint); }
-  .empty { text-align: center; color: var(--hint); padding: 24px 0; font-style: italic; }
-  .signal {
-    border-left: 3px solid var(--btn);
-    padding-left: 10px;
-    margin-bottom: 10px;
-  }
-  .signal.bull { border-color: var(--good); }
-  .signal.bear { border-color: var(--bad); }
-  .signal-head { display: flex; justify-content: space-between; align-items: baseline; }
-  .signal-sym { font-weight: 700; }
-  .signal-conf { font-size: 12px; color: var(--hint); }
-  .signal-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-  .progress {
-    height: 4px;
-    background: rgba(127,127,127,.2);
-    border-radius: 2px;
-    overflow: hidden;
-    margin-top: 6px;
-  }
-  .progress > span {
-    display: block; height: 100%;
-    background: var(--btn);
-    transition: width .3s ease;
-  }
-  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
-  .status-dot.up   { background: var(--good); }
-  .status-dot.down { background: var(--bad); }
-  .toast {
-    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
-    background: var(--card); color: var(--fg);
-    padding: 10px 16px; border-radius: 24px;
-    font-size: 13px; box-shadow: 0 6px 20px rgba(0,0,0,.3);
-    border: 1px solid var(--border);
-    opacity: 0; transition: opacity .25s;
-    pointer-events: none; z-index: 50;
-  }
-  .toast.show { opacity: 1; }
-  .refresh-spin { animation: spin 1s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  details { margin: 6px 0; }
-  details summary { cursor: pointer; color: var(--hint); font-size: 12px; padding: 4px 0; }
-  pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; color: var(--hint); margin: 4px 0; }
+:root {
+  --bg:     var(--tg-theme-bg-color, #0d1117);
+  --bg2:    var(--tg-theme-secondary-bg-color, #161b22);
+  --fg:     var(--tg-theme-text-color, #e6edf3);
+  --hint:   var(--tg-theme-hint-color, #7d8590);
+  --link:   var(--tg-theme-link-color, #58a6ff);
+  --btn:    var(--tg-theme-button-color, #238636);
+  --btnfg:  var(--tg-theme-button-text-color, #fff);
+  --border: rgba(240,246,252,.1);
+  --green:  #3fb950;
+  --red:    #f85149;
+  --yellow: #d29922;
+  --blue:   #58a6ff;
+  --purple: #bc8cff;
+  --radius: 10px;
+  --tab-h:  48px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0;padding:0}
+html,body{height:100%;overscroll-behavior:none}
+body{
+  background:var(--bg);color:var(--fg);
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+  padding-top:env(safe-area-inset-top);
+  padding-bottom:env(safe-area-inset-bottom);
+  display:flex;flex-direction:column;
+}
+
+/* ── Tabs ──────────────────────────────────────────────── */
+.tabs{
+  display:flex;background:var(--bg2);
+  border-bottom:1px solid var(--border);
+  position:sticky;top:0;z-index:10;
+  height:var(--tab-h);flex-shrink:0;
+}
+.tab{
+  flex:1;display:flex;align-items:center;justify-content:center;
+  flex-direction:column;gap:1px;
+  font-size:10px;font-weight:600;color:var(--hint);
+  cursor:pointer;user-select:none;transition:color .15s;
+  border-bottom:2px solid transparent;
+}
+.tab .icon{font-size:16px;line-height:1}
+.tab.active{color:var(--btn);border-color:var(--btn)}
+
+/* ── Pages ─────────────────────────────────────────────── */
+.page{flex:1;overflow-y:auto;display:none;padding:12px}
+.page.active{display:block}
+
+/* ── Cards ─────────────────────────────────────────────── */
+.card{
+  background:var(--bg2);border-radius:var(--radius);
+  border:1px solid var(--border);padding:14px;margin-bottom:10px;
+}
+.card-title{font-size:11px;font-weight:600;color:var(--hint);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px}
+
+/* ── Row ───────────────────────────────────────────────── */
+.row{display:flex;justify-content:space-between;align-items:center;padding:5px 0}
+.row+.row{border-top:1px solid var(--border)}
+.label{font-size:12px;color:var(--hint)}
+.val{font-weight:600;font-variant-numeric:tabular-nums}
+
+/* ── Big stat ───────────────────────────────────────────── */
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.stat-box{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:12px}
+.stat-label{font-size:11px;color:var(--hint);margin-bottom:4px}
+.stat-val{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+.stat-sub{font-size:11px;color:var(--hint);margin-top:2px}
+
+/* ── Badges / pills ─────────────────────────────────────── */
+.badge{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:2px 8px;border-radius:999px;
+  font-size:11px;font-weight:700;letter-spacing:.02em;
+}
+.badge.green{background:rgba(63,185,80,.15);color:var(--green)}
+.badge.red  {background:rgba(248,81,73,.15); color:var(--red)}
+.badge.yellow{background:rgba(210,153,34,.15);color:var(--yellow)}
+.badge.blue {background:rgba(88,166,255,.15);color:var(--blue)}
+.badge.hint {background:rgba(125,133,144,.12);color:var(--hint)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+.dot.green{background:var(--green)}.dot.red{background:var(--red)}.dot.yellow{background:var(--yellow)}
+
+/* ── Progress bar ───────────────────────────────────────── */
+.bar-wrap{height:5px;background:var(--border);border-radius:3px;overflow:hidden;margin-top:6px}
+.bar-fill{height:100%;border-radius:3px;transition:width .4s}
+
+/* ── Signal card ────────────────────────────────────────── */
+.sig{
+  border-left:3px solid var(--hint);
+  padding:10px 12px;margin-bottom:8px;
+  background:var(--bg2);border-radius:0 var(--radius) var(--radius) 0;
+  border:1px solid var(--border);border-left-width:3px;
+}
+.sig.buy{border-left-color:var(--green)}.sig.sell{border-left-color:var(--red)}
+.sig-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+.sig-sym{font-weight:700;font-size:15px}
+.sig-type{font-size:10px;color:var(--hint);background:var(--border);padding:1px 6px;border-radius:4px;margin-left:6px}
+.sig-conf{font-weight:700}
+.sig-prices{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0}
+.price-chip{font-size:11px;padding:2px 7px;border-radius:5px;background:rgba(88,166,255,.08);color:var(--fg);font-variant-numeric:tabular-nums}
+.price-chip.sl{background:rgba(248,81,73,.1);color:var(--red)}
+.price-chip.tp{background:rgba(63,185,80,.1);color:var(--green)}
+.sig-reasons{font-size:11px;color:var(--hint);margin-top:4px;line-height:1.6}
+details summary{cursor:pointer;color:var(--hint);font-size:11px;padding:4px 0;list-style:none}
+details summary::before{content:"▶ ";font-size:9px}
+details[open] summary::before{content:"▼ "}
+
+/* ── Position card ──────────────────────────────────────── */
+.pos-card{margin-bottom:10px}
+.pos-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.pos-sym{font-size:16px;font-weight:700}
+.pos-pnl{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums}
+.range-bar{position:relative;height:32px;margin:6px 0}
+.range-track{position:absolute;top:50%;transform:translateY(-50%);height:4px;background:var(--border);left:0;right:0;border-radius:2px}
+.range-fill{position:absolute;top:50%;transform:translateY(-50%);height:4px;border-radius:2px}
+.range-marker{position:absolute;top:50%;transform:translate(-50%,-50%);width:12px;height:12px;border-radius:50%;border:2px solid var(--bg2)}
+.range-label{position:absolute;font-size:9px;color:var(--hint);top:0;transform:translateX(-50%)}
+.range-label.right{transform:translateX(-100%)}
+
+/* ── Table ──────────────────────────────────────────────── */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;color:var(--hint);font-size:10px;font-weight:600;text-transform:uppercase;padding:4px 6px;border-bottom:1px solid var(--border)}
+td{padding:6px 6px;border-bottom:1px solid rgba(240,246,252,.05)}
+tr:last-child td{border:none}
+.ta-r{text-align:right}
+
+/* ── Buttons ────────────────────────────────────────────── */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  padding:10px 14px;border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--bg2);color:var(--fg);font:600 13px/1 inherit;
+  cursor:pointer;transition:opacity .15s,background .15s;width:100%;margin-bottom:6px;
+}
+.btn:active{opacity:.7}
+.btn.primary{background:var(--btn);color:var(--btnfg);border-color:transparent}
+.btn.danger{background:rgba(248,81,73,.15);color:var(--red);border-color:rgba(248,81,73,.3)}
+.btn.danger.solid{background:var(--red);color:#fff;border-color:transparent}
+.btn.active-risk{background:rgba(88,166,255,.2);color:var(--blue);border-color:var(--blue)}
+.btn.active-freq{background:rgba(63,185,80,.2);color:var(--green);border-color:var(--green)}
+.btn-row{display:flex;gap:6px;margin-bottom:6px}
+.btn-row .btn{margin:0}
+
+/* ── Session badge row ───────────────────────────────────── */
+.session-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+
+/* ── Toast ──────────────────────────────────────────────── */
+#toast{
+  position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
+  background:var(--fg);color:var(--bg);
+  padding:9px 16px;border-radius:20px;font-size:13px;font-weight:600;
+  pointer-events:none;opacity:0;transition:opacity .2s;z-index:99;white-space:nowrap;
+}
+#toast.show{opacity:1}
+
+/* ── Spinner ────────────────────────────────────────────── */
+.spin{animation:spin 1s linear infinite;display:inline-block}
+@keyframes spin{to{transform:rotate(360deg)}}
+.empty{color:var(--hint);text-align:center;padding:24px;font-style:italic;font-size:13px}
+
+/* ── Header strip ───────────────────────────────────────── */
+.hstrip{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.hstrip .mode-badges{display:flex;gap:5px}
+
+/* ── Equity sparkline ───────────────────────────────────── */
+canvas.spark{width:100%;height:48px;display:block;margin-top:8px}
+
+/* ── Rule chip ──────────────────────────────────────────── */
+.rule{
+  background:rgba(248,81,73,.07);border:1px solid rgba(248,81,73,.2);
+  border-radius:8px;padding:8px 10px;margin-bottom:6px;
+  font-size:12px;color:var(--fg);
+}
+.rule.pos{background:rgba(63,185,80,.07);border-color:rgba(63,185,80,.2)}
 </style>
 </head>
 <body>
 
-<div class="tabs">
-  <div class="tab active" data-pane="overview">📊 Overview</div>
-  <div class="tab" data-pane="positions">📈 Trades</div>
-  <div class="tab" data-pane="signals">🎯 Signals</div>
-  <div class="tab" data-pane="controls">⚙️ Controls</div>
-</div>
+<nav class="tabs">
+  <div class="tab active" data-page="overview"><span class="icon">📊</span>Overview</div>
+  <div class="tab" data-page="positions"><span class="icon">📈</span>Trades</div>
+  <div class="tab" data-page="signals"><span class="icon">🎯</span>Signals</div>
+  <div class="tab" data-page="analytics"><span class="icon">📉</span>Stats</div>
+  <div class="tab" data-page="controls"><span class="icon">⚙️</span>Controls</div>
+</nav>
 
-<!-- ──────────── OVERVIEW ──────────── -->
-<div class="pane active" id="pane-overview">
-  <div class="card">
-    <div class="grid2">
-      <div>
-        <div class="label">Balance</div>
-        <div class="big" id="ov-balance">—</div>
-      </div>
-      <div>
-        <div class="label">Equity</div>
-        <div class="big" id="ov-equity">—</div>
-      </div>
+<!-- ═══════════════ OVERVIEW ═══════════════ -->
+<div class="page active" id="page-overview">
+
+  <div class="hstrip">
+    <div class="mode-badges" id="ov-badges"></div>
+    <span style="font-size:11px;color:var(--hint)" id="ov-age">—</span>
+  </div>
+
+  <div class="stat-grid">
+    <div class="stat-box">
+      <div class="stat-label">Balance</div>
+      <div class="stat-val" id="ov-bal">—</div>
+      <div class="stat-sub" id="ov-cur">USD</div>
     </div>
-    <div class="row">
-      <span class="label">Today's P&L</span>
-      <span class="value" id="ov-pnl">—</span>
-    </div>
-    <div class="row">
-      <span class="label">Margin used</span>
-      <span class="value" id="ov-margin">—</span>
-    </div>
-    <div class="row">
-      <span class="label">Open positions</span>
-      <span class="value" id="ov-openpos">0</span>
-    </div>
-    <div class="row">
-      <span class="label">Account</span>
-      <span class="value small" id="ov-account">—</span>
+    <div class="stat-box">
+      <div class="stat-label">Equity</div>
+      <div class="stat-val" id="ov-eq">—</div>
+      <div class="stat-sub" id="ov-float">Float —</div>
     </div>
   </div>
 
-  <h2>System</h2>
-  <div class="card" id="ov-services"><div class="empty">loading…</div></div>
-
-  <h2>Session</h2>
-  <div class="card">
-    <div class="row"><span class="label">Active session</span><span class="value" id="ov-session">—</span></div>
-    <div class="row"><span class="label">AMD phase</span><span class="value" id="ov-amd">—</span></div>
-    <div class="row"><span class="label">Auto-trade</span><span class="value" id="ov-autotrade">—</span></div>
-    <div class="row"><span class="label">Data age</span><span class="value small" id="ov-dataage">—</span></div>
+  <div class="stat-grid">
+    <div class="stat-box">
+      <div class="stat-label">Win Streak</div>
+      <div class="stat-val" id="ov-wstreak" style="color:var(--green)">—</div>
+      <div class="stat-sub" id="ov-wr">WR —%</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">Peak DD</div>
+      <div class="stat-val" id="ov-dd" style="color:var(--red)">—</div>
+      <div class="stat-sub" id="ov-risk">Risk —%</div>
+    </div>
   </div>
+
+  <div class="card">
+    <div class="card-title">Market</div>
+    <div class="row"><span class="label">Session</span><span class="val" id="ov-session">—</span></div>
+    <div class="row"><span class="label">AMD Phase</span><span class="val" id="ov-amd">—</span></div>
+    <div class="row"><span class="label">Kill Zone</span><span class="val" id="ov-kz">—</span></div>
+    <div class="row"><span class="label">Open Positions</span><span class="val" id="ov-open">0</span></div>
+    <div class="row"><span class="label">Today P&L</span><span class="val" id="ov-daypnl">—</span></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Services</div>
+    <div id="ov-services"><div class="empty">loading…</div></div>
+  </div>
+
+  <canvas class="spark" id="eq-spark" height="96"></canvas>
+
 </div>
 
-<!-- ──────────── POSITIONS ──────────── -->
-<div class="pane" id="pane-positions">
-  <div class="card" id="pos-summary"></div>
+<!-- ═══════════════ POSITIONS ═══════════════ -->
+<div class="page" id="page-positions">
+  <div class="card" id="pos-summary" style="margin-bottom:10px">
+    <div class="row"><span class="label">Open trades</span><span class="val" id="pos-count">0</span></div>
+    <div class="row"><span class="label">Floating P&L</span><span class="val" id="pos-float">—</span></div>
+    <div class="row"><span class="label">Margin used</span><span class="val" id="pos-margin">—</span></div>
+  </div>
   <div id="pos-list"></div>
 </div>
 
-<!-- ──────────── SIGNALS ──────────── -->
-<div class="pane" id="pane-signals">
+<!-- ═══════════════ SIGNALS ═══════════════ -->
+<div class="page" id="page-signals">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+    <span style="font-size:12px;color:var(--hint)" id="sig-count">— setups</span>
+    <select id="sig-filter" style="background:var(--bg2);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px">
+      <option value="">All</option>
+      <option value="BUY">BUY only</option>
+      <option value="SELL">SELL only</option>
+    </select>
+  </div>
   <div id="sig-list"></div>
 </div>
 
-<!-- ──────────── CONTROLS ──────────── -->
-<div class="pane" id="pane-controls">
-  <h2>Trading</h2>
-  <div class="toolbar">
-    <button class="btn"        data-cmd="resume">▶️ Resume</button>
-    <button class="btn danger" data-cmd="halt">🛑 Halt</button>
+<!-- ═══════════════ ANALYTICS ═══════════════ -->
+<div class="page" id="page-analytics">
+
+  <div class="stat-grid">
+    <div class="stat-box">
+      <div class="stat-label">Win Rate</div>
+      <div class="stat-val" id="an-wr" style="color:var(--green)">—</div>
+      <div class="stat-sub" id="an-wl">—W / —L</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">Total R</div>
+      <div class="stat-val" id="an-r">—</div>
+      <div class="stat-sub" id="an-pnl">$—</div>
+    </div>
   </div>
 
-  <h2>Risk Mode</h2>
-  <div class="toolbar">
-    <button class="btn ghost" data-setrisk="LOW">LOW</button>
-    <button class="btn ghost" data-setrisk="MODERATE">MODERATE</button>
-    <button class="btn ghost" data-setrisk="HIGH">HIGH</button>
+  <div class="card">
+    <div class="card-title">By Session</div>
+    <table id="an-session-table">
+      <tr><th>Session</th><th class="ta-r">W</th><th class="ta-r">L</th><th class="ta-r">WR%</th></tr>
+    </table>
   </div>
 
-  <h2>Frequency Mode</h2>
-  <div class="toolbar">
-    <button class="btn ghost" data-setfreq="CONSERVATIVE">CONS</button>
-    <button class="btn ghost" data-setfreq="NORMAL">NORMAL</button>
-    <button class="btn ghost" data-setfreq="AGGRESSIVE">AGG</button>
+  <div class="card">
+    <div class="card-title">By Entry Type</div>
+    <table id="an-type-table">
+      <tr><th>Type</th><th class="ta-r">W</th><th class="ta-r">L</th><th class="ta-r">WR%</th><th class="ta-r">AvgR</th></tr>
+    </table>
   </div>
 
-  <h2>Account</h2>
-  <div id="ctrl-accounts"></div>
+  <div class="card">
+    <div class="card-title">Recent Closed Trades</div>
+    <div id="an-history"></div>
+  </div>
 
-  <p class="small">All buttons send a command to your Telegram bot — same as typing /halt, /setrisk, etc. You'll see the bot's reply in your chat.</p>
+  <div class="card">
+    <div class="card-title">Learned Rules</div>
+    <div id="an-rules"><div class="empty">no rules yet</div></div>
+  </div>
+
 </div>
 
-<div class="toast" id="toast">…</div>
+<!-- ═══════════════ CONTROLS ═══════════════ -->
+<div class="page" id="page-controls">
+
+  <div class="card">
+    <div class="card-title">Trading State</div>
+    <div id="ctrl-status-row" class="row" style="margin-bottom:10px">
+      <span class="label">Status</span><span id="ctrl-status-badge">—</span>
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" id="btn-resume">▶ Resume</button>
+      <button class="btn danger solid" id="btn-halt">⏹ Halt</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Risk Mode</div>
+    <div class="btn-row" id="risk-btns">
+      <button class="btn" data-risk="LOW">LOW</button>
+      <button class="btn" data-risk="MODERATE">MODERATE</button>
+      <button class="btn" data-risk="HIGH">HIGH</button>
+    </div>
+    <div style="font-size:11px;color:var(--hint)" id="risk-desc"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Frequency Mode</div>
+    <div class="btn-row" id="freq-btns">
+      <button class="btn" data-freq="CONSERVATIVE">CONS</button>
+      <button class="btn" data-freq="NORMAL">NORMAL</button>
+      <button class="btn" data-freq="AGGRESSIVE">AGG</button>
+    </div>
+    <div style="font-size:11px;color:var(--hint)" id="freq-desc"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Bot Info</div>
+    <div class="row"><span class="label">Risk range</span><span class="val" id="ctrl-riskrange">—</span></div>
+    <div class="row"><span class="label">Daily limit</span><span class="val" id="ctrl-daily">—</span></div>
+    <div class="row"><span class="label">Max DD</span><span class="val" id="ctrl-maxdd">—</span></div>
+    <div class="row"><span class="label">Min confidence</span><span class="val" id="ctrl-conf">—</span></div>
+    <div class="row"><span class="label">Max open</span><span class="val" id="ctrl-maxopen">—</span></div>
+  </div>
+
+  <button class="btn" id="btn-refresh" style="margin-top:4px">🔄 Refresh Data</button>
+
+</div>
+
+<div id="toast"></div>
 
 <script>
-const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
-if (tg) { tg.ready(); tg.expand(); }
+// ═══════════════════════════════════════════════════════════
+// Bootstrap Telegram WebApp
+// ═══════════════════════════════════════════════════════════
+const tg = window.Telegram?.WebApp ?? null;
+if (tg) { tg.ready(); tg.expand(); tg.enableClosingConfirmation?.(); }
 
 const API = location.origin + "/api/";
-let activeAccount = null;
-let pollTimer = null;
+let accountId = null;
+let lastData  = null;
+let ws        = null;
+let wsRetries = 0;
 
-const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => document.querySelectorAll(sel);
+// ── Helpers ─────────────────────────────────────────────────
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+const fmt$ = (v, c="") => (v==null||isNaN(v)) ? "—" : (c?" "+c:"") + Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtN  = (v,d=2) => (v==null||isNaN(v)) ? "—" : Number(v).toFixed(d);
+const pc    = v => v>0?"green":v<0?"red":"hint";
 
-function fmtMoney(v, ccy = "") {
-  if (v === undefined || v === null || isNaN(v)) return "—";
-  return (ccy ? ccy + " " : "") + Number(v).toLocaleString(undefined, {
-    minimumFractionDigits: 2, maximumFractionDigits: 2,
-  });
-}
-function fmtPct(v, digits = 2) {
-  if (v === undefined || v === null || isNaN(v)) return "—";
-  return Number(v).toFixed(digits) + "%";
-}
-function pnlClass(v) { return v > 0 ? "pos" : v < 0 ? "neg" : "neutral"; }
-function ageLabel(secs) {
-  if (secs == null) return "—";
-  if (secs < 60) return Math.round(secs) + "s ago";
-  if (secs < 3600) return Math.round(secs / 60) + "m ago";
-  return (secs / 3600).toFixed(1) + "h ago";
-}
-function toast(msg, ms = 2400) {
-  const t = $("#toast");
-  t.textContent = msg;
-  t.classList.add("show");
-  clearTimeout(toast._tid);
-  toast._tid = setTimeout(() => t.classList.remove("show"), ms);
+function toast(msg, ms=2400) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(()=>el.classList.remove("show"), ms);
+  tg?.HapticFeedback?.notificationOccurred?.("success");
 }
 
-// ── Tabs ────────────────────────────────────────────────────────────────
-$$(".tab").forEach((tab) => tab.addEventListener("click", () => {
-  $$(".tab").forEach((t) => t.classList.remove("active"));
-  $$(".pane").forEach((p) => p.classList.remove("active"));
-  tab.classList.add("active");
-  $("#pane-" + tab.dataset.pane).classList.add("active");
-  if (tg) tg.HapticFeedback?.selectionChanged?.();
+// ── Tabs ─────────────────────────────────────────────────────
+$$(".tab").forEach(tab => tab.addEventListener("click", () => {
+  const pg = tab.dataset.page;
+  $$(".tab").forEach(t=>t.classList.toggle("active", t===tab));
+  $$(".page").forEach(p=>p.classList.toggle("active", p.id==="page-"+pg));
+  tg?.HapticFeedback?.selectionChanged?.();
 }));
 
-// ── Data fetchers ───────────────────────────────────────────────────────
+// ── Signal filter ─────────────────────────────────────────────
+$("#sig-filter").addEventListener("change", () => {
+  if (lastData) paintSignals(lastData);
+});
+
+// ── HTTP helpers ─────────────────────────────────────────────
 async function fetchJson(path) {
   const r = await fetch(API + path);
   if (!r.ok) throw new Error(`${path} → ${r.status}`);
   return r.json();
 }
-
-async function loadAccounts() {
-  const accs = await fetchJson("accounts");
-  if (!accs.length) return;
-  if (!activeAccount) activeAccount = accs[0].id;
-  const html = accs.map((a) => `
-    <button class="btn ${a.id === activeAccount ? '' : 'ghost'}"
-            data-pickacc="${a.id}">
-      ${a.id === activeAccount ? '✓ ' : ''}${a.name} <span class="small">(${a.type})</span>
-    </button>
-  `).join("");
-  $("#ctrl-accounts").innerHTML = html;
+async function post(path) {
+  const r = await fetch(API + path, {method:"POST"});
+  if (!r.ok) throw new Error(`POST ${path} → ${r.status}`);
+  return r.json();
 }
 
+// ── Init accounts ─────────────────────────────────────────────
+async function init() {
+  const accs = await fetchJson("accounts").catch(()=>[]);
+  if (accs.length) accountId = accs[0].id;
+  await refresh();
+  connectWS();
+}
+
+// ── WebSocket real-time ───────────────────────────────────────
+function connectWS() {
+  if (!accountId) return;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws/${accountId}`);
+  ws.onmessage = e => {
+    try { const d = JSON.parse(e.data); if(d.account_info||d.bot_status) { lastData=d; paint(d); } }
+    catch(err){}
+  };
+  ws.onclose = () => {
+    wsRetries++;
+    const delay = Math.min(2000 * wsRetries, 30000);
+    setTimeout(connectWS, delay);
+  };
+  ws.onerror = () => ws.close();
+}
+
+// ── Full refresh (HTTP fallback) ──────────────────────────────
 async function refresh() {
-  if (!activeAccount) { try { await loadAccounts(); } catch (e) { return; } }
-  if (!activeAccount) return;
-  let data, status;
+  if (!accountId) return;
   try {
-    [data, status] = await Promise.all([
-      fetchJson("data/" + activeAccount),
-      fetchJson("status").catch(() => ({})),
+    const [data, status] = await Promise.all([
+      fetchJson("data/" + accountId),
+      fetchJson("status").catch(()=>({})),
     ]);
-  } catch (e) {
-    toast("⚠ " + e.message);
-    return;
-  }
-  paintOverview(data, status);
-  paintPositions(data);
-  paintSignals(data);
+    lastData = data;
+    lastData._status = status;
+    paint(data);
+  } catch(e) { toast("⚠ " + e.message); }
+}
+setInterval(refresh, 10000);
+
+// ══════════════════════════════════════════════════════════════
+// PAINT functions
+// ══════════════════════════════════════════════════════════════
+function paint(d) {
+  paintOverview(d);
+  paintPositions(d);
+  paintSignals(d);
+  paintAnalytics(d);
+  paintControls(d);
 }
 
-// ── Overview ────────────────────────────────────────────────────────────
-function paintOverview(d, s) {
-  const a = d.account_info || d.account || {};
-  const ccy = a.currency || "";
-  $("#ov-balance").textContent = fmtMoney(a.balance, ccy);
-  $("#ov-equity").textContent  = fmtMoney(a.equity,  ccy);
-  const pnl = (a.equity || 0) - (a.balance || 0);
-  $("#ov-pnl").textContent = fmtMoney(pnl, ccy);
-  $("#ov-pnl").className = "value " + pnlClass(pnl);
-  $("#ov-margin").textContent = fmtMoney(a.margin || 0, ccy);
-  $("#ov-openpos").textContent = (d.positions || []).length;
-  $("#ov-account").textContent = (d.account_name || a.name || activeAccount) + (a.server ? " · " + a.server : "");
+// ── OVERVIEW ─────────────────────────────────────────────────
+function paintOverview(d) {
+  const a  = d.account_info || d.account || {};
+  const bs = d.bot_status   || {};
+  const ccy = a.currency || "USD";
+
+  // Mode badges
+  const halted  = bs.trading_halted;
+  const isPaper = bs.paper_mode === true || d.account_type === "demo";
+  const badges = [
+    halted  ? `<span class="badge red"><span class="dot red"></span>HALTED</span>`
+            : `<span class="badge green"><span class="dot green"></span>ACTIVE</span>`,
+    isPaper ? `<span class="badge yellow">PAPER</span>`
+            : `<span class="badge green">LIVE</span>`,
+    bs.risk_mode ? `<span class="badge blue">${bs.risk_mode}</span>` : "",
+    bs.freq_mode ? `<span class="badge hint">${bs.freq_mode}</span>` : "",
+  ].filter(Boolean).join("");
+  $("#ov-badges").innerHTML = badges;
+  $("#ov-age").textContent  = ageStr(d.data_age_secs);
+
+  // Stats
+  const bal = a.balance || 0;
+  const eq  = a.equity  || 0;
+  const flt = eq - bal;
+  $("#ov-bal").textContent  = fmt$(bal);
+  $("#ov-eq").textContent   = fmt$(eq);
+  $("#ov-cur").textContent  = ccy;
+  $("#ov-float").innerHTML  = `Float <span class="${pc(flt)}">${flt>=0?"+":""}${fmt$(flt)}</span>`;
+  $("#ov-wstreak").textContent = (bs.win_streak||0) + "W";
+  const tot = (bs.winning_trades||0)+(bs.losing_trades||0);
+  const wr  = tot>0 ? Math.round(bs.winning_trades/tot*100) : 0;
+  $("#ov-wr").textContent = `WR ${wr}% (${bs.winning_trades||0}W/${bs.losing_trades||0}L)`;
+  const dd = bs.peak_drawdown||0;
+  $("#ov-dd").textContent   = fmtN(dd,2) + "%";
+  const risk = bs.current_risk || bs.base_risk || 0;
+  $("#ov-risk").textContent = `Risk ${fmtN(risk,1)}%`;
+
+  // Market
   $("#ov-session").textContent = d.session || "—";
   $("#ov-amd").textContent     = d.amd_phase || "—";
-  const halted = d.bot_status && d.bot_status.trading_halted;
-  $("#ov-autotrade").innerHTML = halted
-    ? '<span class="pill bad">HALTED</span>'
-    : (d.bot_status && d.bot_status.paper_mode === false
-        ? '<span class="pill good">LIVE</span>'
-        : '<span class="pill warn">PAPER</span>');
-  $("#ov-dataage").textContent = ageLabel(d.data_age_secs);
+  const kz = d.bot_status?.kill_zone;
+  $("#ov-kz").innerHTML = kz
+    ? `<span class="badge yellow">🔥 ${kz}</span>`
+    : `<span style="color:var(--hint)">Inactive</span>`;
+  $("#ov-open").textContent  = (d.positions||[]).length;
+  const dayPnl = bs.total_profit || 0;
+  $("#ov-daypnl").innerHTML = `<span class="${pc(dayPnl)}">${dayPnl>=0?"+":""}${fmt$(dayPnl)}</span>`;
 
-  if (s && s.services) {
-    const html = Object.entries(s.services).map(([k, v]) => `
+  // Services
+  const status = d._status || {};
+  if (status.services) {
+    $("#ov-services").innerHTML = Object.entries(status.services).map(([k,v])=>`
       <div class="row">
-        <span class="label">
-          <span class="status-dot ${v.alive ? 'up' : 'down'}"></span>${k}
-        </span>
-        <span class="value small">${v.alive ? 'up' : 'down'}${v.restarts ? ' · ' + v.restarts + 'x' : ''}</span>
-      </div>
-    `).join("");
-    $("#ov-services").innerHTML = html || '<div class="empty">no service data</div>';
+        <span class="label"><span class="dot ${v.alive?"green":"red"}"></span> ${k}</span>
+        <span class="val" style="font-size:12px">${v.alive?"up":"down"}${v.restarts?" · "+v.restarts+"x":""}</span>
+      </div>`).join("");
   } else {
-    $("#ov-services").innerHTML = '<div class="empty">/api/status unavailable</div>';
+    const accs = status.accounts||[];
+    if (accs.length) {
+      $("#ov-services").innerHTML = accs.map(a=>`
+        <div class="row">
+          <span class="label"><span class="dot ${a.connected?"green":"red"}"></span> ${a.name}</span>
+          <span class="val" style="font-size:12px">${a.connected?"connected":"offline"}</span>
+        </div>`).join("");
+    } else {
+      $("#ov-services").innerHTML = '<div class="empty">no service data</div>';
+    }
   }
+
+  // Equity sparkline — draw using balance + recent profit history
+  drawSparkline(bal, eq, flt);
 }
 
-// ── Positions ───────────────────────────────────────────────────────────
+// ── Sparkline ─────────────────────────────────────────────────
+let _sparkPoints = [];
+function drawSparkline(bal, eq, flt) {
+  _sparkPoints.push(eq);
+  if (_sparkPoints.length > 60) _sparkPoints.shift();
+  const c = $("#eq-spark");
+  if (!c) return;
+  const dpr = devicePixelRatio || 1;
+  c.width  = c.offsetWidth  * dpr;
+  c.height = c.offsetHeight * dpr;
+  const ctx = c.getContext("2d");
+  ctx.scale(dpr, dpr);
+  const W = c.offsetWidth, H = c.offsetHeight;
+  const pts = _sparkPoints;
+  if (pts.length < 2) return;
+  const mn = Math.min(...pts), mx = Math.max(...pts);
+  const range = mx - mn || 1;
+  const x = i => (i/(pts.length-1)) * W;
+  const y = v => H - ((v-mn)/range) * (H-8) - 4;
+  ctx.clearRect(0,0,W,H);
+  const grad = ctx.createLinearGradient(0,0,0,H);
+  const col  = flt>=0 ? "63,185,80" : "248,81,73";
+  grad.addColorStop(0, `rgba(${col},.25)`);
+  grad.addColorStop(1, `rgba(${col},0)`);
+  ctx.beginPath();
+  pts.forEach((v,i)=> i===0 ? ctx.moveTo(x(i),y(v)) : ctx.lineTo(x(i),y(v)));
+  ctx.lineTo(x(pts.length-1),H); ctx.lineTo(x(0),H); ctx.closePath();
+  ctx.fillStyle = grad; ctx.fill();
+  ctx.beginPath();
+  pts.forEach((v,i)=> i===0 ? ctx.moveTo(x(i),y(v)) : ctx.lineTo(x(i),y(v)));
+  ctx.strokeStyle = `rgba(${col},1)`; ctx.lineWidth = 2; ctx.stroke();
+}
+
+// ── POSITIONS ─────────────────────────────────────────────────
 function paintPositions(d) {
   const positions = d.positions || [];
-  const ccy = (d.account_info || d.account || {}).currency || "";
-  const totalProfit = positions.reduce((s, p) => s + (p.profit || 0), 0);
-  $("#pos-summary").innerHTML = `
-    <div class="row">
-      <span class="label">Open positions</span>
-      <span class="value">${positions.length}</span>
-    </div>
-    <div class="row">
-      <span class="label">Floating P&L</span>
-      <span class="value ${pnlClass(totalProfit)}">${fmtMoney(totalProfit, ccy)}</span>
-    </div>
-  `;
+  const ccy = (d.account_info||d.account||{}).currency||"";
+  const fltTotal = positions.reduce((s,p)=>s+(p.profit||0),0);
+  const margin   = (d.account_info||{}).margin || 0;
+  $("#pos-count").textContent  = positions.length;
+  const fp = $("#pos-float");
+  fp.textContent = fmt$(fltTotal, ccy);
+  fp.className   = "val " + pc(fltTotal);
+  $("#pos-margin").textContent = fmt$(margin, ccy);
+
   if (!positions.length) {
-    $("#pos-list").innerHTML = '<div class="empty">No open positions.</div>';
+    $("#pos-list").innerHTML = '<div class="empty">No open positions</div>';
     return;
   }
-  $("#pos-list").innerHTML = positions.map((p) => {
-    const dir = (p.type || '').toUpperCase();
-    const isBuy = dir === 'BUY';
+
+  $("#pos-list").innerHTML = positions.map(p => {
+    const dir   = (p.type||"").toUpperCase();
+    const isBuy = dir==="BUY";
+    const entry = p.open_price || 0;
+    const cur   = p.current_price || 0;
+    const sl    = p.sl || 0;
+    const tp    = p.tp || 0;
+    const pnl   = p.profit || 0;
+
+    // Range bar: SL → Entry → TP, mark current price
+    let barHtml = "";
+    if (entry>0 && sl>0 && tp>0) {
+      const lo = Math.min(sl, entry, cur, tp);
+      const hi = Math.max(sl, entry, cur, tp);
+      const range = hi - lo || 1;
+      const pct = v => ((v-lo)/range*100).toFixed(1);
+      const curPct = pct(cur);
+      const entPct = pct(entry);
+      const slPct  = pct(sl);
+      const tpPct  = pct(tp);
+      const fillFrom = isBuy ? entPct : tpPct;
+      const fillTo   = isBuy ? curPct : entPct;
+      const fillColor= pnl>=0 ? "var(--green)" : "var(--red)";
+      barHtml = `
+        <div class="range-bar">
+          <div class="range-track"></div>
+          <div class="range-fill" style="left:${Math.min(+fillFrom,+fillTo)}%;width:${Math.abs(+fillTo-+fillFrom)}%;background:${fillColor}"></div>
+          <div class="range-marker" style="left:${slPct}%;background:var(--red)"></div>
+          <div class="range-marker" style="left:${curPct}%;background:var(--fg)"></div>
+          <div class="range-marker" style="left:${tpPct}%;background:var(--green)"></div>
+          <div class="range-label" style="left:${slPct}%">SL</div>
+          <div class="range-label" style="left:${curPct}%">NOW</div>
+          <div class="range-label" style="left:${tpPct}%">TP</div>
+        </div>`;
+    }
+
+    const risk = Math.abs(entry - sl);
+    const gain = Math.abs(cur - entry);
+    const r    = risk>0 ? (gain/risk*(pnl>=0?1:-1)).toFixed(2) : "—";
+
     return `
-      <div class="card">
-        <div class="row">
-          <span><strong>${isBuy ? '🟢' : '🔴'} ${p.symbol}</strong> · ${dir} · ${p.volume}</span>
-          <span class="value ${pnlClass(p.profit)}">${fmtMoney(p.profit)}</span>
+      <div class="card pos-card">
+        <div class="pos-head">
+          <span class="pos-sym">${isBuy?"🟢":"🔴"} ${p.symbol} <small style="font-size:12px;font-weight:400;color:var(--hint)">${dir} · ${p.volume}L</small></span>
+          <span class="pos-pnl ${pc(pnl)}">${pnl>=0?"+":""}${fmt$(pnl)}</span>
         </div>
-        <div class="row"><span class="label">Entry</span><span class="value">${p.open_price}</span></div>
-        <div class="row"><span class="label">Current</span><span class="value">${p.current_price}</span></div>
-        <div class="row"><span class="label">SL / TP</span><span class="value">${p.sl} / ${p.tp || '—'}</span></div>
-        <button class="btn danger" style="margin-top:8px;" data-closeticket="${p.ticket}">
-          ❌ Close ${p.symbol}
-        </button>
+        ${barHtml}
+        <div class="row"><span class="label">Entry</span><span class="val">${entry}</span></div>
+        <div class="row"><span class="label">Current</span><span class="val">${cur}</span></div>
+        <div class="row"><span class="label">SL / TP</span><span class="val">${sl} / ${tp||"—"}</span></div>
+        <div class="row"><span class="label">R-multiple</span><span class="val ${pc(pnl)}">${r}R</span></div>
+        <button class="btn danger" style="margin-top:8px" data-close="${p.ticket}">❌ Close ${p.symbol}</button>
       </div>`;
   }).join("");
 }
 
-// ── Signals (ICT setups from the scanner) ──────────────────────────────
+// ── SIGNALS ──────────────────────────────────────────────────
 function paintSignals(d) {
-  // Server returns ICT scanner output as `setups`. The orchestrator's
-  // signals.json is a separate artifact; if present in the snapshot we'd
-  // merge it, but for now `setups` is the primary feed shown here.
-  const sigs = d.setups || d.signals || [];
+  let sigs = d.setups || d.signals || [];
+  const filter = $("#sig-filter").value;
+  if (filter) sigs = sigs.filter(s=>s.direction===filter||s.direction===(filter==="BUY"?"BULL":"BEAR"));
+  sigs = [...sigs].sort((a,b)=>(b.confidence||0)-(a.confidence||0));
+  $("#sig-count").textContent = sigs.length + " setups";
+
   if (!sigs.length) {
-    $("#sig-list").innerHTML = '<div class="empty">No setups yet — scanner finds nothing high-confidence right now.</div>';
+    $("#sig-list").innerHTML = '<div class="empty">No setups found right now</div>';
     return;
   }
-  $("#sig-list").innerHTML = sigs.slice(0, 25).map((s) => {
-    const dir = (s.direction || "").toUpperCase();
-    const dirClass = dir === "BUY" || dir === "BULL" ? "bull"
-                   : dir === "SELL" || dir === "BEAR" ? "bear" : "";
-    const conf = Math.round(s.confidence || 0);
-    const reasons = Array.isArray(s.reasons) ? s.reasons : [];
-    const entry  = s.entry_price ?? s.entry ?? null;
-    const sl     = s.sl_price ?? s.sl ?? null;
-    const tp1    = s.tp1_price ?? s.tp ?? null;
-    const tp2    = s.tp2_price ?? null;
-    const tp3    = s.tp3_price ?? null;
-    const rr     = s.rr_ratio ?? null;
-    const pivot  = s.metadata?.pivot;
+
+  $("#sig-list").innerHTML = sigs.slice(0,30).map(s => {
+    const dir   = (s.direction||"").toUpperCase();
+    const isBuy = dir==="BUY"||dir==="BULL";
+    const conf  = Math.round(s.confidence||0);
+    const barColor = conf>=75?"var(--green)":conf>=55?"var(--yellow)":"var(--red)";
+    const entry = s.entry_price??s.entry;
+    const sl    = s.sl_price??s.sl;
+    const tp1   = s.tp1_price??s.tp;
+    const tp2   = s.tp2_price;
+    const tp3   = s.tp3_price;
+    const reasons = (s.reasons||[]).slice(0,6);
     return `
-      <div class="signal ${dirClass}">
-        <div class="signal-head">
-          <span class="signal-sym">${s.symbol || "?"} ${s.entry_type ? "· " + s.entry_type : ""}</span>
-          <span class="signal-conf">${dir}${rr ? ` · RR ${Number(rr).toFixed(1)}` : ""}</span>
+      <div class="sig ${isBuy?"buy":"sell"}">
+        <div class="sig-head">
+          <span>
+            <span class="sig-sym">${s.symbol||"?"}</span>
+            <span class="sig-type">${s.entry_type||""}</span>
+          </span>
+          <span class="sig-conf ${isBuy?"green":"red"}">${dir} · ${conf}%</span>
         </div>
-        <div class="signal-meta">
-          <span class="pill">conf ${conf}</span>
-          ${entry != null ? `<span class="pill">@ ${entry}</span>` : ""}
-          ${sl   != null ? `<span class="pill">SL ${sl}</span>` : ""}
-          ${tp1  != null ? `<span class="pill">TP1 ${tp1}</span>` : ""}
-          ${tp2  != null ? `<span class="pill">TP2 ${tp2}</span>` : ""}
-          ${tp3  != null ? `<span class="pill">TP3 ${tp3}</span>` : ""}
-          ${s.session   ? `<span class="pill">${s.session}</span>` : ""}
-          ${s.kill_zone ? `<span class="pill warn">${s.kill_zone}</span>` : ""}
-          ${pivot && pivot.structure_type && pivot.structure_type !== "NONE"
-            ? `<span class="pill good">pivot ${pivot.structure_type}</span>` : ""}
+        <div class="bar-wrap"><div class="bar-fill" style="width:${conf}%;background:${barColor}"></div></div>
+        <div class="sig-prices">
+          ${entry!=null?`<span class="price-chip">@ ${entry}</span>`:""}
+          ${sl!=null   ?`<span class="price-chip sl">SL ${sl}</span>`:""}
+          ${tp1!=null  ?`<span class="price-chip tp">TP1 ${tp1}</span>`:""}
+          ${tp2!=null  ?`<span class="price-chip tp">TP2 ${tp2}</span>`:""}
+          ${tp3!=null  ?`<span class="price-chip tp">TP3 ${tp3}</span>`:""}
+          ${s.rr_ratio ?`<span class="price-chip">RR ${Number(s.rr_ratio).toFixed(1)}</span>`:""}
+          ${s.session  ?`<span class="price-chip">${s.session}</span>`:""}
+          ${s.amd_phase?`<span class="price-chip">${s.amd_phase}</span>`:""}
+          ${s.kill_zone?`<span class="price-chip" style="background:rgba(210,153,34,.15);color:var(--yellow)">🔥${s.kill_zone}</span>`:""}
         </div>
-        <div class="progress"><span style="width:${conf}%"></span></div>
-        ${reasons.length ? `
+        ${reasons.length?`
           <details>
-            <summary>${reasons.length} reason${reasons.length === 1 ? "" : "s"}</summary>
-            <pre>${reasons.map((r) => "• " + r).join("\n")}</pre>
-          </details>` : ""}
+            <summary>${reasons.length} reason${reasons.length===1?"":"s"}</summary>
+            <div class="sig-reasons">${reasons.map(r=>"• "+r).join("<br>")}</div>
+          </details>`:""}
       </div>`;
   }).join("");
 }
 
-// ── Controls (route through Telegram bot via sendData) ─────────────────
-function sendBotCommand(text, opts = {}) {
-  if (!tg) {
-    toast("Open via Telegram to send commands");
+// ── ANALYTICS ─────────────────────────────────────────────────
+function paintAnalytics(d) {
+  const mem = d.memory || {};
+  if (mem.error || !mem.total_trades) {
+    // Fall back to bot_status
+    const bs = d.bot_status||{};
+    const tot = (bs.winning_trades||0)+(bs.losing_trades||0);
+    const wr  = tot>0?Math.round(bs.winning_trades/tot*100):0;
+    $("#an-wr").textContent = wr+"%";
+    $("#an-wl").textContent = `${bs.winning_trades||0}W / ${bs.losing_trades||0}L`;
+    $("#an-r").textContent  = fmtN(bs.total_profit||0,2)+"R";
+    $("#an-pnl").textContent= fmt$(bs.total_profit||0,"$");
     return;
   }
-  const payload = JSON.stringify({ kind: "cmd", text, ...opts });
-  // Telegram's WebApp.sendData posts the payload to the bot's getUpdates
-  // queue — your telegram_bot.py picks it up and runs the matching command.
-  tg.sendData(payload);
-  toast("→ sent: " + text);
-  if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
-  // Telegram normally closes the WebApp after sendData; for control buttons
-  // we'd usually want to close, but you can pass `closeAfter:false` to stay.
-  if (opts.closeAfter !== false) setTimeout(() => tg.close(), 200);
+
+  const wr = mem.win_rate||0;
+  const wrEl = $("#an-wr");
+  wrEl.textContent = wr+"%";
+  wrEl.style.color = wr>=50?"var(--green)":"var(--red)";
+  $("#an-wl").textContent  = `${mem.wins}W / ${mem.losses}L`;
+  const rEl = $("#an-r");
+  rEl.textContent = (mem.total_r>=0?"+":"")+fmtN(mem.total_r,2)+"R";
+  rEl.style.color = mem.total_r>=0?"var(--green)":"var(--red)";
+  $("#an-pnl").textContent = (mem.total_pnl>=0?"+":"")+fmt$(mem.total_pnl,"$");
+
+  // By session
+  const sess = mem.by_session||{};
+  const sessRows = Object.entries(sess).map(([k,v])=>`
+    <tr>
+      <td>${k}</td>
+      <td class="ta-r" style="color:var(--green)">${v.wins}</td>
+      <td class="ta-r" style="color:var(--red)">${v.losses}</td>
+      <td class="ta-r ${v.win_rate>=50?"green":"red"}">${v.win_rate}%</td>
+    </tr>`).join("");
+  const tbl = $("#an-session-table");
+  tbl.innerHTML = `<tr><th>Session</th><th class="ta-r">W</th><th class="ta-r">L</th><th class="ta-r">WR%</th></tr>${sessRows||"<tr><td colspan='4' style='color:var(--hint);padding:8px'>No data</td></tr>"}`;
+
+  // By type
+  const types = mem.by_type||{};
+  const typeRows = Object.entries(types).map(([k,v])=>`
+    <tr>
+      <td style="font-size:11px">${k}</td>
+      <td class="ta-r" style="color:var(--green)">${v.wins}</td>
+      <td class="ta-r" style="color:var(--red)">${v.losses}</td>
+      <td class="ta-r ${v.win_rate>=50?"green":"red"}">${v.win_rate}%</td>
+      <td class="ta-r ${v.avg_r>=0?"green":"red"}">${v.avg_r>=0?"+":""}${fmtN(v.avg_r,2)}R</td>
+    </tr>`).join("");
+  const tbl2 = $("#an-type-table");
+  tbl2.innerHTML = `<tr><th>Type</th><th class="ta-r">W</th><th class="ta-r">L</th><th class="ta-r">WR%</th><th class="ta-r">AvgR</th></tr>${typeRows||"<tr><td colspan='5' style='color:var(--hint);padding:8px'>No data</td></tr>"}`;
+
+  // Recent trades
+  const recent = mem.recent_trades||[];
+  if (!recent.length) {
+    $("#an-history").innerHTML = '<div class="empty">No closed trades</div>';
+  } else {
+    $("#an-history").innerHTML = recent.map(t=>`
+      <div class="row">
+        <span class="label" style="flex:1">${t.symbol} <span style="opacity:.6">${t.direction} · ${t.entry_type||""}</span></span>
+        <span style="margin-right:8px;font-size:11px;color:var(--hint)">${t.session||""}</span>
+        <span class="val ${t.status==="WIN"?"green":t.status==="LOSS"?"red":"hint"}">${t.status==="WIN"?"+":(t.status==="LOSS"?"-":"")}${fmtN(Math.abs(t.r_multiple||0),2)}R</span>
+      </div>`).join("");
+  }
+
+  // Learned rules
+  const rules = mem.learned_rules||[];
+  if (!rules.length) {
+    $("#an-rules").innerHTML = '<div class="empty">No rules learned yet</div>';
+  } else {
+    $("#an-rules").innerHTML = rules.map(r=>{
+      const isAvoid = (r.action||"").includes("AVOID");
+      return `<div class="rule ${isAvoid?"":"pos"}">${r.summary||JSON.stringify(r)}</div>`;
+    }).join("");
+  }
 }
 
-document.addEventListener("click", (e) => {
-  const t = e.target.closest("[data-cmd], [data-setrisk], [data-setfreq], [data-pickacc], [data-closeticket]");
+// ── CONTROLS ─────────────────────────────────────────────────
+const RISK_DESCS = {
+  LOW:      "0.5% risk · 1% max · 2% daily limit · 5% max DD",
+  MODERATE: "1.0% risk · 2% max · 3% daily limit · 10% max DD",
+  HIGH:     "2.0% risk · 4% max · 5% daily limit · 15% max DD",
+};
+const FREQ_DESCS = {
+  CONSERVATIVE: "A+/A grades only · conf≥70 · max 2 open",
+  NORMAL:       "A+/A/B+ grades · conf≥65 · max 3 open",
+  AGGRESSIVE:   "All grades · conf≥55 · max 5 open",
+};
+
+function paintControls(d) {
+  const bs = d.bot_status||{};
+  const halted = bs.trading_halted;
+  $("#ctrl-status-badge").innerHTML = halted
+    ? `<span class="badge red">HALTED</span>`
+    : `<span class="badge green">ACTIVE</span>`;
+
+  // Risk buttons
+  const risk = bs.risk_mode || "";
+  $$("[data-risk]").forEach(b=>{
+    b.className = "btn" + (b.dataset.risk===risk?" active-risk":"");
+  });
+  $("#risk-desc").textContent = RISK_DESCS[risk]||"";
+
+  // Freq buttons
+  const freq = bs.freq_mode || "";
+  $$("[data-freq]").forEach(b=>{
+    b.className = "btn" + (b.dataset.freq===freq?" active-freq":"");
+  });
+  $("#freq-desc").textContent = FREQ_DESCS[freq]||"";
+
+  // Info
+  const br = bs.base_risk||0, mr = bs.max_risk||0;
+  $("#ctrl-riskrange").textContent = `${fmtN(br,1)}% – ${fmtN(mr,1)}%`;
+  $("#ctrl-daily").textContent     = `${fmtN(bs.daily_limit||0,1)}%`;
+  $("#ctrl-maxdd").textContent     = `${fmtN(bs.max_dd||0,1)}%`;
+  $("#ctrl-conf").textContent      = bs.min_conf||"—";
+  $("#ctrl-maxopen").textContent   = bs.max_open||"—";
+}
+
+// ── Control actions ──────────────────────────────────────────
+async function ctrl(path, label) {
+  try {
+    await post("control/" + path);
+    toast("✓ " + label);
+    setTimeout(refresh, 600);
+  } catch(e) { toast("✗ " + e.message); }
+}
+
+$("#btn-halt").addEventListener("click",   () => ctrl("halt",   "Trading halted"));
+$("#btn-resume").addEventListener("click", () => ctrl("resume", "Trading resumed"));
+$("#btn-refresh").addEventListener("click", () => { toast("Refreshing…"); refresh(); });
+
+document.addEventListener("click", e => {
+  const t = e.target.closest("[data-risk],[data-freq],[data-close]");
   if (!t) return;
-  if (t.dataset.cmd) {
-    sendBotCommand("/" + t.dataset.cmd);
-  } else if (t.dataset.setrisk) {
-    sendBotCommand("/setrisk " + t.dataset.setrisk);
-  } else if (t.dataset.setfreq) {
-    sendBotCommand("/setfreq " + t.dataset.setfreq);
-  } else if (t.dataset.pickacc) {
-    sendBotCommand("/switch " + t.dataset.pickacc, { closeAfter: false });
-    activeAccount = t.dataset.pickacc;
-    loadAccounts();
-    refresh();
-  } else if (t.dataset.closeticket) {
-    sendBotCommand("/close " + t.dataset.closeticket);
-  }
+  if (t.dataset.risk)  ctrl("setrisk/"+t.dataset.risk,  "Risk: "+t.dataset.risk);
+  if (t.dataset.freq)  ctrl("setfreq/"+t.dataset.freq,  "Freq: "+t.dataset.freq);
+  if (t.dataset.close) ctrl(`close/${accountId}/${t.dataset.close}`, "Close sent");
 });
 
-// ── Boot ────────────────────────────────────────────────────────────────
-loadAccounts().then(refresh).catch(() => {});
-pollTimer = setInterval(refresh, 5000);
-window.addEventListener("beforeunload", () => clearInterval(pollTimer));
+// ── Utilities ─────────────────────────────────────────────────
+function ageStr(secs) {
+  if (secs==null) return "—";
+  if (secs<30)  return "live";
+  if (secs<120) return Math.round(secs)+"s ago";
+  if (secs<3600) return Math.round(secs/60)+"m ago";
+  return (secs/3600).toFixed(1)+"h ago";
+}
+
+// ── Boot ─────────────────────────────────────────────────────
+init().catch(console.error);
 </script>
 </body>
 </html>

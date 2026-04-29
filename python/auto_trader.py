@@ -65,6 +65,15 @@ except ImportError as _e:
     _OnlineLearner = None
     _LEARNING_AVAILABLE = False
 
+try:
+    from pattern_recognition_model import PatternRecognitionModel as _PatternModel
+    _PATTERN_MODEL: "_PatternModel | None" = _PatternModel()
+    _PATTERN_AVAILABLE = True
+except (ImportError, Exception) as _pe:
+    _PatternModel = None          # type: ignore
+    _PATTERN_MODEL = None
+    _PATTERN_AVAILABLE = False
+
 # Lazy-initialized singletons for the learning loop
 _FS_SINGLETON = None
 _OPT_SINGLETON = None
@@ -546,7 +555,7 @@ class TraderState:
     # Active setups (pending orders we placed)
     pending_orders:      dict  = field(default_factory=dict)
     active_trades:       dict  = field(default_factory=dict)  # ticket -> trade info + TP levels
-    recently_traded:     list  = field(default_factory=list)  # symbols to avoid re-entry
+    recently_traded:     dict  = field(default_factory=dict)   # {symbol: expiry_ts} — time-based cooldown
 
     # Statistics
     start_time:          str   = ""
@@ -585,6 +594,10 @@ def load_state() -> TraderState:
                 log.info(f"Clearing obsolete halt_reason on load: {s.halt_reason!r}")
                 s.trading_halted = False
                 s.halt_reason = ""
+            # Migration: recently_traded was a list; convert to dict with far-future expiry
+            if isinstance(s.recently_traded, list):
+                _now = time.time()
+                s.recently_traded = {sym: _now + 7200 for sym in s.recently_traded}
             return s
         except Exception:
             pass
@@ -1082,7 +1095,7 @@ def reset_daily_if_new_day(state: TraderState, equity: float):
     if "Daily" in state.halt_reason or "profit target" in state.halt_reason:
         state.trading_halted = False
         state.halt_reason    = ""
-    state.recently_traded   = []
+    state.recently_traded   = {}
     state.sym_loss_streak     = {}   # Reset per-symbol loss streaks each day
     state.session_loss_streak = {}   # Reset per-session loss streaks each day
     save_state(state)  # Persist immediately so a crash can't re-trigger the reset
@@ -2120,7 +2133,10 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
                     setup.scalp_sl_pips = _decision.sl_pips
                     log.info(f"{symbol}: SCALP ACCEPT during {_amd_gate} — {_decision.reason}")
                     # Override SL/TP with scalp-tight values (preserve direction)
-                    _pip_size = 0.01 if "JPY" in symbol else 0.0001
+                    _pip_size = sym_info.get("point") or (
+                        0.01  if ("JPY" in symbol or "XAU" in symbol or "XAG" in symbol)
+                        else 0.0001
+                    )
                     if direction == "BUY":
                         setup.sl_price = setup.entry_price - (_decision.sl_pips * _pip_size)
                         setup.tp1_price = setup.entry_price + (_decision.tp_pips * _pip_size * 0.5)
@@ -2194,6 +2210,22 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
     else:
         adj_confidence = setup.confidence
 
+    # Pattern recognition model boost/penalty
+    if _PATTERN_AVAILABLE and _PATTERN_MODEL is not None:
+        try:
+            _pfeat = {
+                "confidence": float(setup.confidence),
+                "rr_ratio": float(getattr(setup, "rr_ratio", 0) or 0),
+                "ict_features.sweep_confirmed": 1.0 if _setup_swept else 0.0,
+            }
+            _p_win = _PATTERN_MODEL.predict_proba(_pfeat)
+            _padj = max(-8, min(8, int(round((_p_win - 0.5) * 16))))
+            if abs(_padj) >= 2:
+                adj_confidence += _padj
+                log.info(f"{symbol}: Pattern model P(WIN)={_p_win:.2f} → adj {_padj:+d} → {adj_confidence}")
+        except Exception as _pe:
+            log.debug(f"Pattern model error: {_pe}")
+
     # Symbol-specific confidence override (from rules.json symbol_overrides)
     _rules_sym = load_rules().get("symbol_overrides", {}).get(symbol, {})
     _sym_min_conf = _rules_sym.get("min_confidence", 0)
@@ -2201,8 +2233,18 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
         log.info(f"{symbol}: confidence {adj_confidence} below symbol override {_sym_min_conf} — skipped")
         return False
 
-    # Skip if already traded this symbol recently
-    if symbol in state.recently_traded:
+    # Skip if already traded this symbol recently (time-based TTL — 2 h default)
+    _now = time.time()
+    if isinstance(state.recently_traded, dict):
+        # Expire stale entries in-place
+        expired = [s for s, exp in state.recently_traded.items() if _now >= exp]
+        for s in expired:
+            del state.recently_traded[s]
+        if symbol in state.recently_traded:
+            _remaining = int(state.recently_traded[symbol] - _now)
+            log.debug(f"{symbol} recently traded — cooldown {_remaining}s remaining, skipping")
+            return False
+    elif symbol in state.recently_traded:  # legacy list fallback
         log.debug(f"{symbol} recently traded, skipping")
         return False
 
@@ -2233,6 +2275,8 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
             return False
 
     # Calculate lot size with compounding
+    if not sym_info:
+        log.warning(f"{symbol}: sym_info missing from charts — position sizing using minimum lot")
     lot_size = calculate_lot_size(
         equity=equity,
         risk_pct=state.current_risk_pct,
@@ -2361,10 +2405,12 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
         except Exception as _e:
             log.debug(f"record_signal hook error: {_e}")
 
-        if symbol not in state.recently_traded:
-            state.recently_traded.append(symbol)
-            if len(state.recently_traded) > 10:
-                state.recently_traded.pop(0)
+        # Mark symbol as recently traded with 2-hour TTL (allows re-entry next session)
+        _cooldown_secs = max(getattr(FREQ, "cooldown_scans", 6) * cfg.SCAN_INTERVAL * 10, 7200)
+        if isinstance(state.recently_traded, dict):
+            state.recently_traded[symbol] = time.time() + _cooldown_secs
+        else:
+            state.recently_traded = {symbol: time.time() + _cooldown_secs}
 
         _mode_tag = "PAPER" if PAPER_MODE else "LIVE"
         send_telegram(
@@ -2861,7 +2907,10 @@ def main():
                     for setup in high_conf:
                         if open_count >= MAX_OPEN_TRADES:
                             break
-                        if setup.symbol in state.recently_traded:
+                        _rt = state.recently_traded
+                        if isinstance(_rt, dict) and setup.symbol in _rt and time.time() < _rt[setup.symbol]:
+                            continue
+                        elif isinstance(_rt, list) and setup.symbol in _rt:
                             continue
 
                         # Correlation exposure guard — max 2 positions in same USD direction

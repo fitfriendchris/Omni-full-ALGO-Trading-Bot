@@ -162,7 +162,7 @@ say "Installing Python dependencies..."
 if [[ ! -d venv ]]; then
     python3 -m venv venv
 fi
-venv/bin/pip install -q -r python/requirements.txt
+venv/bin/pip install -q -r requirements.txt
 ok "Dependencies installed"
 
 # ── Start the bot ──────────────────────────────────────────────────

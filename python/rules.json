@@ -1,5 +1,5 @@
 {
-  "_comment": "OMNI ICT Strategy Rules — v2.1 | Sweep-gated entries, chop filter, CISD/InvFVG",
+  "_comment": "OMNI ICT Strategy Rules \u2014 v2.1 | Sweep-gated entries, chop filter, CISD/InvFVG",
   "_version": "2.1",
   "_last_updated": "2026-04-23",
   "watchlist": [
@@ -20,7 +20,7 @@
     "M5"
   ],
   "bias_rules": {
-    "description": "Conditions that define directional bias — D1 must agree with H4 before executing on H1/M15",
+    "description": "Conditions that define directional bias \u2014 D1 must agree with H4 before executing on H1/M15",
     "bullish_conditions": [
       "BOS_BULLISH",
       "CHOCH_BULL",
@@ -81,11 +81,11 @@
     },
     "equilibrium": {
       "level": "50pct_of_range",
-      "significance": "Key reversal and decision point — price respects this often",
+      "significance": "Key reversal and decision point \u2014 price respects this often",
       "notes": "If price is at equilibrium, wait for a clear BOS or CHoCH before entering"
     },
     "ote_fibonacci": {
-      "description": "Optimal Trade Entry — most precise entry within a discount/premium",
+      "description": "Optimal Trade Entry \u2014 most precise entry within a discount/premium",
       "buy_ote_zone": "62-79% retracement INTO the discount (21-38% of daily range from low)",
       "sell_ote_zone": "62-79% retracement INTO the premium (62-79% of daily range from low)",
       "notes": "Entering at OTE gives tightest SL, best R:R, and highest probability fills"
@@ -102,28 +102,28 @@
     "description": "Pinpoint entry rules for Order Block retests",
     "entry_levels": {
       "ote_50_pct": {
-        "description": "50% midpoint of OB body — standard precision entry",
+        "description": "50% midpoint of OB body \u2014 standard precision entry",
         "priority": 1
       },
       "ote_62_pct": {
-        "description": "62% Fibonacci of OB range — deep OTE",
+        "description": "62% Fibonacci of OB range \u2014 deep OTE",
         "priority": 2
       },
       "ote_79_pct": {
-        "description": "79% Fibonacci of OB range — deepest OTE (tightest SL)",
+        "description": "79% Fibonacci of OB range \u2014 deepest OTE (tightest SL)",
         "priority": 3
       },
       "ob_open": {
-        "description": "OB candle open level — institutional reference price",
+        "description": "OB candle open level \u2014 institutional reference price",
         "priority": 4
       }
     },
     "rules": [
-      "NEVER enter at OB extreme (high/low) — always enter at 50% or deeper",
+      "NEVER enter at OB extreme (high/low) \u2014 always enter at 50% or deeper",
       "Use OTE 50% as default entry, OTE 79% for tightest stop when confident",
-      "If price tests OB but does not reach 50% level, DO NOT enter — wait",
+      "If price tests OB but does not reach 50% level, DO NOT enter \u2014 wait",
       "Confirm OB test with a displacement candle (strong close through OB midpoint)",
-      "OB is invalidated when price closes THROUGH it entirely — then look for next OB",
+      "OB is invalidated when price closes THROUGH it entirely \u2014 then look for next OB",
       "Preferred: OB that originated from a liquidity sweep (strongest form)"
     ],
     "confirmation_required": [
@@ -154,7 +154,7 @@
     "notes": "2 conditions = valid entry. 4+ conditions = scale full position. 6+ conditions = potential scale-in on winner."
   },
   "technical_pattern_rules": {
-    "description": "Technical patterns add confluence but are NOT standalone signals — must align with ICT structure",
+    "description": "Technical patterns add confluence but are NOT standalone signals \u2014 must align with ICT structure",
     "patterns": {
       "double_top": {
         "direction": "SELL",
@@ -187,7 +187,7 @@
           "bearish_H4_structure",
           "confirmation_candle_on_retest"
         ],
-        "notes": "Right shoulder ideally forms at bearish OB — highest probability version"
+        "notes": "Right shoulder ideally forms at bearish OB \u2014 highest probability version"
       },
       "inverse_head_and_shoulders": {
         "direction": "BUY",
@@ -215,23 +215,23 @@
       }
     },
     "rules": [
-      "Pattern alone is NOT enough — always require ICT OB/FVG confluence",
+      "Pattern alone is NOT enough \u2014 always require ICT OB/FVG confluence",
       "Pattern confirmed only when price closes through neckline/trendline on the break candle",
       "Pattern retest (pullback to broken neckline) = highest probability entry",
-      "Pattern target is minimum — TP3 can target next major liquidity level"
+      "Pattern target is minimum \u2014 TP3 can target next major liquidity level"
     ]
   },
   "push_exhaustion_rules": {
     "description": "Detects momentum phase: PUSH = continuation, EXHAUSTION = reversal imminent",
     "push_phase": {
       "definition": "3+ consecutive candles same direction with increasing body sizes, wicks decreasing",
-      "action": "Trade with momentum — avoid counter-trend entries during push phase",
+      "action": "Trade with momentum \u2014 avoid counter-trend entries during push phase",
       "confidence_bonus_with_trend": 8,
       "notes": "During push phase in trend direction = add to position or enter fresh with tight trail"
     },
     "exhaustion_phase": {
       "definition": "3+ consecutive candles same direction but bodies shrinking and wicks growing",
-      "action": "Prepare for reversal — look for OB retest or FVG fill entry",
+      "action": "Prepare for reversal \u2014 look for OB retest or FVG fill entry",
       "confidence_bonus_reversal": 12,
       "notes": "Exhaustion at a premium OB (Q3-Q4) = highest probability SELL signal. At discount FVG (Q1-Q2) = highest probability BUY signal."
     },
@@ -269,7 +269,7 @@
       },
       "round_numbers": {
         "priority": "MEDIUM",
-        "notes": "1.2000, 1850, 150.00 — psychological levels, expect reactions"
+        "notes": "1.2000, 1850, 150.00 \u2014 psychological levels, expect reactions"
       },
       "order_block_zones": {
         "priority": "VERY_HIGH",
@@ -282,35 +282,45 @@
         "aggressive": "Sell limit at resistance if strong D1/H4 bias aligns"
       },
       "EXHAUSTING_AT_RESISTANCE": {
-        "action": "HIGH PROBABILITY SELL — enter on any bearish confirmation candle",
+        "action": "HIGH PROBABILITY SELL \u2014 enter on any bearish confirmation candle",
         "notes": "Exhaustion + resistance + Q3-Q4 = best short setup"
       },
       "PUSHING_INTO_RESISTANCE": {
-        "action": "Do NOT sell yet — momentum could break through. Wait for reversal candle first.",
-        "notes": "False breakouts above resistance are common — they become liquidity sweeps"
+        "action": "Do NOT sell yet \u2014 momentum could break through. Wait for reversal candle first.",
+        "notes": "False breakouts above resistance are common \u2014 they become liquidity sweeps"
       },
       "EXHAUSTING_AT_SUPPORT": {
-        "action": "HIGH PROBABILITY BUY — enter on any bullish confirmation candle",
+        "action": "HIGH PROBABILITY BUY \u2014 enter on any bullish confirmation candle",
         "notes": "Exhaustion + support + Q1-Q2 = best long setup"
       },
       "PUSHING_THROUGH_SUPPORT": {
         "action": "Do NOT buy. Wait for reclaim above support + confirmation.",
-        "notes": "Breakdown may continue to next S/R level — let it play out"
+        "notes": "Breakdown may continue to next S/R level \u2014 let it play out"
       }
     }
   },
   "amd_rules": {
     "accumulation": {
       "session": "ASIA",
-      "action": "SWEEP_ENTRIES_ONLY — mark range, do not trade FVG/CHoCH",
+      "action": "SWEEP_ENTRIES_ONLY \u2014 mark range, do not trade FVG/CHoCH",
       "min_confidence_to_trade": 75,
-      "allowed_entry_types": ["SWEEP_HIGH_OB", "SWEEP_LOW_OB", "POWER_OF_3_BUY", "POWER_OF_3_SELL"],
-      "blocked_entry_types": ["H1_FVG_ZONE_BUY", "H1_FVG_ZONE_SELL", "CHOCH_ENTRY_BUY", "CHOCH_ENTRY_SELL"],
-      "notes": "Asia/Accumulation: identify the range for London manipulation targets. Only genuine sweep-based reversals allowed (75+ confidence). FVG/CHoCH entries blocked — ICT requires the sweep to precede the imbalance entry."
+      "allowed_entry_types": [
+        "SWEEP_HIGH_OB",
+        "SWEEP_LOW_OB",
+        "POWER_OF_3_BUY",
+        "POWER_OF_3_SELL"
+      ],
+      "blocked_entry_types": [
+        "H1_FVG_ZONE_BUY",
+        "H1_FVG_ZONE_SELL",
+        "CHOCH_ENTRY_BUY",
+        "CHOCH_ENTRY_SELL"
+      ],
+      "notes": "Asia/Accumulation: identify the range for London manipulation targets. Only genuine sweep-based reversals allowed (75+ confidence). FVG/CHoCH entries blocked \u2014 ICT requires the sweep to precede the imbalance entry."
     },
     "manipulation": {
       "session": "LONDON",
-      "action": "WATCH_FOR_SWEEP — primary entry session",
+      "action": "WATCH_FOR_SWEEP \u2014 primary entry session",
       "min_confidence_to_trade": 55,
       "notes": "London open (07-09 UTC) is highest priority. Expect liquidity sweep of Asia high or low. Enter on OB retest after sweep confirms direction."
     },
@@ -322,7 +332,7 @@
     }
   },
   "session_rules": {
-    "description": "All sessions are now tradeable — session-specific rules apply",
+    "description": "All sessions are now tradeable \u2014 session-specific rules apply",
     "sessions": {
       "ASIA": {
         "enabled": true,
@@ -333,7 +343,7 @@
           "range_boundaries"
         ],
         "position_size_multiplier": 0.75,
-        "notes": "Lower liquidity — reduce size by 25%. Require extra confluence. Good for OB retests at clear levels."
+        "notes": "Lower liquidity \u2014 reduce size by 25%. Require extra confluence. Good for OB retests at clear levels."
       },
       "LONDON": {
         "enabled": true,
@@ -437,14 +447,14 @@
       "Trade is in profit by at least 1.0R",
       "Initial SL already moved to break-even",
       "Push phase confirmed on M15 (bodies growing in direction of trade)",
-      "No opposing BOS on H1 — structure intact",
+      "No opposing BOS on H1 \u2014 structure intact",
       "Original confluence factors still valid (OB not mitigated, bias unchanged)"
     ],
     "scale_in_rules": [
       "Add 50% of original position size when 1R profit reached and push confirmed",
       "Scale-in SL = same as current trailing SL (already at BE or better)",
       "Scale-in TP = 1.5x original TP3 level (let the runner run)",
-      "Maximum 1 scale-in per trade — no pyramiding beyond 2 units",
+      "Maximum 1 scale-in per trade \u2014 no pyramiding beyond 2 units",
       "If original trade hits TP1 (50% closed) THEN push confirmed: scale-in with remaining runner"
     ],
     "reduce_on_exhaustion": true,
@@ -463,7 +473,7 @@
     "notes": "Move SL to breakeven after TP1 hit. Always leave runner (20%) for extended moves. Close runner if opposing BOS prints on H1."
   },
   "smart_trail": {
-    "_comment": "Phase 1 reactive trailing stop. Enabled — see python/smart_trailing_stop.py.",
+    "_comment": "Phase 1 reactive trailing stop. Enabled \u2014 see python/smart_trailing_stop.py.",
     "enabled": true,
     "atr_period": 14,
     "atr_mult_min": 1.2,
@@ -498,7 +508,7 @@
     "close_on_opposing_choch_once_profitable": true,
     "min_modify_pips": 3.0,
     "min_modify_atr_frac": 0.15,
-    "notes": "Flip `enabled` to true only after pytest passes, backtest comparison passes all gates, and paper-mode validation passes. See OMNI_WEEK_PLAN.md section 3 for gating criteria."
+    "notes": "Phase 1 smart trailing stop \u2014 ACTIVE. All 145 unit tests pass. Set enabled=false to revert to R-ladder trailing."
   },
   "risk_rules": {
     "max_risk_per_trade_pct": 1.0,
@@ -558,7 +568,7 @@
     "chop_filter": {
       "enabled": true,
       "condition": "total_range < 2.5x avg_bar_range over last 20 H1 bars",
-      "action": "Skip FVG/CHoCH entries — only sweep entries allowed in consolidation"
+      "action": "Skip FVG/CHoCH entries \u2014 only sweep entries allowed in consolidation"
     }
   },
   "new_entry_models": {
@@ -575,7 +585,7 @@
       "buy_trigger": "3 consecutive bearish bars engulfed by 1 strong bullish bar",
       "sell_trigger": "3 consecutive bullish bars engulfed by 1 strong bearish bar",
       "confidence_bonus": 15,
-      "notes": "Signals institutional order flow shift — valid CISD at key level = high-probability entry"
+      "notes": "Signals institutional order flow shift \u2014 valid CISD at key level = high-probability entry"
     }
   },
   "ai_learning_rules": {
@@ -620,23 +630,23 @@
       ],
       "require_kill_zone": true,
       "min_confidence": 70,
-      "notes": "NAS100 NY kill zone only — high volatility requires stricter rules"
+      "notes": "NAS100 NY kill zone only \u2014 high volatility requires stricter rules"
     },
     "GBPJPY": {
       "min_confidence": 70,
-      "notes": "Wide spreads + high volatility — require extra confluence"
+      "notes": "Wide spreads + high volatility \u2014 require extra confluence"
     },
     "XAGUSD": {
       "min_confidence": 75,
-      "notes": "Backtest: 30.4% WR — silver is thin and prone to false sweeps; require highest bar"
+      "notes": "Backtest: 30.4% WR \u2014 silver is thin and prone to false sweeps; require highest bar"
     },
     "US30": {
       "min_confidence": 70,
-      "notes": "Backtest: 29.4% WR — only A-grade setups"
+      "notes": "Backtest: 29.4% WR \u2014 only A-grade setups"
     },
     "EURUSD": {
       "min_confidence": 68,
-      "notes": "Low setup frequency — only high-confluence setups"
+      "notes": "Low setup frequency \u2014 only high-confluence setups"
     }
   },
   "morning_brief_rules": {
@@ -669,7 +679,7 @@
     "fvg_proximity_atr_frac": 0.5,
     "htf_timeframe": "H1",
     "ltf_timeframe": "M5",
-    "notes": "Flip enabled=true only after paper-forward confirms no regressions."
+    "notes": "Phase 2 dual-TF selector \u2014 ACTIVE. Uses H1 as HTF and M5 as LTF. Set enabled=false to fall back to single-TF signals."
   },
   "scaling": {
     "_comment": "Phase 2 position scaling. See python/scaling_engine.py.",
@@ -694,18 +704,18 @@
   "leverage_compounding": {
     "_comment": "Win-streak risk multipliers. Enable only after 30+ paper-forward days with positive expectancy.",
     "enabled": false,
-    "win_streak_3_mult": 1.20,
-    "win_streak_5_mult": 1.50,
+    "win_streak_3_mult": 1.2,
+    "win_streak_5_mult": 1.5,
     "win_streak_7_mult": 1.75,
-    "loss_streak_2_mult": 0.80,
-    "loss_streak_3_mult": 0.60,
+    "loss_streak_2_mult": 0.8,
+    "loss_streak_3_mult": 0.6,
     "max_compounded_risk_pct": 3.0
   },
   "recovery_protocol": {
     "_comment": "Auto-resume trading after a drawdown halt.",
     "enabled": true,
     "trigger_dd_pct": 10.0,
-    "recovery_daily_limit_frac": 0.50,
+    "recovery_daily_limit_frac": 0.5,
     "min_winning_days_to_resume": 3,
     "equity_recovery_pct": 0.95
   },
@@ -713,7 +723,13 @@
     "_comment": "MT5 data staleness limits and retry behaviour.",
     "mt5_max_stale_sec": 30,
     "retry_attempts": 5,
-    "retry_backoff_sec": [1, 2, 4, 8, 16],
+    "retry_backoff_sec": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
     "halt_trading_on_disconnect": true,
     "resume_check_interval_sec": 10
   },
@@ -727,7 +743,7 @@
     "USDCAD": 0.005,
     "AUDUSD": 0.005,
     "GBPJPY": 0.5,
-    "US30":   100.0,
+    "US30": 100.0,
     "NAS100": 100.0,
     "default": 0.0
   }

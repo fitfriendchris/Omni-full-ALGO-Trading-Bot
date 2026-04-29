@@ -45,12 +45,149 @@ import math
 import logging
 import logging.handlers
 import argparse
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 # ── Centralised config (paths, thresholds, paper/live toggle) ─────────────────
 from config import cfg
+
+# ── Phase 2f learning loop (optional — gracefully degrade if missing) ────────
+try:
+    from feature_store import FeatureStore as _FeatureStore
+    from parameter_optimizer import ParameterOptimizer as _ParamOpt
+    from online_learner import OnlineLearner as _OnlineLearner
+    _LEARNING_AVAILABLE = True
+except ImportError as _e:
+    _FeatureStore = None
+    _ParamOpt = None
+    _OnlineLearner = None
+    _LEARNING_AVAILABLE = False
+
+# Lazy-initialized singletons for the learning loop
+_FS_SINGLETON = None
+_OPT_SINGLETON = None
+_LEARNER_SINGLETON = None
+
+
+def _get_feature_store():
+    global _FS_SINGLETON
+    if not _LEARNING_AVAILABLE:
+        return None
+    if _FS_SINGLETON is None:
+        try:
+            _FS_SINGLETON = _FeatureStore()
+        except Exception as e:
+            print(f"[learning] FeatureStore init failed: {e}")
+            return None
+    return _FS_SINGLETON
+
+
+def _get_optimizer():
+    global _OPT_SINGLETON
+    if not _LEARNING_AVAILABLE:
+        return None
+    if _OPT_SINGLETON is None:
+        fs = _get_feature_store()
+        if fs is None:
+            return None
+        try:
+            _OPT_SINGLETON = _ParamOpt(fs, regime="DEFAULT")
+        except Exception as e:
+            print(f"[learning] ParameterOptimizer init failed: {e}")
+            return None
+    return _OPT_SINGLETON
+
+
+def _get_online_learner():
+    global _LEARNER_SINGLETON
+    if not _LEARNING_AVAILABLE:
+        return None
+    if _LEARNER_SINGLETON is None:
+        fs = _get_feature_store()
+        opt = _get_optimizer()
+        if fs is None:
+            return None
+        try:
+            _LEARNER_SINGLETON = _OnlineLearner(fs, opt)
+        except Exception as e:
+            print(f"[learning] OnlineLearner init failed: {e}")
+            return None
+    return _LEARNER_SINGLETON
+
+
+def _build_feature_payload(setup) -> dict:
+    """Extract structured feature dicts from an ICTSetup for feature_store.record_signal.
+
+    Returns four dicts (ict / pivot / structure / candle) keyed on stable names so the
+    online_learner and pattern_recognition_model can compute lift across runs.
+    """
+    conf = getattr(setup, "confluence", None)
+    ict_features = {}
+    if conf is not None:
+        ict_features = {
+            "htf_bias_aligned":  bool(getattr(conf, "htf_bias_aligned",  False)),
+            "amd_phase_aligned": bool(getattr(conf, "amd_phase_aligned", False)),
+            "killzone_active":   bool(getattr(conf, "killzone_active",   False)),
+            "liquidity_swept":   bool(getattr(conf, "liquidity_swept",   False)),
+            "fvg_in_ote":        bool(getattr(conf, "fvg_in_ote",        False)),
+            "mss_confirmed":     bool(getattr(conf, "mss_confirmed",     False)),
+            "smt_divergence":    bool(getattr(conf, "smt_divergence",    False)),
+            "layers_met":        int(getattr(conf, "layers_met", 0) or 0),
+        }
+    ict_features["liq_swept"] = bool(getattr(setup, "liq_swept", False))
+    ict_features["entry_type"] = str(getattr(setup, "entry_type", ""))
+    ict_features["grade"]      = str(getattr(setup, "grade", ""))
+    ict_features["tf_bias"]    = str(getattr(setup, "tf_bias", ""))
+
+    structure_features = {
+        "rr_ratio":     float(getattr(setup, "rr_ratio", 0) or 0),
+        "invalidation": float(getattr(setup, "invalidation", 0) or 0),
+    }
+    pivot_features: dict = {}
+    candle_features: dict = {}
+    return {
+        "ict_features":       ict_features,
+        "pivot_features":     pivot_features,
+        "structure_features": structure_features,
+        "candle_features":    candle_features,
+    }
+
+
+def _record_signal_open(ticket_key: str, setup, lot_size: float, sl: float,
+                        adj_confidence: int, regime: str = "") -> None:
+    """Persist an opened-trade row to feature_store. Silent no-op if learning loop unavailable."""
+    if not _LEARNING_AVAILABLE:
+        return
+    fs = _get_feature_store()
+    if fs is None:
+        return
+    try:
+        payload = _build_feature_payload(setup)
+        fs.record_signal(
+            signal_id=str(ticket_key),
+            symbol=str(getattr(setup, "symbol", "")),
+            timeframe="M15",          # primary entry timeframe in ict_precision
+            direction=str(getattr(setup, "direction", "")),
+            entry_price=float(getattr(setup, "entry_price", 0) or 0),
+            sl_price=float(sl),
+            tp_price=float(getattr(setup, "tp3_price", 0)
+                           or getattr(setup, "tp2_price", 0)
+                           or getattr(setup, "tp1_price", 0) or 0),
+            ict_features=payload["ict_features"],
+            pivot_features=payload["pivot_features"],
+            structure_features=payload["structure_features"],
+            candle_features=payload["candle_features"],
+            regime=str(regime or ""),
+            session=str(getattr(setup, "session", "")),
+            decision="TRADED",
+            confidence=int(adj_confidence),
+            rr_ratio=float(getattr(setup, "rr_ratio", 0) or 0),
+        )
+    except Exception as e:
+        log.debug(f"feature_store record_signal hook error: {e}")
+
 
 # ── Smart trailing stop (Phase 1) — gated behind rules.json smart_trail.enabled
 try:
@@ -74,6 +211,72 @@ RESULT_PATH      = cfg.RESULT_PATH
 STATE_PATH       = cfg.STATE_PATH
 LOG_PATH         = cfg.LOG_PATH
 KILL_SWITCH_PATH = cfg.KILL_SWITCH_PATH
+TRADING_DISABLED_PATH = Path(cfg.KILL_SWITCH_PATH).parent / "TRADING_DISABLED"  # Telegram bot creates this to disable trading
+SCALP_ENABLED_PATH    = Path(cfg.KILL_SWITCH_PATH).parent / "SCALP_ENABLED"     # Allow accumulation scalps
+PYRAMID_ENABLED_PATH  = Path(cfg.KILL_SWITCH_PATH).parent / "PYRAMID_ENABLED"   # Allow winning-trade pyramid scaling
+HF_SCALP_PATH         = Path(cfg.KILL_SWITCH_PATH).parent / "HF_SCALP"          # High-frequency scalp mode (lower thresholds)
+
+# Scalp engine — optional import (graceful degrade)
+try:
+    from scalp_engine import (
+        evaluate_accumulation_scalp, evaluate_pyramid_scale,
+        detect_opposing_liquidity_swept, ScalpDecision,
+        DEFAULT_SCALP_PARAMS,
+    )
+    _SCALP_AVAILABLE = True
+except ImportError:
+    _SCALP_AVAILABLE = False
+    DEFAULT_SCALP_PARAMS = {}
+
+
+def _scalp_params() -> dict:
+    """Build runtime scalp params, applying HF overrides if HF mode is active."""
+    p = dict(DEFAULT_SCALP_PARAMS) if _SCALP_AVAILABLE else {}
+    if HF_SCALP_PATH.exists():
+        # High-frequency mode: lower bars, more scalps, accept lower RR
+        p["scalp_min_conf"]        = 65
+        p["scalp_max_per_session"] = 12
+        p["scalp_min_rr"]          = 1.2
+        p["scalp_tp_pips"]         = 6.0
+        p["scalp_sl_pips"]         = 4.0
+    return p
+
+
+# ── Telegram notifications ────────────────────────────────────────────────────
+def send_telegram(msg: str) -> None:
+    """Send a Telegram message. Silent no-op if token/chat_id not configured."""
+    token   = cfg.TELEGRAM_BOT_TOKEN
+    chat_id = cfg.TELEGRAM_CHAT_ID
+    if not token or not chat_id:
+        return
+    try:
+        import requests as _req
+        _req.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+            timeout=5,
+        )
+    except Exception as _e:
+        log.debug(f"Telegram send error: {_e}")
+
+
+def _tg_portfolio(state: "TraderState", data: dict) -> str:
+    """Build a compact portfolio status string for Telegram."""
+    acc     = get_account(data)
+    bal     = acc.get("balance", 0)
+    eq      = acc.get("equity", 0)
+    fpl     = acc.get("profit", 0)
+    open_n  = len(get_open_positions(data))
+    wr      = (state.winning_trades / state.total_trades * 100) if state.total_trades else 0
+    streak  = f"{state.win_streak}W" if state.win_streak > 0 else f"{state.loss_streak}L"
+    day_pct = ((eq - state.day_start_equity) / state.day_start_equity * 100) if state.day_start_equity else 0
+    mode    = "PAPER" if PAPER_MODE else "LIVE"
+    return (
+        f"Balance: <b>${bal:,.2f}</b> | Equity: <b>${eq:,.2f}</b>\n"
+        f"Float P&amp;L: <b>${fpl:+,.2f}</b> | Day: <b>{day_pct:+.2f}%</b>\n"
+        f"Open: <b>{open_n}</b> | WR: <b>{wr:.0f}%</b> ({state.winning_trades}W/{state.losing_trades}L) | Streak: <b>{streak}</b>\n"
+        f"Peak DD: <b>{state.peak_drawdown:.1f}%</b> | Risk: <b>{state.current_risk_pct:.2f}%</b> | Mode: <b>{mode}</b>"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -250,6 +453,73 @@ def _load_regime() -> str:
         pass
     return "TRENDING"
 
+
+# ── Learned-parameters live reload ────────────────────────────────────────────
+# parameter_optimizer.optimize_now() writes learned_parameters.json on every
+# accepted promotion. The live trader picks them up via mtime-keyed reload —
+# no restart required. Hardcoded FREQUENCY_PROFILE values remain the floor.
+_LEARNED_PARAMS_PATH = Path(__file__).parent / "learned_parameters.json"
+_LEARNED_PARAMS_CACHE: dict = {"data": {}, "mtime": 0.0}
+_LEARNED_PARAMS_LAST_LOG_TS = 0.0
+
+
+def _load_learned_params(regime: str = "DEFAULT") -> dict:
+    """Return the most recent learned-param set for `regime`, or {} if none.
+
+    Cached on file mtime so the scanner loop can call this every iteration cheaply.
+    """
+    global _LEARNED_PARAMS_LAST_LOG_TS
+    try:
+        if not _LEARNED_PARAMS_PATH.exists():
+            return {}
+        m = _LEARNED_PARAMS_PATH.stat().st_mtime
+        if m != _LEARNED_PARAMS_CACHE["mtime"]:
+            with open(_LEARNED_PARAMS_PATH) as f:
+                data = json.load(f)
+            _LEARNED_PARAMS_CACHE["data"] = data
+            _LEARNED_PARAMS_CACHE["mtime"] = m
+            # Surface the reload once per minute at most so we don't spam the log
+            now = time.time()
+            if now - _LEARNED_PARAMS_LAST_LOG_TS > 60:
+                _LEARNED_PARAMS_LAST_LOG_TS = now
+                try:
+                    log.info(f"[learning] learned_parameters.json reloaded (regime={regime})")
+                except Exception:
+                    pass
+        regimes = (_LEARNED_PARAMS_CACHE["data"] or {}).get("regimes", {})
+        return regimes.get(regime) or regimes.get("DEFAULT") or {}
+    except Exception:
+        return {}
+
+
+def _live_min_conf(session: str = "") -> int:
+    """Effective minimum confidence threshold — learned-param override or FREQ default."""
+    params = _load_learned_params(_load_regime())
+    sess = (session or "").upper()
+    if sess and f"session_min_conf_{sess}" in params:
+        v = int(params.get(f"session_min_conf_{sess}", 0))
+        if v > 0:
+            return max(v, FREQ.min_confidence)  # never go below the FREQ floor
+    if sess == "ASIA":
+        v = int(params.get("session_min_conf_ASIA", 0))
+        if v > 0:
+            return max(v, FREQ.min_confidence_asia)
+        return FREQ.min_confidence_asia
+    v = int(params.get("min_confidence", 0))
+    if v > 0:
+        return max(v, FREQ.min_confidence)
+    return FREQ.min_confidence
+
+
+def _live_min_rr() -> float:
+    """Effective minimum RR — learned-param override or FREQ default."""
+    params = _load_learned_params(_load_regime())
+    v = float(params.get("min_rr", 0) or 0)
+    if v > 0:
+        return max(v, FREQ.min_rr)  # never go below the FREQ floor
+    return FREQ.min_rr
+
+
 # ── State ─────────────────────────────────────────────────────────────────────
 @dataclass
 class TraderState:
@@ -296,6 +566,9 @@ class TraderState:
     # Per-session consecutive loss counter — penalises a session after 3 back-to-back losses
     session_loss_streak:  dict = field(default_factory=dict)
 
+    # Last N closed trades for telegram notifications (full details w/ PnL)
+    recent_closes:        list = field(default_factory=list)
+
 
 def load_state() -> TraderState:
     if os.path.exists(STATE_PATH):
@@ -306,6 +579,12 @@ def load_state() -> TraderState:
             for k, v in d.items():
                 if hasattr(s, k):
                     setattr(s, k, v)
+            # Migration: clear obsolete halt reasons that no longer have an active code path
+            obsolete = ("profit target",)
+            if s.trading_halted and any(tag in (s.halt_reason or "").lower() for tag in obsolete):
+                log.info(f"Clearing obsolete halt_reason on load: {s.halt_reason!r}")
+                s.trading_halted = False
+                s.halt_reason = ""
             return s
         except Exception:
             pass
@@ -587,6 +866,126 @@ def place_order(symbol: str, direction: str, order_type: str,
     return send_command(cmd)
 
 
+def _try_pyramid_scale(
+    state: "TraderState",
+    data: dict,
+    parent_ticket_str: str,
+    parent_trade: dict,
+    profit_in_r: float,
+    current_price: float,
+    pos_type: str,
+) -> bool:
+    """
+    Evaluate and (if accepted) place a pyramid scale-in on a winning trade.
+
+    Conditions:
+    - PYRAMID_ENABLED file exists
+    - scalp_engine module loaded
+    - Parent in profit ≥ pyramid_min_profit_r
+    - Pivot bounce detected in same direction
+    - Pyramid count below cap
+    - Opposing liquidity not yet swept
+
+    Returns: True if a pyramid order was placed.
+    """
+    if not _SCALP_AVAILABLE or not PYRAMID_ENABLED_PATH.exists():
+        return False
+    try:
+        symbol = parent_trade.get("symbol", "")
+        direction = parent_trade.get("direction", "")
+        if not symbol or direction not in ("BUY", "SELL"):
+            return False
+
+        pyramid_count = int(parent_trade.get("pyramid_count", 0) or 0)
+        params = _scalp_params()
+        if pyramid_count >= int(params.get("pyramid_max_adds", 3)):
+            return False
+
+        # Build pivots from charts (M5 + M15 highs/lows are good "scalp pivots")
+        charts = data.get("charts", {})
+        sym_chart = charts.get(symbol, {})
+        m5_bars = sym_chart.get("M5", [])
+        m15_bars = sym_chart.get("M15", [])
+        pivots: list = []
+        # Use last 20 bars' wick extremes as candidate "pivots" for bounce detection
+        for tf, bars in (("M5", m5_bars), ("M15", m15_bars)):
+            for b in (bars[-20:] if isinstance(bars, list) else []):
+                hi = float(b.get("high", 0) or 0)
+                lo = float(b.get("low", 0) or 0)
+                if hi:
+                    pivots.append({"level": hi, "tf": tf})
+                if lo:
+                    pivots.append({"level": lo, "tf": tf})
+
+        # Sweep detection: convert M5 dicts into objects with .high/.low for the helper
+        class _BarObj:
+            __slots__ = ("high", "low", "close")
+            def __init__(self, d):
+                self.high = float(d.get("high", 0) or 0)
+                self.low = float(d.get("low", 0) or 0)
+                self.close = float(d.get("close", 0) or 0)
+        m5_objs = [_BarObj(b) for b in (m5_bars[-50:] if isinstance(m5_bars, list) else [])]
+        sweep_detected = detect_opposing_liquidity_swept(
+            {"direction": direction, "entry": float(parent_trade.get("entry", 0))},
+            m5_objs,
+        )
+
+        decision = evaluate_pyramid_scale(
+            parent_trade={
+                "ticket": parent_ticket_str,
+                "symbol": symbol,
+                "direction": direction,
+                "entry": float(parent_trade.get("entry", 0)),
+                "current_sl": float(parent_trade.get("current_sl", 0)),
+                "current_profit_r": profit_in_r,
+            },
+            current_price=current_price,
+            pivots=pivots,
+            sweep_detected=sweep_detected,
+            params=params,
+            current_pyramid_count=pyramid_count,
+            current_phase=data.get("amd_phase", "") or "",
+            parent_initial_lot=float(parent_trade.get("initial_volume", 0)
+                                     or parent_trade.get("volume", 0)),
+        )
+        if not decision.accept:
+            log.debug(f"{symbol} pyramid skip: {decision.reason}")
+            return False
+
+        # Place the pyramid: use parent's SL, parent's TP3 as target,
+        # decayed lot, market order
+        parent_lot = float(parent_trade.get("initial_volume", 0)
+                          or parent_trade.get("volume", 0) or 0.10)
+        new_lot = max(0.01, round(parent_lot * decision.lot_multiplier, 2))
+        sl = float(parent_trade.get("current_sl", 0))
+        tp = float(parent_trade.get("tp3", 0)
+                  or parent_trade.get("tp2", 0)
+                  or parent_trade.get("tp1", 0)
+                  or 0)
+        order_type = "BUY" if direction == "BUY" else "SELL"
+        comment = f"PYRAMID_{parent_ticket_str}_{decision.pyramid_count}"
+        result = place_order(symbol, direction, order_type, current_price, sl, tp, new_lot, comment)
+        if result.startswith("OK") or result.startswith("PAPER"):
+            state.active_trades[parent_ticket_str]["pyramid_count"] = decision.pyramid_count
+            log.info(f"PYRAMID #{decision.pyramid_count} placed on parent {parent_ticket_str}: "
+                     f"{symbol} {direction} {new_lot} lots @ {current_price:.5g} | {decision.reason}")
+            send_telegram(
+                f"⬆️ <b>PYRAMID SCALE #{decision.pyramid_count}</b>\n"
+                f"<b>{symbol}</b> {direction} +{new_lot} lots\n"
+                f"Parent {parent_ticket_str} @ {profit_in_r:+.2f}R | "
+                f"Bounce: <b>{decision.metadata.get('bounce_pivot', 0):.5f}</b> "
+                f"({decision.metadata.get('bounce_tf','?')})\n"
+                f"Total adds: <b>{decision.pyramid_count}/{params.get('pyramid_max_adds',3)}</b>"
+            )
+            return True
+        else:
+            log.warning(f"PYRAMID order failed for {parent_ticket_str}: {result}")
+            return False
+    except Exception as e:
+        log.warning(f"_try_pyramid_scale error: {e}")
+        return False
+
+
 def close_position(ticket: int, volume: float = 0) -> str:
     vol_str = f"{volume:.2f}" if volume > 0 else ""
     cmd = f"CLOSE|{ticket}|||||{vol_str}|"
@@ -621,11 +1020,12 @@ def check_daily_limits(state: TraderState, equity: float) -> bool:
             state.trading_halted = True
             state.halt_reason = f"Daily loss limit hit: {day_loss_pct:.2f}%"
             log.warning(f"TRADING HALTED: {state.halt_reason}")
-            return False
-        if day_loss_pct >= DAILY_PROFIT_TARGET:
-            state.trading_halted = True
-            state.halt_reason = f"Daily profit target reached: +{day_loss_pct:.2f}% — locking gains"
-            log.info(f"TRADING HALTED: {state.halt_reason}")
+            send_telegram(
+                f"🛑 <b>TRADING HALTED</b>\n"
+                f"Daily loss limit reached: <b>{day_loss_pct:.2f}%</b>\n"
+                f"Balance: <b>${equity:,.2f}</b>\n"
+                f"Resumes: next trading day (22:00 UTC)"
+            )
             return False
 
     # Peak drawdown check
@@ -637,6 +1037,12 @@ def check_daily_limits(state: TraderState, equity: float) -> bool:
             state.trading_halted = True
             state.halt_reason = f"Max drawdown from peak hit: {drawdown_pct:.2f}%"
             log.warning(f"TRADING HALTED: {state.halt_reason}")
+            send_telegram(
+                f"🚨 <b>DRAWDOWN LIMIT HIT — HALTED</b>\n"
+                f"Drawdown from peak: <b>{drawdown_pct:.2f}%</b> (limit: {MAX_DD_FROM_PEAK:.0f}%)\n"
+                f"Equity: <b>${equity:,.2f}</b> | Peak was: <b>${state.peak_equity:,.2f}</b>\n"
+                f"Auto-resumes when equity recovers to 95% of peak"
+            )
             return False
 
     return True
@@ -658,6 +1064,15 @@ def reset_daily_if_new_day(state: TraderState, equity: float):
         return  # Already reset today
 
     log.info(f"New trading day ({trading_day}) — resetting daily stats")
+    # Send daily summary before resetting counters
+    if state.day_trades > 0 or state.day_profit != 0:
+        _day_pct = ((state.day_profit / state.day_start_equity) * 100) if state.day_start_equity else 0
+        send_telegram(
+            f"📊 <b>Daily Summary — {state.last_reset_day}</b>\n"
+            f"Trades: <b>{state.day_trades}</b> | Won: <b>{state.winning_trades}</b> | Lost: <b>{state.losing_trades}</b>\n"
+            f"Day P&amp;L: <b>${state.day_profit:+,.2f}</b> (<b>{_day_pct:+.2f}%</b>)\n"
+            f"Total P&amp;L: <b>${state.total_profit:+,.2f}</b> | Balance: <b>${equity:,.2f}</b>"
+        )
     state.last_reset_day    = trading_day
     state.day_initialized   = True
     state.day_start_equity  = equity
@@ -777,6 +1192,16 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
             if _closed_session:
                 state.session_loss_streak[_closed_session] = 0
             log.info(f"Trade {ticket} CLOSED WIN: +{profit:.2f} | R={r_multiple:.2f} | Streak: {state.win_streak}W | Exit: {exit_level}")
+            _acc = get_account(data)
+            send_telegram(
+                f"✅ <b>TRADE CLOSED — WIN</b>\n"
+                f"<b>{_closed_symbol}</b> {trade.get('direction','')} | Exit: <b>{exit_level}</b>\n"
+                f"Entry: {trade.get('entry',0):.5g} → Close: {close_price:.5g}\n"
+                f"P&amp;L: <b>+${profit:.2f}</b> | R: <b>+{r_multiple:.2f}R</b>\n"
+                f"Streak: <b>{state.win_streak}W</b> | WR: {(state.winning_trades/max(state.winning_trades+state.losing_trades,1)*100):.0f}% "
+                f"({state.winning_trades}W/{state.losing_trades}L)\n"
+                f"Balance: <b>${_acc.get('balance',0):,.2f}</b>"
+            )
         else:
             state.loss_streak  += 1
             state.win_streak    = 0
@@ -791,11 +1216,62 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                 if _prev_sess_losses + 1 >= 3:
                     log.warning(f"SESSION {_closed_session}: {_prev_sess_losses + 1} consecutive losses — penalising session confidence")
             log.info(f"Trade {ticket} CLOSED LOSS: {profit:.2f} | R={r_multiple:.2f} | Streak: {state.loss_streak}L | Exit: {exit_level}")
+            _acc = get_account(data)
+            send_telegram(
+                f"❌ <b>TRADE CLOSED — LOSS</b>\n"
+                f"<b>{_closed_symbol}</b> {trade.get('direction','')} | Exit: <b>{exit_level}</b>\n"
+                f"Entry: {trade.get('entry',0):.5g} → Close: {close_price:.5g}\n"
+                f"P&amp;L: <b>${profit:.2f}</b> | R: <b>{r_multiple:.2f}R</b>\n"
+                f"Streak: <b>{state.loss_streak}L</b> | WR: {(state.winning_trades/max(state.winning_trades+state.losing_trades,1)*100):.0f}% "
+                f"({state.winning_trades}W/{state.losing_trades}L)\n"
+                f"Balance: <b>${_acc.get('balance',0):,.2f}</b>"
+            )
 
         state.total_trades  += 1
         state.total_profit  += profit
         state.day_profit    += profit
         any_closed = True
+
+        # Persist closure for telegram bot AlertMonitor (rich notification fallback)
+        try:
+            close_record = {
+                "ticket":      str(ticket),
+                "symbol":      _closed_symbol,
+                "direction":   trade.get("direction", ""),
+                "entry":       round(trade.get("entry", 0), 5),
+                "close":       round(close_price or 0, 5),
+                "profit":      round(profit, 2),
+                "r_multiple":  round(r_multiple, 2),
+                "exit_level":  exit_level,
+                "session":     _closed_session,
+                "closed_at":   datetime.now(timezone.utc).isoformat(),
+                "outcome":     "WIN" if profit >= 0 else "LOSS",
+            }
+            state.recent_closes.append(close_record)
+            # Keep only the last 20
+            state.recent_closes = state.recent_closes[-20:]
+        except Exception as e:
+            log.warning(f"recent_closes append error: {e}")
+
+        # ── Phase 2f: feed closure into learning loop ─────────────────────
+        try:
+            if _LEARNING_AVAILABLE:
+                fs = _get_feature_store()
+                if fs is not None:
+                    fs.record_outcome(
+                        signal_id=str(ticket),
+                        outcome="WIN" if profit >= 0 else "LOSS",
+                        r_multiple=float(r_multiple),
+                        profit_usd=float(profit),
+                        exit_level=exit_level or "",
+                    )
+                learner = _get_online_learner()
+                if learner is not None:
+                    triggered = learner.maybe_retrain()
+                    if triggered:
+                        log.info("OnlineLearner retrain triggered (background)")
+        except Exception as _e:
+            log.debug(f"learning loop hook error: {_e}")
 
         # Record outcome in trade memory
         if memory and trade.get("memory_trade_id"):
@@ -884,16 +1360,26 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
         if pos_type == "BUY":
             profit_in_r = (current_price - open_price) / risk
 
+            # Pyramid scale-in (winning trade rides on pivot bounces) — only fires when
+            # PYRAMID_ENABLED is set, profit ≥ 0.5R, fresh same-direction pivot bounce,
+            # and opposing liquidity hasn't been swept yet
+            try:
+                _try_pyramid_scale(state, data, ticket_str,
+                                   state.active_trades.get(ticket_str, {}),
+                                   profit_in_r, current_price, pos_type)
+            except Exception as _pe:
+                log.debug(f"pyramid eval (BUY) error: {_pe}")
+
             # Partial TP1: close 65% when price hits first target — bank the majority immediately
             if not tp1_taken and tp1 > 0 and current_price >= tp1:
-                close_vol = round(volume * 0.65, 2)
+                close_vol = round(volume * 0.50, 2)
                 if close_vol >= min_lot:
                     if ticket_str.isdigit():
                         result = close_position(int(ticket_str), close_vol)
                     else:
                         result = "PAPER|partial_tp1"
                     close_ok = result.startswith("OK") or result.startswith("PAPER")
-                    log.info(f"{symbol} TP1 hit — closed 65% ({close_vol} lots) | {result}")
+                    log.info(f"{symbol} TP1 hit — closed 50% ({close_vol} lots) | {result}")
                     if close_ok:
                         state.active_trades[ticket_str]["tp1_taken"] = True
                         tp1_taken = True
@@ -903,31 +1389,40 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                         if tp2 > 0 and tp2 > current_tp:
                             new_tp = tp2
                             log.info(f"{symbol} Advancing MT5 TP to TP2 ({new_tp:.5f})")
+                        send_telegram(
+                            f"💰 <b>TP1 HIT — {symbol} BUY</b>\n"
+                            f"Closed 50% @ {current_price:.5g} | +${close_vol * (current_price - open_price) * 10000:.2f} approx\n"
+                            f"Runner active ({volume - close_vol:.2f} lots) → TP2: {tp2:.5g}"
+                        )
 
-            # Partial TP2: close 30% of original when price hits second target
+            # Partial TP2: close 25% of original when price hits second target
             if tp1_taken and not tp2_taken and tp2 > 0 and current_price >= tp2:
-                close_vol = round(volume * 0.30, 2)
+                close_vol = round(volume * 0.25, 2)
                 if close_vol >= min_lot:
                     if ticket_str.isdigit():
                         result = close_position(int(ticket_str), close_vol)
                     else:
                         result = "PAPER|partial_tp2"
                     close_ok = result.startswith("OK") or result.startswith("PAPER")
-                    log.info(f"{symbol} TP2 hit — closed 30% ({close_vol} lots) | {result}")
+                    log.info(f"{symbol} TP2 hit — closed 25% ({close_vol} lots) | {result}")
                     if close_ok:
                         state.active_trades[ticket_str]["tp2_taken"] = True
                         tp2_taken = True
                         # Runner: remove fixed TP3 — let smart trail manage it freely
-                        # Setting MT5 TP to 0 removes the hard target so it runs until trailed out
                         new_tp = 0
                         log.info(f"{symbol} TP2 hit — runner released, smart trail managing")
+                        send_telegram(
+                            f"💰 <b>TP2 HIT — {symbol} BUY</b>\n"
+                            f"Closed 25% @ {current_price:.5g}\n"
+                            f"Runner released ({volume - close_vol:.2f} lots) — trailing to TP3: {tp3:.5g}"
+                        )
 
             # Emergency exit: SL may not have fired via EA — close runaway losses
-            if not tp1_taken and profit_in_r < -1.5:
+            if not tp1_taken and profit_in_r < -1.2:
                 try:
-                    entry_ts = float(trade.get("entry_ts", 0)) or time.time()
+                    entry_ts = float(setup.get("entry_ts", 0)) or time.time()
                     minutes_open = (time.time() - entry_ts) / 60
-                    if minutes_open > 30:
+                    if minutes_open > 25:
                         log.warning(f"{symbol} BUY EMERGENCY EXIT — {profit_in_r:.2f}R runaway loss at {minutes_open:.0f}min")
                         if ticket_str.isdigit():
                             close_position(int(ticket_str), volume)
@@ -937,13 +1432,13 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
 
             # Early loss cut — if trade is moving against us and has shown no progress,
             # exit before reaching full SL. Saves capital vs waiting for full stop.
-            if not tp1_taken and profit_in_r < -0.4:
-                entry_time_str = trade.get("entry_time", "")
+            if not tp1_taken and profit_in_r < -0.3:
+                entry_time_str = setup.get("entry_time", "")
                 try:
                     import time as _time
-                    entry_ts = float(trade.get("entry_ts", 0)) or _time.time()
+                    entry_ts = float(setup.get("entry_ts", 0)) or _time.time()
                     minutes_open = (_time.time() - entry_ts) / 60
-                    if minutes_open > 25:  # Tightened: cut losing trades at 25min (was 45)
+                    if minutes_open > 20:
                         log.info(f"{symbol} BUY early exit — {profit_in_r:.2f}R adverse after {minutes_open:.0f}min — cutting loss")
                         if ticket_str.isdigit():
                             close_position(int(ticket_str), volume)
@@ -971,7 +1466,7 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
 
             # Tight trail at 3R — width varies by AI regime
             if profit_in_r >= 3.0:
-                _trail_width = 0.25 if _regime == "VOLATILE" else (0.4 if _regime == "TRENDING" else 0.35)
+                _trail_width = 0.20 if _regime == "VOLATILE" else (0.4 if _regime == "TRENDING" else 0.35)
                 tight = current_price - risk * _trail_width
                 if tight > new_sl:
                     new_sl = tight
@@ -984,7 +1479,7 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                     new_sl = prog
 
             # Distribution phase exit: trim on H1 exhaustion or M15 CHoCH against position
-            if profit_in_r >= 1.0 and not trade.get("dist_exit_1_done"):
+            if profit_in_r >= 1.0 and not setup.get("dist_exit_1_done"):
                 try:
                     import ict_precision as _ict_ref
                     _m15b = _ict_ref._parse_bars(sym_info.get("M15", []))
@@ -997,7 +1492,7 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                             if result.startswith("OK") or result.startswith("PAPER"):
                                 state.active_trades[ticket_str]["dist_exit_1_done"] = True
                                 log.info(f"{symbol} BUY dist-exit 25% — H1 exhaustion at {profit_in_r:.1f}R")
-                    elif profit_in_r >= 2.0 and not trade.get("dist_exit_2_done"):
+                    elif profit_in_r >= 2.0 and not setup.get("dist_exit_2_done"):
                         if _m15b and _ict_ref.detect_mss(_m15b, "SELL", lookback=6):
                             close_vol = round(volume * 0.50, 2)
                             if close_vol >= min_lot and ticket_str.isdigit():
@@ -1011,16 +1506,24 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
         elif pos_type == "SELL":
             profit_in_r = (open_price - current_price) / risk
 
-            # Partial TP1: close 65% — bank the majority immediately
+            # Pyramid scale-in for SELL trades (mirrored logic)
+            try:
+                _try_pyramid_scale(state, data, ticket_str,
+                                   state.active_trades.get(ticket_str, {}),
+                                   profit_in_r, current_price, pos_type)
+            except Exception as _pe:
+                log.debug(f"pyramid eval (SELL) error: {_pe}")
+
+            # Partial TP1: close 50% — bank half, keep a meaningful runner
             if not tp1_taken and tp1 > 0 and current_price <= tp1:
-                close_vol = round(volume * 0.65, 2)
+                close_vol = round(volume * 0.50, 2)
                 if close_vol >= min_lot:
                     if ticket_str.isdigit():
                         result = close_position(int(ticket_str), close_vol)
                     else:
                         result = "PAPER|partial_tp1"
                     close_ok = result.startswith("OK") or result.startswith("PAPER")
-                    log.info(f"{symbol} TP1 hit — closed 65% ({close_vol} lots) | {result}")
+                    log.info(f"{symbol} TP1 hit — closed 50% ({close_vol} lots) | {result}")
                     if close_ok:
                         state.active_trades[ticket_str]["tp1_taken"] = True
                         tp1_taken = True
@@ -1029,32 +1532,40 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                         if tp2 > 0 and tp2 < current_tp:
                             new_tp = tp2
                             log.info(f"{symbol} Advancing MT5 TP to TP2 ({new_tp:.5f})")
+                        send_telegram(
+                            f"💰 <b>TP1 HIT — {symbol} SELL</b>\n"
+                            f"Closed 50% @ {current_price:.5g} | approx +${close_vol * (open_price - current_price) * 10000:.2f}\n"
+                            f"Runner active ({volume - close_vol:.2f} lots) → TP2: {tp2:.5g}"
+                        )
 
-            # Partial TP2
+            # Partial TP2: close 25% of original, leave 25% runner to TP3
             if tp1_taken and not tp2_taken and tp2 > 0 and current_price <= tp2:
-                close_vol = round(volume * 0.30, 2)
+                close_vol = round(volume * 0.25, 2)
                 if close_vol >= min_lot:
                     if ticket_str.isdigit():
                         result = close_position(int(ticket_str), close_vol)
                     else:
                         result = "PAPER|partial_tp2"
                     close_ok = result.startswith("OK") or result.startswith("PAPER")
-                    log.info(f"{symbol} TP2 hit — closed 30% ({close_vol} lots) | {result}")
+                    log.info(f"{symbol} TP2 hit — closed 25% ({close_vol} lots) | {result}")
                     if close_ok:
                         state.active_trades[ticket_str]["tp2_taken"] = True
                         tp2_taken = True
                         # Runner: remove fixed TP3 — let smart trail manage it freely
                         new_tp = 0
                         log.info(f"{symbol} TP2 hit — runner released, smart trail managing")
+                        send_telegram(
+                            f"💰 <b>TP2 HIT — {symbol} SELL</b>\n"
+                            f"Closed 25% @ {current_price:.5g}\n"
+                            f"Runner released ({volume - close_vol:.2f} lots) — trailing to TP3: {tp3:.5g}"
+                        )
 
-            # Trail SL to break-even - 1 pip at 0.5R (early protection)
-            # Early loss cut for SELL — same logic as BUY
             # Emergency exit: SL may not have fired via EA — close runaway losses
-            if not tp1_taken and profit_in_r < -1.5:
+            if not tp1_taken and profit_in_r < -1.2:
                 try:
-                    entry_ts = float(trade.get("entry_ts", 0)) or time.time()
+                    entry_ts = float(setup.get("entry_ts", 0)) or time.time()
                     minutes_open = (time.time() - entry_ts) / 60
-                    if minutes_open > 30:
+                    if minutes_open > 25:
                         log.warning(f"{symbol} SELL EMERGENCY EXIT — {profit_in_r:.2f}R runaway loss at {minutes_open:.0f}min")
                         if ticket_str.isdigit():
                             close_position(int(ticket_str), volume)
@@ -1062,12 +1573,12 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                 except Exception:
                     pass
 
-            if not tp1_taken and profit_in_r < -0.4:
+            if not tp1_taken and profit_in_r < -0.3:
                 try:
                     import time as _time
-                    entry_ts = float(trade.get("entry_ts", 0)) or _time.time()
+                    entry_ts = float(setup.get("entry_ts", 0)) or _time.time()
                     minutes_open = (_time.time() - entry_ts) / 60
-                    if minutes_open > 25:  # Tightened: cut losing trades at 25min (was 45)
+                    if minutes_open > 20:
                         log.info(f"{symbol} SELL early exit — {profit_in_r:.2f}R adverse after {minutes_open:.0f}min — cutting loss")
                         if ticket_str.isdigit():
                             close_position(int(ticket_str), volume)
@@ -1094,7 +1605,7 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
 
             # Tight trail at 3R — width varies by AI regime
             if profit_in_r >= 3.0:
-                _trail_width = 0.25 if _regime == "VOLATILE" else (0.4 if _regime == "TRENDING" else 0.35)
+                _trail_width = 0.20 if _regime == "VOLATILE" else (0.4 if _regime == "TRENDING" else 0.35)
                 tight = current_price + risk * _trail_width
                 if tight < new_sl:
                     new_sl = tight
@@ -1107,7 +1618,7 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                     new_sl = prog
 
             # Distribution phase exit: trim on H1 exhaustion or M15 CHoCH against position
-            if profit_in_r >= 1.0 and not trade.get("dist_exit_1_done"):
+            if profit_in_r >= 1.0 and not setup.get("dist_exit_1_done"):
                 try:
                     import ict_precision as _ict_ref
                     _m15b = _ict_ref._parse_bars(sym_info.get("M15", []))
@@ -1120,7 +1631,7 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                             if result.startswith("OK") or result.startswith("PAPER"):
                                 state.active_trades[ticket_str]["dist_exit_1_done"] = True
                                 log.info(f"{symbol} SELL dist-exit 25% — H1 exhaustion at {profit_in_r:.1f}R")
-                    elif profit_in_r >= 2.0 and not trade.get("dist_exit_2_done"):
+                    elif profit_in_r >= 2.0 and not setup.get("dist_exit_2_done"):
                         if _m15b and _ict_ref.detect_mss(_m15b, "BUY", lookback=6):
                             close_vol = round(volume * 0.50, 2)
                             if close_vol >= min_lot and ticket_str.isdigit():
@@ -1569,7 +2080,8 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
         log.debug(f"{symbol}: session {session} has {_sess_losses} consecutive losses — raising confidence bar")
 
     # Session-aware confidence threshold — Asia requires higher bar; streak penalty adds 10 pts per tier above 3
-    effective_min_conf = MIN_CONFIDENCE_ASIA if session == "ASIA" else MIN_CONFIDENCE
+    # _live_min_conf reads learned_parameters.json (regime-aware) and never undercuts the FREQ floor.
+    effective_min_conf = _live_min_conf(session)
     effective_min_conf = min(85, effective_min_conf + max(0, (_sess_losses - 2) * 10))
     if setup.confidence < effective_min_conf:
         log.debug(f"{symbol}: confidence {setup.confidence} below {session} threshold {effective_min_conf}")
@@ -1578,11 +2090,58 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
     # ACCUMULATION (Asia) phase gate — only sweep-based entries allowed
     # ICT: Asia builds the range; London manipulates it; NY distributes.
     # Non-sweep entries during accumulation are counter to market maker intent.
+    # EXCEPTION: if SCALP_ENABLED is set, high-conf setups can run as scalps
+    # with reduced risk + tight TP/SL (see scalp_engine).
     _amd_gate = getattr(setup, "amd_phase", "")
+    setup.is_scalp = False  # Mark scalps for downstream sizing/logging
     if _amd_gate == "ACCUMULATION" and "SWEEP" not in setup.entry_type:
-        log.debug(f"{symbol}: ACCUMULATION phase — blocking {setup.entry_type} "
-                  f"(only SWEEP entries allowed during Asia)")
-        return False
+        if _SCALP_AVAILABLE and SCALP_ENABLED_PATH.exists():
+            try:
+                # Estimate ATR proxy from setup's SL distance
+                _atr_proxy = abs(setup.entry_price - setup.sl_price)
+                # Count today's scalps in same session
+                _session_now = getattr(setup, "session", "")
+                _scalps_today = sum(
+                    1 for r in (state.recent_closes or [])
+                    if r.get("session") == _session_now and "SCALP" in str(r.get("exit_level",""))
+                )
+                _decision = evaluate_accumulation_scalp(
+                    setup, state, atr=_atr_proxy,
+                    params=_scalp_params(),
+                    current_phase=_amd_gate,
+                    scalps_taken_this_session=_scalps_today,
+                )
+                if _decision.accept:
+                    setup.is_scalp = True
+                    setup.scalp_mode = _decision.mode
+                    setup.scalp_risk_pct = _decision.risk_pct
+                    setup.scalp_tp_pips = _decision.tp_pips
+                    setup.scalp_sl_pips = _decision.sl_pips
+                    log.info(f"{symbol}: SCALP ACCEPT during {_amd_gate} — {_decision.reason}")
+                    # Override SL/TP with scalp-tight values (preserve direction)
+                    _pip_size = 0.01 if "JPY" in symbol else 0.0001
+                    if direction == "BUY":
+                        setup.sl_price = setup.entry_price - (_decision.sl_pips * _pip_size)
+                        setup.tp1_price = setup.entry_price + (_decision.tp_pips * _pip_size * 0.5)
+                        setup.tp2_price = setup.entry_price + (_decision.tp_pips * _pip_size * 0.8)
+                        setup.tp3_price = setup.entry_price + (_decision.tp_pips * _pip_size)
+                    else:
+                        setup.sl_price = setup.entry_price + (_decision.sl_pips * _pip_size)
+                        setup.tp1_price = setup.entry_price - (_decision.tp_pips * _pip_size * 0.5)
+                        setup.tp2_price = setup.entry_price - (_decision.tp_pips * _pip_size * 0.8)
+                        setup.tp3_price = setup.entry_price - (_decision.tp_pips * _pip_size)
+                    sl = setup.sl_price
+                    tp = setup.tp3_price
+                else:
+                    log.debug(f"{symbol}: scalp rejected — {_decision.reason}")
+                    return False
+            except Exception as _e:
+                log.warning(f"{symbol}: scalp eval error: {_e} — falling back to standard block")
+                return False
+        else:
+            log.debug(f"{symbol}: ACCUMULATION phase — blocking {setup.entry_type} "
+                      f"(only SWEEP entries allowed; enable /scalp to override)")
+            return False
 
     # D1 bias alignment gate — backtest showed bias-aligned trades: 77.8% WR vs 32% overall.
     # Block counter-bias sweep entries below confidence 72 (only A+ setups override bias).
@@ -1787,10 +2346,34 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
             "entry_spread":    _current_spread,  # spread at time of order placement
         }
 
+        # ── Phase 2f: persist opened-trade features for the learning loop ─────
+        # record_outcome at close UPDATES this row; without record_signal here it would be a no-op.
+        try:
+            _record_signal_open(
+                ticket_key=ticket_key,
+                setup=setup,
+                lot_size=lot_size,
+                sl=sl,
+                adj_confidence=adj_confidence,
+                regime=_load_regime(),
+            )
+        except Exception as _e:
+            log.debug(f"record_signal hook error: {_e}")
+
         if symbol not in state.recently_traded:
             state.recently_traded.append(symbol)
             if len(state.recently_traded) > 10:
                 state.recently_traded.pop(0)
+
+        _mode_tag = "PAPER" if PAPER_MODE else "LIVE"
+        send_telegram(
+            f"{'📄' if PAPER_MODE else '📈'} <b>NEW TRADE [{_mode_tag}] — {symbol} {direction}</b>\n"
+            f"Entry: <b>{entry:.5g}</b> | SL: <b>{sl:.5g}</b>\n"
+            f"TP1: {setup.tp1_price:.5g} | TP2: {setup.tp2_price:.5g} | TP3: {setup.tp3_price:.5g}\n"
+            f"Lots: <b>{lot_size}</b> | Risk: <b>${risk_usd:.2f}</b> ({state.current_risk_pct:.2f}%)\n"
+            f"Grade: <b>{getattr(setup,'grade','?')}</b> | Conf: <b>{setup.confidence}/100</b> | RR: <b>{setup.rr_ratio:.1f}:1</b>\n"
+            f"Session: {session} | Type: {setup.entry_type} | Phase: {getattr(setup,'amd_phase','?')}"
+        )
         return True
 
     return False
@@ -1909,6 +2492,13 @@ def main():
     log.info(f"Trader started | Paper={PAPER_MODE} | Risk mode={_RISK_MODE} | Freq mode={_FREQ_MODE}")
     log.info(f"Risk: {BASE_RISK_PCT}%–{MAX_RISK_PCT}% | Conf≥{MIN_CONFIDENCE} | RR≥{MIN_RR} | MaxOpen={MAX_OPEN_TRADES}")
     log.info(f"State loaded: {state.total_trades} trades, P&L: ${state.total_profit:.2f}")
+    send_telegram(
+        f"{'📄' if PAPER_MODE else '🚀'} <b>OMNI-ICT Bot {'[PAPER]' if PAPER_MODE else '[LIVE]'} Started</b>\n"
+        f"Risk: <b>{_RISK_MODE}</b> ({BASE_RISK_PCT}%–{MAX_RISK_PCT}%) | Freq: <b>{_FREQ_MODE}</b>\n"
+        f"Conf≥{MIN_CONFIDENCE} | RR≥{MIN_RR} | MaxOpen={MAX_OPEN_TRADES} | DD limit: {MAX_DD_FROM_PEAK:.0f}%\n"
+        f"Symbols: {', '.join(TRADE_SYMBOLS[:6])}{'…' if len(TRADE_SYMBOLS) > 6 else ''}\n"
+        f"Prior history: {state.total_trades} trades | P&amp;L: ${state.total_profit:+,.2f}"
+    )
 
     # Write active modes into state so dashboard can display them
     state_dict_extra = {
@@ -2001,6 +2591,23 @@ def main():
                 time.sleep(30)
                 continue
 
+            # ── Telegram close-trade command ───────────────────────────
+            _tg_close = os.path.join(os.path.dirname(STATE_PATH), "tg_close_cmd.txt")
+            if os.path.exists(_tg_close):
+                try:
+                    _tg_ticket = open(_tg_close).read().strip()
+                    os.remove(_tg_close)
+                    if _tg_ticket and _tg_ticket.isdigit():
+                        log.info(f"Telegram close command: ticket #{_tg_ticket}")
+                        close_position(int(_tg_ticket), 0)
+                        send_telegram(f"❌ <b>Telegram close executed:</b> ticket #{_tg_ticket}")
+                    elif _tg_ticket in state.active_trades:
+                        log.info(f"Telegram close command: paper ticket {_tg_ticket}")
+                        state.active_trades.pop(_tg_ticket, None)
+                        send_telegram(f"❌ <b>Telegram close executed:</b> {_tg_ticket}")
+                except Exception as _tce:
+                    log.warning(f"tg_close_cmd error: {_tce}")
+
             # ── Load MT5 data ──────────────────────────────────────────
             data = load_mt5_data()
             if not data:
@@ -2059,6 +2666,13 @@ def main():
                 print_status(state, data, [])
                 save_state(state)
                 time.sleep(60)
+                continue
+
+            # ── Trading disabled check ────────────────────────────────
+            if TRADING_DISABLED_PATH.exists():
+                log.info("Trading disabled via Telegram")
+                print_status(state, data, [])
+                time.sleep(SCAN_INTERVAL)
                 continue
 
             # ── Manage existing trades ─────────────────────────────────
@@ -2157,13 +2771,19 @@ def main():
                             log.warning(f"dual_tf merge error: {e}")
 
                     # ── Apply frequency profile filters ───────────────────
+                    # Threshold sources (live-reloaded from learned_parameters.json by optimizer):
+                    _live_conf_floor = _live_min_conf("")
+                    _live_rr_floor   = _live_min_rr()
+
                     def _entry_conf_threshold(s) -> int:
                         """Zone entries need extra confidence bar unless freq=AGGRESSIVE."""
                         if "ZONE" in s.entry_type and not FREQ.allow_zone_entries:
                             return 999  # effectively excluded
+                        # Use session-specific learned threshold when available
+                        sess_floor = _live_min_conf(getattr(s, "session", ""))
                         if "ZONE" in s.entry_type:
-                            return max(MIN_CONFIDENCE + 10, 65)
-                        return MIN_CONFIDENCE
+                            return max(sess_floor + 10, 65)
+                        return sess_floor
 
                     def _grade_ok(s) -> bool:
                         if not s.grade:
@@ -2175,7 +2795,7 @@ def main():
                     high_conf = [
                         s for s in all_setups
                         if s.confidence >= _entry_conf_threshold(s)
-                        and s.rr_ratio >= MIN_RR
+                        and s.rr_ratio >= _live_rr_floor
                         and _grade_ok(s)
                     ]
 
@@ -2199,9 +2819,26 @@ def main():
 
                 if scan_count % 6 == 0:
                     print_status(state, data, all_setups)
-                    # Print memory report every 30 minutes
-                    if memory and scan_count % 180 == 0:
-                        log.info("\n" + memory.get_performance_report())
+                    # Heartbeat + memory report every 30 minutes
+                    if scan_count % 180 == 0:
+                        if memory:
+                            log.info("\n" + memory.get_performance_report())
+                        _acc_hb = get_account(data)
+                        _open_hb = get_open_positions(data)
+                        _sess_hb = data.get("session", "—")
+                        _amd_hb  = data.get("amd_phase", "—")
+                        _open_summary = ""
+                        for _p in _open_hb[:5]:
+                            _sym = _p.get("symbol", "?")
+                            _dir = _p.get("type", "?")
+                            _pnl = _p.get("profit", 0)
+                            _open_summary += f"\n  • {_sym} {_dir}  ${_pnl:+.2f}"
+                        send_telegram(
+                            f"💓 <b>Heartbeat — {'PAPER' if PAPER_MODE else 'LIVE'}</b>\n"
+                            + _tg_portfolio(state, data)
+                            + f"\nSession: <b>{_sess_hb}</b> | Phase: <b>{_amd_hb}</b>"
+                            + (f"\n<b>Open trades ({len(_open_hb)}):</b>{_open_summary}" if _open_hb else "\nNo open trades")
+                        )
 
                 # ── Execute high-confidence setups ─────────────────────
                 if can_trade:

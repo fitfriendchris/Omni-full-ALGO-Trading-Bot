@@ -22,6 +22,9 @@ python/trade_journal*.log
 python/trader*.log
 python/tv_data.json
 python/ai_state.json
+python/online_model.json
+python/learned_parameters.json
+python/pattern_recognition_model.json
 
 # ── MT5 live data feed files ──────────────────────────────────────────────────
 omni_data.json
@@ -38,10 +41,13 @@ Thumbs.db
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 *.log
+*.log.[0-9]*
 
 # ── Database ──────────────────────────────────────────────────────────────────
 database/
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 
 # ── Telegram / session ────────────────────────────────────────────────────────
@@ -50,6 +56,7 @@ python/active_account.txt
 logs/license_cache.json
 
 # ── Shared output ─────────────────────────────────────────────────────────────
-shared/
+shared/*.json
+shared/*.tmp
 logs/
 .claw/

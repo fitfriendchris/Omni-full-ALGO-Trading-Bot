@@ -22,6 +22,7 @@ Commands
   🎛 Control
     /halt                — stop new trade entries immediately
     /resume              — lift the halt
+    /trading on|off      — enable/disable trading completely
     /restart <service>   — restart a service via watchdog
     /setrisk <pct>       — set base risk % (e.g. /setrisk 1.5)
     /paper on|off        — toggle paper mode
@@ -36,10 +37,14 @@ Commands
 
 from __future__ import annotations
 
+import atexit
+import errno
+import fcntl
 import json
 import logging
 import os
 import re
+import signal as _signal
 import sys
 import time
 import urllib.error
@@ -68,7 +73,12 @@ ALERTS_PATH     = LOG_DIR / "alerts.json"
 HALT_PATH       = HERE / "HALT"
 
 POLL_TIMEOUT    = 30     # Telegram long-poll seconds
-ALERT_POLL_S    = 10     # how often to check for new alerts/trades
+ALERT_POLL_S    = 5      # how often to check for new alerts/trades (was 10)
+TG_CLOSE_PATH   = HERE / "tg_close_cmd.txt"   # bot writes ticket; auto_trader reads+deletes
+TRADING_DISABLED_PATH = HERE / "TRADING_DISABLED"  # presence = trading is off
+SCALP_ENABLED_PATH    = HERE / "SCALP_ENABLED"     # presence = accumulation scalps allowed
+PYRAMID_ENABLED_PATH  = HERE / "PYRAMID_ENABLED"   # presence = winning-trade pyramid scaling
+HF_SCALP_PATH         = HERE / "HF_SCALP"          # presence = high-frequency scalp mode
 
 log = logging.getLogger("telegram_bot")
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
@@ -97,11 +107,175 @@ def _api(method: str, **params) -> dict:
 
 
 def send(chat_id, text: str, parse_mode: str = "HTML",
-         reply_markup: dict | None = None) -> None:
+         reply_markup: dict | None = None) -> int:
+    """Send a message; returns the message_id (0 on failure)."""
     params: dict = dict(chat_id=chat_id, text=text, parse_mode=parse_mode)
     if reply_markup:
         params["reply_markup"] = json.dumps(reply_markup)
-    _api("sendMessage", **params)
+    result = _api("sendMessage", **params)
+    return (result.get("result") or {}).get("message_id", 0)
+
+
+def edit_message(chat_id, msg_id: int, text: str,
+                 parse_mode: str = "HTML",
+                 reply_markup: dict | None = None) -> None:
+    """Edit an existing message in place."""
+    params: dict = dict(chat_id=chat_id, message_id=msg_id,
+                        text=text, parse_mode=parse_mode)
+    if reply_markup:
+        params["reply_markup"] = json.dumps(reply_markup)
+    _api("editMessageText", **params)
+
+
+def answer_callback(cb_id: str, text: str = "", alert: bool = False) -> None:
+    _api("answerCallbackQuery", callback_query_id=cb_id,
+         text=text, show_alert=alert)
+
+
+def get_updates(offset: int, timeout: int = POLL_TIMEOUT) -> list[dict]:
+    return _api("getUpdates", offset=offset, timeout=timeout,
+                allowed_updates=["message", "callback_query"]).get("result", [])
+
+
+# ── Inline keyboard builders ──────────────────────────────────────────────────
+
+def _main_kb() -> dict:
+    return {"inline_keyboard": [
+        [
+            {"text": "📊 Refresh",   "callback_data": "cb:dashboard"},
+            {"text": "📈 Trades",    "callback_data": "cb:trades"},
+            {"text": "💰 P&L",       "callback_data": "cb:pnl"},
+        ],
+        [
+            {"text": "🎯 Signals",   "callback_data": "cb:signals"},
+            {"text": "⚙️ Settings",  "callback_data": "cb:settings"},
+            {"text": "📋 Log",       "callback_data": "cb:log"},
+        ],
+        [
+            {"text": "🛑 Halt",      "callback_data": "cb:halt"},
+            {"text": "▶️ Resume",    "callback_data": "cb:resume"},
+            {"text": "❓ Help",      "callback_data": "cb:help"},
+        ],
+    ]}
+
+
+def _back_kb() -> dict:
+    return {"inline_keyboard": [[
+        {"text": "⬅️ Main Menu", "callback_data": "cb:dashboard"},
+        {"text": "🔄 Refresh",   "callback_data": "cb:current"},
+    ]]}
+
+
+def _trades_kb(acc_id: str = "") -> dict:
+    """Build trades keyboard with one Close button per open trade."""
+    state  = _json(_state_path(acc_id)) or {}
+    trades = state.get("active_trades", {})
+    rows   = []
+    for tid, t in list(trades.items())[:6]:
+        sym  = t.get("symbol", "?")
+        dir_ = t.get("direction", "?")
+        icon = "🟢" if dir_ == "BUY" else "🔴"
+        rows.append([{
+            "text":          f"❌ Close {icon}{sym} #{tid[:6]}",
+            "callback_data": f"cb:close:{tid}",
+        }])
+    rows.append([
+        {"text": "⬅️ Main Menu", "callback_data": "cb:dashboard"},
+        {"text": "🔄 Refresh",   "callback_data": "cb:trades"},
+    ])
+    return {"inline_keyboard": rows}
+
+
+def _settings_kb() -> dict:
+    env  = _env_read()
+    risk = env.get("OMNI_RISK_MODE", "MODERATE")
+    freq = env.get("OMNI_FREQ_MODE", "NORMAL")
+
+    def rb(m): return {"text": f"✅{m}" if m == risk else m, "callback_data": f"cb:setrisk:{m}"}
+    def fb(m): return {"text": f"✅{m}" if m == freq else m, "callback_data": f"cb:setfreq:{m}"}
+
+    return {"inline_keyboard": [
+        [{"text": "── Risk Mode ──", "callback_data": "cb:noop"}],
+        [rb("LOW"), rb("MODERATE"), rb("HIGH")],
+        [{"text": "── Freq Mode ──", "callback_data": "cb:noop"}],
+        [fb("CONSERVATIVE"), fb("NORMAL"), fb("AGGRESSIVE")],
+        [{"text": "⬅️ Main Menu", "callback_data": "cb:dashboard"}],
+    ]}
+
+
+# ── Callback dispatcher ───────────────────────────────────────────────────────
+
+def _dispatch_callback(cb_id: str, data: str, chat_id: int, msg_id: int) -> None:
+    """Handle all inline keyboard button presses."""
+    answer_callback(cb_id)   # acknowledge immediately (removes loading spinner)
+    acc = _load_active_account()
+
+    if data == "cb:noop":
+        return
+
+    elif data in ("cb:dashboard", "cb:current"):
+        edit_message(chat_id, msg_id, cmd_dashboard(acc), reply_markup=_main_kb())
+
+    elif data == "cb:trades":
+        edit_message(chat_id, msg_id, cmd_trades(acc), reply_markup=_trades_kb(acc))
+
+    elif data == "cb:pnl":
+        edit_message(chat_id, msg_id, cmd_pnl(acc), reply_markup=_back_kb())
+
+    elif data == "cb:signals":
+        edit_message(chat_id, msg_id, cmd_signals(), reply_markup=_back_kb())
+
+    elif data == "cb:settings":
+        edit_message(chat_id, msg_id, cmd_settings(), reply_markup=_settings_kb())
+
+    elif data == "cb:log":
+        edit_message(chat_id, msg_id,
+                     cmd_log("auto_trader"), reply_markup=_back_kb())
+
+    elif data == "cb:help":
+        edit_message(chat_id, msg_id, cmd_help(), reply_markup=_back_kb())
+
+    elif data == "cb:halt":
+        reply = cmd_halt(chat_id)
+        answer_callback(cb_id, "🛑 Halted", alert=True)
+        edit_message(chat_id, msg_id,
+                     f"{reply}\n\n{cmd_dashboard(acc)}",
+                     reply_markup=_main_kb())
+
+    elif data == "cb:resume":
+        reply = cmd_resume(chat_id)
+        answer_callback(cb_id, "▶️ Resumed")
+        edit_message(chat_id, msg_id,
+                     f"{reply}\n\n{cmd_dashboard(acc)}",
+                     reply_markup=_main_kb())
+
+    elif data.startswith("cb:setrisk:"):
+        mode  = data.split(":")[2]
+        reply = cmd_set("risk", mode)
+        answer_callback(cb_id, f"Risk → {mode}")
+        edit_message(chat_id, msg_id,
+                     f"{reply}\n\n{cmd_settings()}",
+                     reply_markup=_settings_kb())
+
+    elif data.startswith("cb:setfreq:"):
+        mode  = data.split(":")[2]
+        reply = cmd_set("freq", mode)
+        answer_callback(cb_id, f"Freq → {mode}")
+        edit_message(chat_id, msg_id,
+                     f"{reply}\n\n{cmd_settings()}",
+                     reply_markup=_settings_kb())
+
+    elif data.startswith("cb:close:"):
+        ticket = data.split(":", 2)[2]
+        try:
+            TG_CLOSE_PATH.write_text(ticket)
+            answer_callback(cb_id, f"Close #{ticket} sent", alert=True)
+            edit_message(chat_id, msg_id,
+                         f"❌ <b>Close #{ticket} sent to trader.</b>\n"
+                         f"Executes on next scan cycle.\n\n{cmd_trades(acc)}",
+                         reply_markup=_trades_kb(acc))
+        except Exception as e:
+            answer_callback(cb_id, f"Error: {e}", alert=True)
 
 
 def _sales_page(chat_id: int) -> None:
@@ -139,11 +313,6 @@ def _sales_page(chat_id: int) -> None:
         ]
     }
     send(chat_id, text, reply_markup=keyboard)
-
-
-def get_updates(offset: int, timeout: int = POLL_TIMEOUT) -> list[dict]:
-    return _api("getUpdates", offset=offset, timeout=timeout,
-                allowed_updates=["message"]).get("result", [])
 
 
 # ── Chat ID / account persistence ─────────────────────────────────────────────
@@ -244,6 +413,7 @@ def cmd_dashboard(acc_id: str = "") -> str:
     wins    = state.get("win_streak") or 0
     losses  = state.get("loss_streak") or 0
     halted  = state.get("trading_halted", False)
+    trading_disabled = TRADING_DISABLED_PATH.exists()
 
     # Active trades
     trades  = state.get("active_trades", {})
@@ -290,6 +460,8 @@ def cmd_dashboard(acc_id: str = "") -> str:
     ]
     if halted:
         lines.append(f"  🛑 <b>HALTED</b>: {state.get('halt_reason','')}")
+    if trading_disabled:
+        lines.append(f"  🛑 <b>TRADING DISABLED</b> — use /trading on to enable")
 
     if trades:
         lines += ["", f"<b>📊 Open Trades ({len(trades)})</b>"] + trades_lines
@@ -563,6 +735,18 @@ def cmd_resume(chat_id) -> str:
     return "ℹ️ No halt was active."
 
 
+def cmd_trading_on(chat_id) -> str:
+    if TRADING_DISABLED_PATH.exists():
+        TRADING_DISABLED_PATH.unlink()
+    return "✅ <b>TRADING ENABLED.</b> Bot will now accept new trades."
+
+
+def cmd_trading_off(chat_id) -> str:
+    TRADING_DISABLED_PATH.write_text(
+        f"TRADING DISABLED by Telegram {chat_id} at {datetime.now(timezone.utc).isoformat()}")
+    return "🛑 <b>TRADING DISABLED.</b> No new trades until /trading on."
+
+
 def cmd_restart(service: str) -> str:
     allowed = {"orchestrator", "auto_trader", "server", "telegram_bot"}
     svc = service.lower().strip()
@@ -671,7 +855,7 @@ def cmd_settings() -> str:
         f"  min_conf   = {env.get('OMNI_MIN_CONF',     '65 (default)')}",
         f"  min_rr     = {env.get('OMNI_MIN_RR',       '2.0 (default)')}R",
         f"  max_trades = {env.get('OMNI_MAX_TRADES',   '3 (default)')}",
-        f"  scan       = {env.get('OMNI_SCAN_INTERVAL','10 (default)')}s",
+        f"  scan       = {env.get('OMNI_SCAN_INTERVAL','3 (default)')}s",
         "",
         "/restart auto_trader to apply changes.",
     ]
@@ -1028,6 +1212,7 @@ def cmd_help() -> str:
         "<b>🎛 Control</b>\n"
         "/halt         — stop new entries immediately\n"
         "/resume       — lift the halt\n"
+        "/trading on|off — enable/disable trading completely\n"
         "/restart &lt;svc&gt; — restart a service\n\n"
         "<b>🏦 Accounts</b>\n"
         "/account    — show active account\n"
@@ -1090,6 +1275,10 @@ class AlertMonitor:
         if not isinstance(state, dict):
             return
         current = set(state.get("active_trades", {}).keys())
+        # Build lookup for recent closes by ticket
+        recent_closes = state.get("recent_closes", []) or []
+        closes_by_ticket = {str(c.get("ticket")): c for c in recent_closes if isinstance(c, dict)}
+
         for tid in current - self._trades:
             t    = state["active_trades"].get(tid, {})
             sym  = t.get("symbol", "?")
@@ -1102,8 +1291,26 @@ class AlertMonitor:
                  f"{sym} {dir_}  entry={ep:.5f}  SL={sl:.5f}\n"
                  f"Ticket: <code>{tid}</code>")
         for tid in self._trades - current:
-            send(self.chat_id,
-                 f"⚪ <b>Trade Closed</b>  <code>{tid}</code>")
+            close = closes_by_ticket.get(str(tid))
+            if close:
+                outcome = close.get("outcome", "CLOSED")
+                icon    = "✅" if outcome == "WIN" else "❌"
+                profit  = close.get("profit", 0)
+                r_mult  = close.get("r_multiple", 0)
+                sign    = "+" if profit >= 0 else ""
+                rsign   = "+" if r_mult >= 0 else ""
+                send(self.chat_id,
+                     f"{icon} <b>TRADE CLOSED — {outcome}</b>\n"
+                     f"<b>{close.get('symbol','?')}</b> {close.get('direction','')} | "
+                     f"Exit: <b>{close.get('exit_level','?')}</b>\n"
+                     f"Entry: {close.get('entry',0):.5g} → Close: {close.get('close',0):.5g}\n"
+                     f"P&amp;L: <b>{sign}${profit:.2f}</b> | R: <b>{rsign}{r_mult:.2f}R</b>\n"
+                     f"Ticket: <code>{tid}</code>")
+            else:
+                # Fallback: closure record not yet written, emit minimal alert
+                send(self.chat_id,
+                     f"⚪ <b>Trade Closed</b>  <code>{tid}</code>\n"
+                     f"<i>(details pending — use /pnl for daily P&amp;L)</i>")
         self._trades = current
 
 
@@ -1115,10 +1322,11 @@ def _dispatch(text: str, chat_id) -> str:
     acc   = _load_active_account()
 
     if cmd == "help":        return cmd_help()
-    if cmd == "dashboard":   return cmd_dashboard(acc)
+    if cmd == "menu":        return None   # handled specially below (sends with keyboard)
+    if cmd == "dashboard":   return None   # handled specially below (sends with keyboard)
     if cmd == "status":      return cmd_status()
     if cmd == "equity":      return cmd_equity(acc)
-    if cmd == "trades":      return cmd_trades(acc)
+    if cmd == "trades":      return None   # handled specially below (sends with keyboard)
     if cmd == "pnl":         return cmd_pnl(acc)
     if cmd == "signals":     return cmd_signals()
     if cmd == "performance": return cmd_performance(acc)
@@ -1126,6 +1334,13 @@ def _dispatch(text: str, chat_id) -> str:
     if cmd == "settings":    return cmd_settings()
     if cmd == "halt":        return cmd_halt(chat_id)
     if cmd == "resume":      return cmd_resume(chat_id)
+    if cmd == "trading":
+        arg = parts[1].lower() if len(parts) > 1 else ""
+        if arg == "on":
+            return cmd_trading_on(chat_id)
+        elif arg == "off":
+            return cmd_trading_off(chat_id)
+        return "Usage: /trading on  or  /trading off"
     if cmd == "account":     return cmd_account(acc)
     if cmd == "accounts":    return cmd_accounts()
     if cmd == "addaccount":  return cmd_addaccount_start(chat_id)
@@ -1172,6 +1387,55 @@ def _dispatch(text: str, chat_id) -> str:
     return f"Unknown command: <code>/{cmd}</code>\nSend /help for the full list."
 
 
+# ── Single-instance lock ──────────────────────────────────────────────────────
+# Telegram's getUpdates is exclusive: if two processes long-poll the same token,
+# the older one gets HTTP 409 "Conflict: terminated by other getUpdates request".
+# A flock-based PID file guarantees only one telegram_bot process runs at a time
+# on this machine. The watchdog will simply restart any duplicate that exits.
+_LOCK_PATH = LOG_DIR / "telegram_bot.pid"
+_lock_fd: int | None = None
+
+
+def _acquire_singleton_lock() -> None:
+    """Acquire an exclusive flock on the PID file or exit cleanly."""
+    global _lock_fd
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(_LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+            try:
+                existing_pid = open(_LOCK_PATH).read().strip()
+            except Exception:
+                existing_pid = "?"
+            log.error("another telegram_bot instance is running (pid=%s) — exiting "
+                      "to avoid Telegram getUpdates 409 conflict.", existing_pid)
+            os.close(fd)
+            sys.exit(0)
+        raise
+    # Got the lock — write our pid into the file and keep fd open for lifetime
+    os.ftruncate(fd, 0)
+    os.write(fd, f"{os.getpid()}\n".encode())
+    _lock_fd = fd
+
+    def _release():
+        try:
+            if _lock_fd is not None:
+                fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+                os.close(_lock_fd)
+            try:
+                _LOCK_PATH.unlink()
+            except FileNotFoundError:
+                pass
+        except Exception:
+            pass
+
+    atexit.register(_release)
+    # Also release on SIGTERM (watchdog uses this for graceful shutdown)
+    _signal.signal(_signal.SIGTERM, lambda *_: (_release(), sys.exit(0)))
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1183,13 +1447,17 @@ def main() -> None:
         log.error("OMNI_TELEGRAM_TOKEN not set. Bot cannot start.")
         sys.exit(1)
 
+    _acquire_singleton_lock()
+
     log.info("OMNI-ICT Telegram bot starting")
 
     chat_id = _load_chat_id()
     if chat_id:
         log.info("Admin chat ID: %s", chat_id)
         try:
-            send(chat_id, "🤖 <b>OMNI-ICT bot online.</b>  /dashboard for full view.")
+            send(chat_id,
+                 "🤖 <b>OMNI-ICT bot online.</b>  Tap a button or type /help.",
+                 reply_markup=_main_kb())
         except Exception:
             pass
     else:
@@ -1209,6 +1477,22 @@ def main() -> None:
 
         for upd in updates:
             offset = upd["update_id"] + 1
+
+            # ── Inline keyboard button press ───────────────────────────────
+            cb = upd.get("callback_query")
+            if cb:
+                cb_chat = cb.get("message", {}).get("chat", {}).get("id")
+                cb_mid  = cb.get("message", {}).get("message_id", 0)
+                if cb_chat == chat_id:
+                    try:
+                        _dispatch_callback(cb["id"], cb.get("data",""),
+                                           chat_id, cb_mid)
+                    except Exception as e:
+                        log.warning("callback dispatch error: %s", e)
+                        answer_callback(cb["id"], "Error — try again")
+                continue
+
+            # ── Regular text message ───────────────────────────────────────
             msg    = upd.get("message", {})
             if not msg:
                 continue
@@ -1239,17 +1523,16 @@ def main() -> None:
                     monitor = AlertMonitor(chat_id)
                     send(chat_id,
                          "✅ <b>OMNI-ICT registered!</b>\n"
-                         "You'll receive trade &amp; crash alerts here.\n\n"
-                         + cmd_help())
+                         "You'll receive trade &amp; crash alerts here.",
+                         reply_markup=_main_kb())
                 elif from_id == chat_id:
-                    send(chat_id, "✅ Already registered.\n" + cmd_help())
+                    send(chat_id, "✅ Already registered.",
+                         reply_markup=_main_kb())
                 else:
-                    # Not the owner — show the public sales page
                     _sales_page(from_id)
                 continue
 
             if from_id != chat_id:
-                # Any command from a non-owner gets the sales page
                 _sales_page(from_id)
                 continue
 
@@ -1260,6 +1543,15 @@ def main() -> None:
                 except Exception:
                     reply = "❌ Cancelled."
                 send(chat_id, reply)
+                continue
+
+            # Commands that send with inline keyboard
+            acc = _load_active_account()
+            if cmd_lower in ("menu", "dashboard"):
+                send(chat_id, cmd_dashboard(acc), reply_markup=_main_kb())
+                continue
+            if cmd_lower == "trades":
+                send(chat_id, cmd_trades(acc), reply_markup=_trades_kb(acc))
                 continue
 
             try:

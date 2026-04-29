@@ -74,6 +74,9 @@ class Signal:
     source:        str = "omni-ict"
     expires_at:    str = ""       # ISO UTC; empty = no expiry override
     re_emit_count: int = 0        # incremented when same (symbol, direction, entry_type) re-emitted
+    # Free-form bag for context that downstream consumers (auto_trader,
+    # dashboard, telegram) may want — e.g. {"regime": {...}, "pivot": {...}}.
+    metadata:      dict = field(default_factory=dict)
 
 
 def build_signal(symbol: str, timeframe: str,

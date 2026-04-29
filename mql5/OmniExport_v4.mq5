@@ -8,12 +8,21 @@
 #property version   "4.10"
 #property strict
 
-input int    UpdateSeconds = 5;
-input string DataFile      = "omni_data.json";
-input string CmdFile       = "omni_cmd.txt";
-input string ResultFile    = "omni_result.txt";
-input int    MagicNumber   = 20250411;
+input int    UpdateSeconds   = 5;
+input string DataFile        = "omni_data.json";
+input string CmdFile         = "omni_cmd.txt";
+input string ResultFile      = "omni_result.txt";
+input int    MagicNumber     = 20250411;
 input bool   AutoTradeEnabled = false;   // MUST set true to enable live trading
+// Leader-election: when the EA is attached to multiple charts only one
+// instance does the export — others stand down and just refresh their
+// claim if the leader dies. Set to false to disable (not recommended).
+input bool   LeaderElection  = true;
+input int    LeaderHeartbeatSec = 15;     // leader rewrites lock; stale-after = 3×
+
+string LeaderFile  = "omni_leader.lock";
+bool   _isLeader   = false;
+datetime _lastLeaderHeartbeat = 0;
 
 // Priority symbols — full multi-TF bar export (D1/H4/H1/M15/M5/M1)
 // Skips automatically if broker doesn't list the symbol
@@ -82,10 +91,147 @@ string allSymbols[] = {
    "QNTUSD","NEARUSD","APTUSD","ARBUSD","OPUSD","SUIUSD"
 };
 
-int  OnInit()              { EventSetTimer(UpdateSeconds); ExportData(); return(INIT_SUCCEEDED); }
-void OnDeinit(const int r) { EventKillTimer(); }
-void OnTimer()             { ExportData(); if(AutoTradeEnabled) CheckCommands(); }
-void OnTick()              {}
+int  OnInit()
+  {
+   EventSetTimer(UpdateSeconds);
+   if(LeaderElection)
+     {
+      _isLeader = TryAcquireLeadership();
+      if(_isLeader)
+        {
+         Print("OmniExport: this instance IS LEADER (chart=", _Symbol, ",", PeriodToString(_Period), ")");
+         ExportData();
+        }
+      else
+        {
+         Print("OmniExport: another instance holds leadership — this chart will stand by ",
+               "and only take over if the leader dies. (chart=", _Symbol, ",", PeriodToString(_Period), ")");
+        }
+     }
+   else
+     {
+      _isLeader = true;  // legacy mode — every instance runs (will collide!)
+      ExportData();
+     }
+   return(INIT_SUCCEEDED);
+  }
+
+void OnDeinit(const int r)
+  {
+   EventKillTimer();
+   if(_isLeader)
+     {
+      // Release leadership on graceful exit so a fresh chart can pick up
+      FileDelete(LeaderFile, FILE_COMMON);
+      Print("OmniExport: leadership released");
+     }
+  }
+
+void OnTimer()
+  {
+   if(LeaderElection)
+     {
+      if(_isLeader)
+        {
+         RefreshLeadership();
+        }
+      else
+        {
+         // Try to take over if current leader has gone stale
+         if(LeaderIsStale())
+           {
+            _isLeader = TryAcquireLeadership();
+            if(_isLeader) Print("OmniExport: stale leader detected — TAKING OVER (",
+                                _Symbol, ",", PeriodToString(_Period), ")");
+           }
+        }
+      if(!_isLeader) return;   // standby instances do nothing else
+     }
+   ExportData();
+   if(AutoTradeEnabled) CheckCommands();
+  }
+
+void OnTick() {}
+
+string PeriodToString(ENUM_TIMEFRAMES tf)
+  {
+   if(tf==PERIOD_M1)  return "M1";
+   if(tf==PERIOD_M5)  return "M5";
+   if(tf==PERIOD_M15) return "M15";
+   if(tf==PERIOD_H1)  return "H1";
+   if(tf==PERIOD_H4)  return "H4";
+   if(tf==PERIOD_D1)  return "D1";
+   if(tf==PERIOD_W1)  return "W1";
+   return EnumToString(tf);
+  }
+
+//+------------------------------------------------------------------+
+// LEADER ELECTION — file-based, cooperative
+//
+// Lock file format (single line):  "<chartId>|<unix_ts>"
+//   chartId  = symbol#tf (e.g. "EURUSD#M5") to identify which chart owns the lock
+//   unix_ts  = TimeGMT() of last heartbeat
+//
+// A leader writes the file every LeaderHeartbeatSec.
+// A standby instance checks the file every OnTimer; if no file exists OR
+// the timestamp is older than 3× heartbeat, it tries to claim leadership.
+//+------------------------------------------------------------------+
+string MyChartId() { return _Symbol + "#" + PeriodToString(_Period); }
+
+bool TryAcquireLeadership()
+  {
+   // Read existing lock to see if a fresh leader exists
+   if(FileIsExist(LeaderFile, FILE_COMMON))
+     {
+      int rh = FileOpen(LeaderFile, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+      if(rh != INVALID_HANDLE)
+        {
+         string content = FileReadString(rh);
+         FileClose(rh);
+         string parts[];
+         if(StringSplit(content, '|', parts) >= 2)
+           {
+            string ownerId  = parts[0];
+            datetime stamp  = (datetime)StringToInteger(parts[1]);
+            if((TimeGMT() - stamp) < LeaderHeartbeatSec * 3 && ownerId != MyChartId())
+              {
+               // Leader is alive and it's not us
+               return false;
+              }
+           }
+        }
+     }
+   return WriteLeaderFile();
+  }
+
+void RefreshLeadership()
+  {
+   if((TimeGMT() - _lastLeaderHeartbeat) >= LeaderHeartbeatSec)
+      WriteLeaderFile();
+  }
+
+bool LeaderIsStale()
+  {
+   if(!FileIsExist(LeaderFile, FILE_COMMON)) return true;
+   int rh = FileOpen(LeaderFile, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(rh == INVALID_HANDLE) return false;  // can't read; assume someone has it
+   string content = FileReadString(rh);
+   FileClose(rh);
+   string parts[];
+   if(StringSplit(content, '|', parts) < 2) return true;
+   datetime stamp = (datetime)StringToInteger(parts[1]);
+   return (TimeGMT() - stamp) >= LeaderHeartbeatSec * 3;
+  }
+
+bool WriteLeaderFile()
+  {
+   int wh = FileOpen(LeaderFile, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(wh == INVALID_HANDLE) return false;
+   FileWriteString(wh, MyChartId() + "|" + IntegerToString((long)TimeGMT()));
+   FileClose(wh);
+   _lastLeaderHeartbeat = TimeGMT();
+   return true;
+  }
 
 //+------------------------------------------------------------------+
 // HELPERS
@@ -166,8 +312,21 @@ void ExportData()
    // Write to a temp file first, then atomically rename — prevents Python
    // from reading a half-written file (race condition on 2MB+ JSON)
    string TempFile = DataFile + ".tmp";
-   int fh = FileOpen(TempFile, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(fh==INVALID_HANDLE) { Print("Cannot open temp data file"); return; }
+   int fh = INVALID_HANDLE;
+   // Up to 3 attempts with 50ms backoff in case Wine/macOS file system
+   // has a transient lock from a stat()/read by Python at the same instant.
+   for(int attempt = 0; attempt < 3; attempt++)
+     {
+      fh = FileOpen(TempFile, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
+      if(fh != INVALID_HANDLE) break;
+      Sleep(50);
+     }
+   if(fh==INVALID_HANDLE)
+     {
+      Print("Cannot open temp data file after 3 retries (chart=",
+            _Symbol, ",", PeriodToString(_Period), ", err=", GetLastError(), ")");
+      return;
+     }
 
    string gmtStr = TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS);
    string session = GetSession();

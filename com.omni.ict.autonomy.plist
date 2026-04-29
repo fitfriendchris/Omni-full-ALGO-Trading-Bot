@@ -31,12 +31,12 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/owner/omni-ict/venv/bin/python3</string>
-    <string>/Users/owner/omni-ict/python/watchdog.py</string>
+    <string>${HOME}/omni-ict/venv/bin/python3</string>
+    <string>${HOME}/omni-ict/python/watchdog.py</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/owner/omni-ict</string>
+  <string>${HOME}/omni-ict</string>
 
   <key>RunAtLoad</key>
   <true/>
@@ -56,10 +56,10 @@
   <integer>10</integer>
 
   <key>StandardOutPath</key>
-  <string>/Users/owner/omni-ict/logs/launchagent.out.log</string>
+  <string>${HOME}/omni-ict/logs/launchagent.out.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/owner/omni-ict/logs/launchagent.err.log</string>
+  <string>${HOME}/omni-ict/logs/launchagent.err.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>
@@ -71,6 +71,11 @@
     <string>true</string>
     <key>OMNI_TELEGRAM_TOKEN</key>
     <string>8672119323:AAFnChUW2ktZez8pJPqEe0I458BdIfZRJ0k</string>
+    <!-- Owner-bypass license: redundant with the .env value; kept here as a
+         safety-net so the watchdog cannot crash-loop with "No license key set"
+         if .env is ever missing or malformed. -->
+    <key>OMNI_LICENSE_KEY</key>
+    <string>OWNER_BYPASS</string>
   </dict>
 
   <!--

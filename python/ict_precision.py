@@ -26,6 +26,92 @@ except ImportError:
     )
 
 
+# ── Pattern recognition model — graceful degrade if module/file absent ────────
+# When trained (online_learner triggers .fit()), this model nudges per-setup
+# confidence ±10 pts based on learned win probability. Capped so it can never
+# override the 7-layer ICT confluence gate alone — it's a tiebreaker, not a veto.
+try:
+    from pattern_recognition_model import PatternRecognitionModel as _PatternModel
+    _PATTERN_AVAILABLE = True
+except Exception:
+    _PatternModel = None  # type: ignore
+    _PATTERN_AVAILABLE = False
+
+_PATTERN_MODEL_SINGLETON = None
+_PATTERN_BONUS_CAP = 10  # max ±delta the model can apply to confidence
+
+
+def _get_pattern_model():
+    """Lazy singleton accessor for the pattern recognition model."""
+    global _PATTERN_MODEL_SINGLETON
+    if not _PATTERN_AVAILABLE:
+        return None
+    if _PATTERN_MODEL_SINGLETON is None:
+        try:
+            _PATTERN_MODEL_SINGLETON = _PatternModel()
+        except Exception:
+            return None
+    return _PATTERN_MODEL_SINGLETON
+
+
+def _setup_to_pattern_features(setup) -> dict:
+    """Flat numeric features for PatternRecognitionModel.predict_proba."""
+    conf = getattr(setup, "confluence", None)
+    feats: dict = {
+        "confidence": float(getattr(setup, "confidence", 0) or 0),
+        "rr_ratio":   float(getattr(setup, "rr_ratio", 0) or 0),
+    }
+    if conf is not None:
+        # Match keys used by online_learner._compute_feature_importance
+        feats.update({
+            "ict_features.htf_bias_aligned":  1.0 if getattr(conf, "htf_bias_aligned",  False) else 0.0,
+            "ict_features.amd_phase_aligned": 1.0 if getattr(conf, "amd_phase_aligned", False) else 0.0,
+            "ict_features.killzone_active":   1.0 if getattr(conf, "killzone_active",   False) else 0.0,
+            "ict_features.liquidity_swept":   1.0 if getattr(conf, "liquidity_swept",   False) else 0.0,
+            "ict_features.fvg_in_ote":        1.0 if getattr(conf, "fvg_in_ote",        False) else 0.0,
+            "ict_features.mss_confirmed":     1.0 if getattr(conf, "mss_confirmed",     False) else 0.0,
+            "ict_features.smt_divergence":    1.0 if getattr(conf, "smt_divergence",    False) else 0.0,
+            "ict_features.layers_met":        float(getattr(conf, "layers_met", 0) or 0),
+        })
+    feats["ict_features.liq_swept"] = 1.0 if getattr(setup, "liq_swept", False) else 0.0
+    feats["structure_features.rr_ratio"] = float(getattr(setup, "rr_ratio", 0) or 0)
+    return feats
+
+
+def _apply_pattern_model_boost(setups: list) -> list:
+    """For each setup, ask the pattern model for P(WIN) and adjust confidence.
+
+    Delta = round((p - 0.5) * 20), clamped to ±_PATTERN_BONUS_CAP.
+    The setup keeps an extra `reasons` line documenting the adjustment so the
+    Telegram alert and pre-trade log show why confidence shifted.
+    Returns the modified list (same objects, in place).
+    """
+    pm = _get_pattern_model()
+    if pm is None:
+        return setups
+    info = pm.info() if hasattr(pm, "info") else {"loaded": False}
+    if not info.get("loaded"):
+        return setups
+    for s in setups:
+        try:
+            feats = _setup_to_pattern_features(s)
+            p = float(pm.predict_proba(feats))
+            delta = int(round((p - 0.5) * 20))
+            if delta > _PATTERN_BONUS_CAP:
+                delta = _PATTERN_BONUS_CAP
+            elif delta < -_PATTERN_BONUS_CAP:
+                delta = -_PATTERN_BONUS_CAP
+            if delta == 0:
+                continue
+            new_conf = max(0, min(100, int(s.confidence) + delta))
+            if hasattr(s, "reasons") and isinstance(s.reasons, list):
+                s.reasons.append(f"PatternModel P(WIN)={p:.2f} → conf {delta:+d}")
+            s.confidence = new_conf
+        except Exception:
+            continue
+    return setups
+
+
 @dataclass
 class Bar:
     time: str
@@ -2153,6 +2239,12 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                             rr_ratio=round(abs(tp1 - entry) / max(risk, 0.00001), 2),
                             tf_bias=d1_bias,
                         ))
+
+    # Apply learned pattern-recognition model boost (no-op if model not yet trained)
+    try:
+        _apply_pattern_model_boost(setups)
+    except Exception:
+        pass
 
     # Sort by confidence
     setups.sort(key=lambda x: x.confidence, reverse=True)
@@ -4379,10 +4471,53 @@ def scan_all_primary_symbols() -> list[ICTSetup]:
     if not primary:
         primary = [s for s in _FALLBACK if s in charts]
 
+    # Optional asset-rotation filter — drop symbols that are out-of-session
+    # (priority 0). Keeps the rest in their original order. Belt-and-braces:
+    # if every symbol gets filtered out, fall back to the unfiltered list so
+    # we never silently scan nothing.
+    try:
+        from asset_rotation_manager import AssetRotationManager
+        _arm = AssetRotationManager(symbols=primary)
+        _rot = [s for s in primary if not _arm.should_skip_asset(s)]
+        if _rot:
+            primary = _rot
+    except Exception:
+        pass  # rotation is opt-in; never block trading
+
     all_setups = []
     for sym in primary:
         try:
             setups = scan_symbol(sym, data)
+            # ── Pivot confidence booster (optional, defensive) ──────────
+            # Adds 0–15 confidence points based on price proximity to
+            # multi-TF pivot levels with structural confluence.
+            if setups:
+                try:
+                    from pivot_confidence_booster import boost_setup
+                    sym_charts = charts.get(sym, {})
+                    bars_dict = {
+                        tf: _parse_bars(sym_charts.get(tf, []))
+                        for tf in ("M5", "M15", "H1", "H4", "D1")
+                    }
+                    bars_dict = {k: v for k, v in bars_dict.items() if v}
+                    if bars_dict:
+                        for s in setups:
+                            try:
+                                boost, reasons, meta = boost_setup(
+                                    s, sym, bars_dict, atr=getattr(s, "atr", 0.001) or 0.001,
+                                )
+                                if boost > 0:
+                                    s.confidence = min(100, int(s.confidence) + int(boost))
+                                    if hasattr(s, "reasons") and isinstance(s.reasons, list):
+                                        s.reasons.extend(reasons)
+                                    if hasattr(s, "metadata") and isinstance(s.metadata, dict):
+                                        s.metadata.setdefault("pivot", {}).update(meta)
+                            except Exception:
+                                pass  # one setup failing must not affect others
+                except ImportError:
+                    pass  # optional; modules may not be present in older installs
+                except Exception as e:
+                    print(f"[ICT] pivot booster non-fatal error for {sym}: {e}")
             all_setups.extend(setups)
         except Exception as e:
             print(f"[ICT] Error scanning {sym}: {e}")

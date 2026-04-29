@@ -122,12 +122,13 @@ def _default_specs(project_root: Path) -> list[ServiceSpec]:
 
 @dataclass
 class RunningService:
-    spec:        ServiceSpec
-    proc:        Optional[subprocess.Popen] = None
-    restarts:    int = 0
-    next_delay:  float = 0.0
-    started_at:  Optional[str] = None
-    log_path:    Optional[Path] = None
+    spec:           ServiceSpec
+    proc:           Optional[subprocess.Popen] = None
+    restarts:       int = 0
+    next_delay:     float = 0.0
+    started_at:     Optional[str] = None
+    started_at_mono: float = 0.0     # time.monotonic() when last spawned, for stable-run detection
+    log_path:       Optional[Path] = None
 
     def is_alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -200,6 +201,14 @@ def _spawn(spec: ServiceSpec) -> tuple[subprocess.Popen, Path]:
             spec.argv,
             cwd=str(spec.cwd),
             env=env,
+            # Explicitly redirect stdin to /dev/null. When watchdog is launched by
+            # launchd as a daemon its stdin is a closed/invalid fd; children that
+            # inherit it crash before Python's runtime is fully initialised with
+            # `OSError: [Errno 9] Bad file descriptor` from init_sys_streams.
+            # uvicorn (server.py) is especially sensitive to this. DEVNULL gives
+            # every child a clean readable fd0 regardless of how watchdog was
+            # started.
+            stdin=subprocess.DEVNULL,
             stdout=fh,
             stderr=subprocess.STDOUT,
             start_new_session=True,   # detach from TTY so SIGINT on watchdog won't cascade accidentally
@@ -249,6 +258,15 @@ def supervise(specs: list[ServiceSpec],
     while True:
         for rs in running.values():
             if rs.is_alive():
+                # If the service has been alive for STABLE_RUN_S, treat it as
+                # healthy and reset its crash budget so transient blow-ups
+                # don't accumulate forever.
+                if (rs.restarts > 1 and rs.started_at_mono > 0
+                        and (time.monotonic() - rs.started_at_mono) >= STABLE_RUN_S):
+                    log.info("%s has been stable for %.0fs — resetting restart counter",
+                             rs.spec.name, STABLE_RUN_S)
+                    rs.restarts = 1   # keep at 1 so the "first start" semantics still hold
+                    rs.next_delay = 0.0
                 continue
             if rs.proc is None:
                 # never started, skip
@@ -280,6 +298,7 @@ def _start(rs: RunningService) -> None:
     try:
         rs.proc, rs.log_path = _spawn(rs.spec)
         rs.started_at = datetime.now(timezone.utc).isoformat()
+        rs.started_at_mono = time.monotonic()
         rs.restarts += 1
         # fresh back-off on a manual (re)start
         if rs.restarts == 1:
@@ -288,6 +307,12 @@ def _start(rs: RunningService) -> None:
         log.exception("failed to spawn %s: %s", rs.spec.name, e)
         rs.next_delay = min(max(rs.next_delay * 2, rs.spec.backoff_s),
                             rs.spec.backoff_cap)
+
+
+# A service that ran cleanly for at least this long is "stable" — its restart
+# counter and back-off get reset so a long-lived service that crashes once a
+# day doesn't eventually exhaust max_restarts and get parked permanently.
+STABLE_RUN_S: float = 300.0  # 5 minutes
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -390,6 +415,29 @@ def main(argv: Optional[list[str]] = None) -> int:
         return _print_status()
     if args.stop:
         return _stop_all(args.grace)
+
+    # Load .env BEFORE importing license — under launchd, child processes
+    # don't get .env automatically, only what's in the plist. The license
+    # module reads OMNI_LICENSE_KEY at import time, so the load has to happen
+    # before that import.
+    _env_path = PROJECT_ROOT / ".env"
+    if _env_path.exists():
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(_env_path, override=False)
+            log.info(".env loaded from %s", _env_path)
+        except ImportError:
+            # python-dotenv not installed — parse a minimal subset ourselves.
+            for line in _env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+            log.info(".env loaded (minimal parser) from %s", _env_path)
 
     # License check (owner bypass key skips this instantly)
     try:

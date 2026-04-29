@@ -452,6 +452,17 @@ async def serve_dashboard():
     return FileResponse(str(WEBAPP_DIR / "index.html"))
 
 
+@app.get("/tg", include_in_schema=False)
+async def telegram_dashboard():
+    """
+    Mobile-first dashboard optimized for Telegram Web Apps.
+    Open this URL via a Telegram bot keyboard `web_app` button to get an
+    interactive dashboard inside the Telegram client.
+    Requires this URL to be publicly reachable over HTTPS — see DEPLOY.md.
+    """
+    return FileResponse(str(WEBAPP_DIR / "tg_dashboard.html"))
+
+
 @app.get("/smart-trail", include_in_schema=False)
 async def serve_smart_trail_dashboard():
     """Smart Trail dev dashboard — paper-mode visibility into trail proposals."""

@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>OMNI ICT — Telegram Dashboard</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg:    var(--tg-theme-bg-color, #0f1419);
+    --fg:    var(--tg-theme-text-color, #e7e9ea);
+    --hint:  var(--tg-theme-hint-color, #71767b);
+    --link:  var(--tg-theme-link-color, #1d9bf0);
+    --btn:   var(--tg-theme-button-color, #1d9bf0);
+    --btn-fg:var(--tg-theme-button-text-color, #fff);
+    --card:  var(--tg-theme-secondary-bg-color, #16202a);
+    --good:  #22c55e;
+    --bad:   #ef4444;
+    --warn:  #eab308;
+    --border:rgba(127,127,127,.18);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.4;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .tabs {
+    display: flex;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 5;
+  }
+  .tab {
+    flex: 1;
+    padding: 12px 4px;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--hint);
+    cursor: pointer;
+    user-select: none;
+  }
+  .tab.active { color: var(--btn); border-bottom: 2px solid var(--btn); }
+  .pane { padding: 14px; display: none; }
+  .pane.active { display: block; }
+  h2 { font-size: 13px; font-weight: 600; color: var(--hint); text-transform: uppercase; letter-spacing: .04em; margin: 14px 0 8px; }
+  h2:first-child { margin-top: 0; }
+  .card {
+    background: var(--card);
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    border: 1px solid var(--border);
+  }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; }
+  .row + .row { border-top: 1px solid var(--border); }
+  .label { color: var(--hint); font-size: 12px; }
+  .value { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .pos { color: var(--good); }
+  .neg { color: var(--bad); }
+  .neutral { color: var(--hint); }
+  .pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    background: rgba(127,127,127,.15);
+  }
+  .pill.good { background: color-mix(in srgb, var(--good) 22%, transparent); color: var(--good); }
+  .pill.bad  { background: color-mix(in srgb, var(--bad) 22%,  transparent); color: var(--bad); }
+  .pill.warn { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+  .big {
+    font-size: 24px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .btn {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: 10px;
+    background: var(--btn);
+    color: var(--btn-fg);
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+    margin-bottom: 8px;
+  }
+  .btn.ghost { background: var(--card); color: var(--fg); border: 1px solid var(--border); }
+  .btn.danger { background: var(--bad); }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+  .toolbar .btn { flex: 1; min-width: 95px; margin-bottom: 0; }
+  .small { font-size: 12px; color: var(--hint); }
+  .empty { text-align: center; color: var(--hint); padding: 24px 0; font-style: italic; }
+  .signal {
+    border-left: 3px solid var(--btn);
+    padding-left: 10px;
+    margin-bottom: 10px;
+  }
+  .signal.bull { border-color: var(--good); }
+  .signal.bear { border-color: var(--bad); }
+  .signal-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .signal-sym { font-weight: 700; }
+  .signal-conf { font-size: 12px; color: var(--hint); }
+  .signal-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .progress {
+    height: 4px;
+    background: rgba(127,127,127,.2);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 6px;
+  }
+  .progress > span {
+    display: block; height: 100%;
+    background: var(--btn);
+    transition: width .3s ease;
+  }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .status-dot.up   { background: var(--good); }
+  .status-dot.down { background: var(--bad); }
+  .toast {
+    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+    background: var(--card); color: var(--fg);
+    padding: 10px 16px; border-radius: 24px;
+    font-size: 13px; box-shadow: 0 6px 20px rgba(0,0,0,.3);
+    border: 1px solid var(--border);
+    opacity: 0; transition: opacity .25s;
+    pointer-events: none; z-index: 50;
+  }
+  .toast.show { opacity: 1; }
+  .refresh-spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  details { margin: 6px 0; }
+  details summary { cursor: pointer; color: var(--hint); font-size: 12px; padding: 4px 0; }
+  pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; color: var(--hint); margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<div class="tabs">
+  <div class="tab active" data-pane="overview">📊 Overview</div>
+  <div class="tab" data-pane="positions">📈 Trades</div>
+  <div class="tab" data-pane="signals">🎯 Signals</div>
+  <div class="tab" data-pane="controls">⚙️ Controls</div>
+</div>
+
+<!-- ──────────── OVERVIEW ──────────── -->
+<div class="pane active" id="pane-overview">
+  <div class="card">
+    <div class="grid2">
+      <div>
+        <div class="label">Balance</div>
+        <div class="big" id="ov-balance">—</div>
+      </div>
+      <div>
+        <div class="label">Equity</div>
+        <div class="big" id="ov-equity">—</div>
+      </div>
+    </div>
+    <div class="row">
+      <span class="label">Today's P&L</span>
+      <span class="value" id="ov-pnl">—</span>
+    </div>
+    <div class="row">
+      <span class="label">Margin used</span>
+      <span class="value" id="ov-margin">—</span>
+    </div>
+    <div class="row">
+      <span class="label">Open positions</span>
+      <span class="value" id="ov-openpos">0</span>
+    </div>
+    <div class="row">
+      <span class="label">Account</span>
+      <span class="value small" id="ov-account">—</span>
+    </div>
+  </div>
+
+  <h2>System</h2>
+  <div class="card" id="ov-services"><div class="empty">loading…</div></div>
+
+  <h2>Session</h2>
+  <div class="card">
+    <div class="row"><span class="label">Active session</span><span class="value" id="ov-session">—</span></div>
+    <div class="row"><span class="label">AMD phase</span><span class="value" id="ov-amd">—</span></div>
+    <div class="row"><span class="label">Auto-trade</span><span class="value" id="ov-autotrade">—</span></div>
+    <div class="row"><span class="label">Data age</span><span class="value small" id="ov-dataage">—</span></div>
+  </div>
+</div>
+
+<!-- ──────────── POSITIONS ──────────── -->
+<div class="pane" id="pane-positions">
+  <div class="card" id="pos-summary"></div>
+  <div id="pos-list"></div>
+</div>
+
+<!-- ──────────── SIGNALS ──────────── -->
+<div class="pane" id="pane-signals">
+  <div id="sig-list"></div>
+</div>
+
+<!-- ──────────── CONTROLS ──────────── -->
+<div class="pane" id="pane-controls">
+  <h2>Trading</h2>
+  <div class="toolbar">
+    <button class="btn"        data-cmd="resume">▶️ Resume</button>
+    <button class="btn danger" data-cmd="halt">🛑 Halt</button>
+  </div>
+
+  <h2>Risk Mode</h2>
+  <div class="toolbar">
+    <button class="btn ghost" data-setrisk="LOW">LOW</button>
+    <button class="btn ghost" data-setrisk="MODERATE">MODERATE</button>
+    <button class="btn ghost" data-setrisk="HIGH">HIGH</button>
+  </div>
+
+  <h2>Frequency Mode</h2>
+  <div class="toolbar">
+    <button class="btn ghost" data-setfreq="CONSERVATIVE">CONS</button>
+    <button class="btn ghost" data-setfreq="NORMAL">NORMAL</button>
+    <button class="btn ghost" data-setfreq="AGGRESSIVE">AGG</button>
+  </div>
+
+  <h2>Account</h2>
+  <div id="ctrl-accounts"></div>
+
+  <p class="small">All buttons send a command to your Telegram bot — same as typing /halt, /setrisk, etc. You'll see the bot's reply in your chat.</p>
+</div>
+
+<div class="toast" id="toast">…</div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+if (tg) { tg.ready(); tg.expand(); }
+
+const API = location.origin + "/api/";
+let activeAccount = null;
+let pollTimer = null;
+
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+function fmtMoney(v, ccy = "") {
+  if (v === undefined || v === null || isNaN(v)) return "—";
+  return (ccy ? ccy + " " : "") + Number(v).toLocaleString(undefined, {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  });
+}
+function fmtPct(v, digits = 2) {
+  if (v === undefined || v === null || isNaN(v)) return "—";
+  return Number(v).toFixed(digits) + "%";
+}
+function pnlClass(v) { return v > 0 ? "pos" : v < 0 ? "neg" : "neutral"; }
+function ageLabel(secs) {
+  if (secs == null) return "—";
+  if (secs < 60) return Math.round(secs) + "s ago";
+  if (secs < 3600) return Math.round(secs / 60) + "m ago";
+  return (secs / 3600).toFixed(1) + "h ago";
+}
+function toast(msg, ms = 2400) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toast._tid);
+  toast._tid = setTimeout(() => t.classList.remove("show"), ms);
+}
+
+// ── Tabs ────────────────────────────────────────────────────────────────
+$$(".tab").forEach((tab) => tab.addEventListener("click", () => {
+  $$(".tab").forEach((t) => t.classList.remove("active"));
+  $$(".pane").forEach((p) => p.classList.remove("active"));
+  tab.classList.add("active");
+  $("#pane-" + tab.dataset.pane).classList.add("active");
+  if (tg) tg.HapticFeedback?.selectionChanged?.();
+}));
+
+// ── Data fetchers ───────────────────────────────────────────────────────
+async function fetchJson(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) throw new Error(`${path} → ${r.status}`);
+  return r.json();
+}
+
+async function loadAccounts() {
+  const accs = await fetchJson("accounts");
+  if (!accs.length) return;
+  if (!activeAccount) activeAccount = accs[0].id;
+  const html = accs.map((a) => `
+    <button class="btn ${a.id === activeAccount ? '' : 'ghost'}"
+            data-pickacc="${a.id}">
+      ${a.id === activeAccount ? '✓ ' : ''}${a.name} <span class="small">(${a.type})</span>
+    </button>
+  `).join("");
+  $("#ctrl-accounts").innerHTML = html;
+}
+
+async function refresh() {
+  if (!activeAccount) { try { await loadAccounts(); } catch (e) { return; } }
+  if (!activeAccount) return;
+  let data, status;
+  try {
+    [data, status] = await Promise.all([
+      fetchJson("data/" + activeAccount),
+      fetchJson("status").catch(() => ({})),
+    ]);
+  } catch (e) {
+    toast("⚠ " + e.message);
+    return;
+  }
+  paintOverview(data, status);
+  paintPositions(data);
+  paintSignals(data);
+}
+
+// ── Overview ────────────────────────────────────────────────────────────
+function paintOverview(d, s) {
+  const a = d.account_info || d.account || {};
+  const ccy = a.currency || "";
+  $("#ov-balance").textContent = fmtMoney(a.balance, ccy);
+  $("#ov-equity").textContent  = fmtMoney(a.equity,  ccy);
+  const pnl = (a.equity || 0) - (a.balance || 0);
+  $("#ov-pnl").textContent = fmtMoney(pnl, ccy);
+  $("#ov-pnl").className = "value " + pnlClass(pnl);
+  $("#ov-margin").textContent = fmtMoney(a.margin || 0, ccy);
+  $("#ov-openpos").textContent = (d.positions || []).length;
+  $("#ov-account").textContent = (d.account_name || a.name || activeAccount) + (a.server ? " · " + a.server : "");
+  $("#ov-session").textContent = d.session || "—";
+  $("#ov-amd").textContent     = d.amd_phase || "—";
+  const halted = d.bot_status && d.bot_status.trading_halted;
+  $("#ov-autotrade").innerHTML = halted
+    ? '<span class="pill bad">HALTED</span>'
+    : (d.bot_status && d.bot_status.paper_mode === false
+        ? '<span class="pill good">LIVE</span>'
+        : '<span class="pill warn">PAPER</span>');
+  $("#ov-dataage").textContent = ageLabel(d.data_age_secs);
+
+  if (s && s.services) {
+    const html = Object.entries(s.services).map(([k, v]) => `
+      <div class="row">
+        <span class="label">
+          <span class="status-dot ${v.alive ? 'up' : 'down'}"></span>${k}
+        </span>
+        <span class="value small">${v.alive ? 'up' : 'down'}${v.restarts ? ' · ' + v.restarts + 'x' : ''}</span>
+      </div>
+    `).join("");
+    $("#ov-services").innerHTML = html || '<div class="empty">no service data</div>';
+  } else {
+    $("#ov-services").innerHTML = '<div class="empty">/api/status unavailable</div>';
+  }
+}
+
+// ── Positions ───────────────────────────────────────────────────────────
+function paintPositions(d) {
+  const positions = d.positions || [];
+  const ccy = (d.account_info || d.account || {}).currency || "";
+  const totalProfit = positions.reduce((s, p) => s + (p.profit || 0), 0);
+  $("#pos-summary").innerHTML = `
+    <div class="row">
+      <span class="label">Open positions</span>
+      <span class="value">${positions.length}</span>
+    </div>
+    <div class="row">
+      <span class="label">Floating P&L</span>
+      <span class="value ${pnlClass(totalProfit)}">${fmtMoney(totalProfit, ccy)}</span>
+    </div>
+  `;
+  if (!positions.length) {
+    $("#pos-list").innerHTML = '<div class="empty">No open positions.</div>';
+    return;
+  }
+  $("#pos-list").innerHTML = positions.map((p) => {
+    const dir = (p.type || '').toUpperCase();
+    const isBuy = dir === 'BUY';
+    return `
+      <div class="card">
+        <div class="row">
+          <span><strong>${isBuy ? '🟢' : '🔴'} ${p.symbol}</strong> · ${dir} · ${p.volume}</span>
+          <span class="value ${pnlClass(p.profit)}">${fmtMoney(p.profit)}</span>
+        </div>
+        <div class="row"><span class="label">Entry</span><span class="value">${p.open_price}</span></div>
+        <div class="row"><span class="label">Current</span><span class="value">${p.current_price}</span></div>
+        <div class="row"><span class="label">SL / TP</span><span class="value">${p.sl} / ${p.tp || '—'}</span></div>
+        <button class="btn danger" style="margin-top:8px;" data-closeticket="${p.ticket}">
+          ❌ Close ${p.symbol}
+        </button>
+      </div>`;
+  }).join("");
+}
+
+// ── Signals (ICT setups from the scanner) ──────────────────────────────
+function paintSignals(d) {
+  // Server returns ICT scanner output as `setups`. The orchestrator's
+  // signals.json is a separate artifact; if present in the snapshot we'd
+  // merge it, but for now `setups` is the primary feed shown here.
+  const sigs = d.setups || d.signals || [];
+  if (!sigs.length) {
+    $("#sig-list").innerHTML = '<div class="empty">No setups yet — scanner finds nothing high-confidence right now.</div>';
+    return;
+  }
+  $("#sig-list").innerHTML = sigs.slice(0, 25).map((s) => {
+    const dir = (s.direction || "").toUpperCase();
+    const dirClass = dir === "BUY" || dir === "BULL" ? "bull"
+                   : dir === "SELL" || dir === "BEAR" ? "bear" : "";
+    const conf = Math.round(s.confidence || 0);
+    const reasons = Array.isArray(s.reasons) ? s.reasons : [];
+    const entry  = s.entry_price ?? s.entry ?? null;
+    const sl     = s.sl_price ?? s.sl ?? null;
+    const tp1    = s.tp1_price ?? s.tp ?? null;
+    const tp2    = s.tp2_price ?? null;
+    const tp3    = s.tp3_price ?? null;
+    const rr     = s.rr_ratio ?? null;
+    const pivot  = s.metadata?.pivot;
+    return `
+      <div class="signal ${dirClass}">
+        <div class="signal-head">
+          <span class="signal-sym">${s.symbol || "?"} ${s.entry_type ? "· " + s.entry_type : ""}</span>
+          <span class="signal-conf">${dir}${rr ? ` · RR ${Number(rr).toFixed(1)}` : ""}</span>
+        </div>
+        <div class="signal-meta">
+          <span class="pill">conf ${conf}</span>
+          ${entry != null ? `<span class="pill">@ ${entry}</span>` : ""}
+          ${sl   != null ? `<span class="pill">SL ${sl}</span>` : ""}
+          ${tp1  != null ? `<span class="pill">TP1 ${tp1}</span>` : ""}
+          ${tp2  != null ? `<span class="pill">TP2 ${tp2}</span>` : ""}
+          ${tp3  != null ? `<span class="pill">TP3 ${tp3}</span>` : ""}
+          ${s.session   ? `<span class="pill">${s.session}</span>` : ""}
+          ${s.kill_zone ? `<span class="pill warn">${s.kill_zone}</span>` : ""}
+          ${pivot && pivot.structure_type && pivot.structure_type !== "NONE"
+            ? `<span class="pill good">pivot ${pivot.structure_type}</span>` : ""}
+        </div>
+        <div class="progress"><span style="width:${conf}%"></span></div>
+        ${reasons.length ? `
+          <details>
+            <summary>${reasons.length} reason${reasons.length === 1 ? "" : "s"}</summary>
+            <pre>${reasons.map((r) => "• " + r).join("\n")}</pre>
+          </details>` : ""}
+      </div>`;
+  }).join("");
+}
+
+// ── Controls (route through Telegram bot via sendData) ─────────────────
+function sendBotCommand(text, opts = {}) {
+  if (!tg) {
+    toast("Open via Telegram to send commands");
+    return;
+  }
+  const payload = JSON.stringify({ kind: "cmd", text, ...opts });
+  // Telegram's WebApp.sendData posts the payload to the bot's getUpdates
+  // queue — your telegram_bot.py picks it up and runs the matching command.
+  tg.sendData(payload);
+  toast("→ sent: " + text);
+  if (tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+  // Telegram normally closes the WebApp after sendData; for control buttons
+  // we'd usually want to close, but you can pass `closeAfter:false` to stay.
+  if (opts.closeAfter !== false) setTimeout(() => tg.close(), 200);
+}
+
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-cmd], [data-setrisk], [data-setfreq], [data-pickacc], [data-closeticket]");
+  if (!t) return;
+  if (t.dataset.cmd) {
+    sendBotCommand("/" + t.dataset.cmd);
+  } else if (t.dataset.setrisk) {
+    sendBotCommand("/setrisk " + t.dataset.setrisk);
+  } else if (t.dataset.setfreq) {
+    sendBotCommand("/setfreq " + t.dataset.setfreq);
+  } else if (t.dataset.pickacc) {
+    sendBotCommand("/switch " + t.dataset.pickacc, { closeAfter: false });
+    activeAccount = t.dataset.pickacc;
+    loadAccounts();
+    refresh();
+  } else if (t.dataset.closeticket) {
+    sendBotCommand("/close " + t.dataset.closeticket);
+  }
+});
+
+// ── Boot ────────────────────────────────────────────────────────────────
+loadAccounts().then(refresh).catch(() => {});
+pollTimer = setInterval(refresh, 5000);
+window.addEventListener("beforeunload", () => clearInterval(pollTimer));
+</script>
+</body>
+</html>

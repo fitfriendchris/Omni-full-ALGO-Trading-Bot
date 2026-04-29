@@ -13,6 +13,38 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Optional
 
+# ── Feature store integration (Phase 2f) ──────────────────────────────────────
+# Every simulated trade is persisted so the learning loop (online_learner +
+# parameter_optimizer + pattern_recognition_model) trains on historical data.
+# Graceful degrade — backtester runs fine even when the learning module is
+# unavailable (e.g. minimal-deps test environment).
+try:
+    from feature_store import FeatureStore as _FeatureStore
+    _LEARNING_AVAILABLE = True
+except Exception:
+    _FeatureStore = None  # type: ignore
+    _LEARNING_AVAILABLE = False
+
+_BT_FS_SINGLETON = None
+
+
+def _get_bt_feature_store():
+    global _BT_FS_SINGLETON
+    if not _LEARNING_AVAILABLE:
+        return None
+    if _BT_FS_SINGLETON is None:
+        try:
+            _BT_FS_SINGLETON = _FeatureStore()
+        except Exception:
+            return None
+    return _BT_FS_SINGLETON
+
+
+def _bt_signal_id(symbol: str, trade_id: int, entry_time: str) -> str:
+    """Stable composite ID so a re-run of the backtest UPSERTs the same row."""
+    safe_t = (entry_time or "").replace(" ", "T").replace(":", "").replace("-", "")
+    return f"BT_{symbol}_{trade_id}_{safe_t}"
+
 # ── Config ────────────────────────────────────────────────────────────────────
 try:
     from config import cfg
@@ -96,6 +128,8 @@ class BacktestConfig:
     fvg_lookback:   int   = 8
     sweep_confirm:  int   = 2     # Bars to confirm sweep
     swing_lookback: int   = 20
+    # Learning loop integration
+    persist_features: bool = True  # When True, every simulated trade goes to feature_store
 
 
 @dataclass
@@ -451,6 +485,21 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
                 # Monthly tracking
                 month_key = bar.time[:7]
                 monthly[month_key] = monthly.get(month_key, 0) + pnl
+
+                # ── Persist outcome to feature_store for the learning loop ──
+                if config.persist_features:
+                    fs = _get_bt_feature_store()
+                    if fs is not None:
+                        try:
+                            fs.record_outcome(
+                                signal_id=_bt_signal_id(tr.symbol, tr.id, tr.entry_time),
+                                outcome=("WIN" if pnl >= 0 else "LOSS"),
+                                r_multiple=float(r),
+                                profit_usd=float(pnl),
+                                exit_level=str(exit_r),
+                            )
+                        except Exception:
+                            pass
             else:
                 still_open.append(tr)
 
@@ -603,6 +652,63 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
 
         if new_setup:
             open_trades.append(new_setup)
+
+            # ── Persist opened-trade features to feature_store ────────────
+            if config.persist_features:
+                fs = _get_bt_feature_store()
+                if fs is not None:
+                    try:
+                        risk_dist = abs(new_setup.entry_price - new_setup.sl)
+                        rr_open = (abs(new_setup.tp1 - new_setup.entry_price) / risk_dist
+                                   if risk_dist > 0 else 0.0)
+                        # Map historical signal back into the same feature schema
+                        # used by the live trader so optimizer + online_learner +
+                        # pattern_recognition_model can train on a single corpus.
+                        ict_features = {
+                            "htf_bias_aligned":  bias in ("BULLISH", "BEARISH"),
+                            "amd_phase_aligned": amd in ("MANIPULATION", "DISTRIBUTION"),
+                            "killzone_active":   session in ("LONDON", "NEW_YORK"),
+                            "liquidity_swept":   "SWEEP" in new_setup.entry_type,
+                            "fvg_in_ote":        "FVG" in new_setup.entry_type,
+                            "mss_confirmed":     False,  # backtester doesn't compute MSS
+                            "smt_divergence":    False,  # backtester doesn't compute SMT
+                            "entry_type":        new_setup.entry_type,
+                            "tf_bias":           bias,
+                        }
+                        ict_features["layers_met"] = sum(
+                            1 for k in ("htf_bias_aligned","amd_phase_aligned","killzone_active",
+                                        "liquidity_swept","fvg_in_ote","mss_confirmed","smt_divergence")
+                            if ict_features.get(k)
+                        )
+                        structure_features = {
+                            "rr_ratio":     float(rr_open),
+                            "invalidation": float(new_setup.sl),
+                        }
+                        try:
+                            ts_signal = int(datetime.strptime(
+                                new_setup.entry_time[:19], "%Y-%m-%d %H:%M:%S"
+                            ).timestamp())
+                        except Exception:
+                            ts_signal = None
+                        fs.record_signal(
+                            signal_id=_bt_signal_id(new_setup.symbol, new_setup.id, new_setup.entry_time),
+                            symbol=new_setup.symbol,
+                            timeframe="H1",  # backtester replay timeframe
+                            direction=new_setup.direction,
+                            entry_price=float(new_setup.entry_price),
+                            sl_price=float(new_setup.sl),
+                            tp_price=float(new_setup.tp3),
+                            ict_features=ict_features,
+                            structure_features=structure_features,
+                            regime="BACKTEST",
+                            session=new_setup.session,
+                            decision="TRADED",
+                            confidence=int(new_setup.confidence),
+                            rr_ratio=float(rr_open),
+                            ts_signal=ts_signal,
+                        )
+                    except Exception:
+                        pass
 
     # Close any remaining open trades at last price
     last_price = bars_asc[-1].c if bars_asc else 0

@@ -133,11 +133,15 @@ class _Config:
     MIN_CONFIDENCE_ASIA: int = _getint ("OMNI_MIN_CONF_ASIA", "min_conf_asia",    65)
     MIN_SL_PIPS:      int   = _getint  ("OMNI_MIN_SL_PIPS",   "min_sl_pips",      10)
     MAX_OPEN_TRADES:  int   = _getint  ("OMNI_MAX_TRADES",    "max_open_trades",  3)
-    SCAN_INTERVAL:    int   = _getint  ("OMNI_SCAN_INTERVAL", "scan_interval",    10)
+    SCAN_INTERVAL:    int   = _getint  ("OMNI_SCAN_INTERVAL", "scan_interval",    3)
     CLAUDE_MODEL:     str   = _get     ("OMNI_CLAUDE_MODEL",  "claude_model",     "claude-sonnet-4-6")
     MAX_TRAIL_PIPS:   int   = _getint  ("OMNI_MAX_TRAIL_PIPS","max_trail_pips",   150)
     MT5_STALE_SEC:    int   = _getint  ("OMNI_MT5_STALE_SEC", "mt5_max_stale_sec",30)
     MT5_RETRY_MAX:    int   = _getint  ("OMNI_MT5_RETRY_MAX", "retry_attempts",   5)
+
+    # ── Telegram notifications ────────────────────────────────────────────────
+    TELEGRAM_BOT_TOKEN: str = _get("OMNI_TELEGRAM_TOKEN",   "telegram_bot_token", "")
+    TELEGRAM_CHAT_ID:   str = _get("OMNI_TELEGRAM_CHAT_ID", "telegram_chat_id",   "")
 
     # ── Spread guard (skip trade if live spread > this multiple of normal) ─────
     MAX_SPREAD_XAUUSD_PIPS: float = _getfloat("OMNI_MAX_SPREAD_XAU",  "max_spread_xau",  35.0)

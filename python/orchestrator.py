@@ -129,14 +129,20 @@ class MT5BarFetcher:
         raw = mod.get_bars(symbol, timeframe, n)
         bars = []
         for r in raw:
-            t = r.get("time", 0)
-            if isinstance(t, str):
-                try:
-                    # MT5 format: "2026.04.19 00:00:00"
-                    t = datetime.strptime(t, "%Y.%m.%d %H:%M:%S").replace(
-                        tzinfo=timezone.utc).timestamp()
-                except ValueError:
-                    t = 0.0
+            # Prefer the broker-offset-corrected UTC timestamp set by
+            # mt5_connector.get_bars(). Fall back to local parsing for
+            # backward compat with older callers that don't surface it.
+            t = r.get("time_utc")
+            if t is None or t == 0:
+                raw_t = r.get("time", 0)
+                if isinstance(raw_t, str):
+                    try:
+                        t = datetime.strptime(raw_t, "%Y.%m.%d %H:%M:%S").replace(
+                            tzinfo=timezone.utc).timestamp()
+                    except ValueError:
+                        t = 0.0
+                else:
+                    t = float(raw_t or 0)
             bars.append(Bar(
                 time=float(t),
                 open=float(r["open"]), high=float(r["high"]),
@@ -240,6 +246,25 @@ def run_cycle(
     errors:   list[str] = []
     written:  list[str] = []
 
+    # Optional asset rotation — drop out-of-session symbols before scanning.
+    try:
+        from asset_rotation_manager import AssetRotationManager
+        _arm = AssetRotationManager(symbols=watchlist)
+        _filtered = [s for s in watchlist if not _arm.should_skip_asset(s)]
+        if _filtered:
+            watchlist = _filtered
+    except Exception:
+        pass
+
+    # Optional regime detector — runs once per HTF series, attached to signal
+    # metadata so consumers (auto_trader, dashboard) can adapt.
+    try:
+        from regime_detector import detect_regime
+        _have_regime = True
+    except Exception:
+        _have_regime = False
+        detect_regime = None  # type: ignore
+
     for symbol in watchlist:
         try:
             htf_bars = _fetch_with_timeout(fetcher, symbol, htf_tf, n_htf)
@@ -247,6 +272,25 @@ def run_cycle(
 
             # Freshness check — skip if bars haven't been updated recently
             if not _bars_are_fresh(htf_bars):
+                # Diagnostic: when staleness fires, log enough info to
+                # pinpoint why. (Cheap — only on the failure path.)
+                if htf_bars:
+                    times = [b.time for b in htf_bars if b.time]
+                    if times:
+                        newest = max(times)
+                        oldest = min(times)
+                        age_min = (time.time() - newest) / 60.0
+                        log.warning(
+                            "stale-debug %s: bars=%d, newest=%.0f (age=%+.1fmin), "
+                            "oldest=%.0f, now=%.0f",
+                            symbol, len(htf_bars), newest, age_min,
+                            oldest, time.time(),
+                        )
+                    else:
+                        log.warning("stale-debug %s: bars=%d but ALL b.time are 0/falsy",
+                                    symbol, len(htf_bars))
+                else:
+                    log.warning("stale-debug %s: htf_bars is EMPTY", symbol)
                 errors.append(f"{symbol}: stale HTF bars (oldest > 1h)")
                 log.warning("stale HTF bars for %s — skipping cycle", symbol)
                 continue
@@ -265,6 +309,24 @@ def run_cycle(
                                            rules=rules.get("scaling"))
 
             sig = build_signal(symbol, ltf_tf, sel, scale=scale_act, ts=ts_now)
+
+            # Attach regime metadata if detector is available
+            if _have_regime and detect_regime:
+                try:
+                    bars_as_dict = [
+                        {"high": b.high, "low": b.low, "close": b.close}
+                        for b in htf_bars
+                    ]
+                    rr = detect_regime(bars_as_dict)
+                    if hasattr(sig, "metadata") and isinstance(sig.metadata, dict):
+                        sig.metadata.setdefault("regime", {}).update({
+                            "label":      rr.regime,
+                            "confidence": round(rr.confidence, 3),
+                            "reason":     rr.reason,
+                        })
+                except Exception as _e:
+                    log.debug("regime detection skipped for %s: %s", symbol, _e)
+
             produced.append(sig)
         except Exception as e:
             errors.append(f"{symbol}: {type(e).__name__}: {e}")

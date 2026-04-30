@@ -594,10 +594,10 @@ def load_state() -> TraderState:
                 log.info(f"Clearing obsolete halt_reason on load: {s.halt_reason!r}")
                 s.trading_halted = False
                 s.halt_reason = ""
-            # Migration: recently_traded was a list; convert to dict with far-future expiry
+            # Migration: recently_traded was a list; convert to dict with 30 min expiry
             if isinstance(s.recently_traded, list):
                 _now = time.time()
-                s.recently_traded = {sym: _now + 7200 for sym in s.recently_traded}
+                s.recently_traded = {sym: _now + 1800 for sym in s.recently_traded}
             return s
         except Exception:
             pass
@@ -2348,8 +2348,56 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
     result = place_order(symbol, direction, order_type, entry, sl, tp, lot_size, comment)
     log.info(f"Order result: {result}")
 
-    # On EA error, backoff 60 s so the bot doesn't spam the same command every scan
+    # On EA error/timeout — try to rescue a late-placed order by scanning MT5 positions
     if result.startswith("ERROR") or result.startswith("TIMEOUT"):
+        # MetaQuotes demo can respond after our poll window. Check if a new position
+        # for this symbol appeared in MT5 within the last 30 seconds.
+        _rescued = False
+        try:
+            _live_pos = {str(p["ticket"]): p for p in get_open_positions(data)}
+            _tracked  = set(state.active_trades.keys())
+            for _tk, _pos in _live_pos.items():
+                if _tk in _tracked:
+                    continue
+                if _pos.get("symbol") != symbol:
+                    continue
+                # New untracked position on this symbol — claim it
+                log.info(f"{symbol}: rescued late-placed order ticket={_tk} from MT5")
+                state.active_trades[_tk] = {
+                    "symbol":          symbol,
+                    "direction":       direction,
+                    "entry":           _pos.get("open_price", entry),
+                    "sl":              _pos.get("sl", sl),
+                    "current_sl":      _pos.get("sl", sl),
+                    "tp1":             setup.tp1_price,
+                    "tp2":             setup.tp2_price,
+                    "tp3":             setup.tp3_price,
+                    "volume_original": lot_size,
+                    "tp1_taken":       False,
+                    "tp2_taken":       False,
+                    "scaled_in":       False,
+                    "last_profit":     0.0,
+                    "memory_trade_id": None,
+                    "entry_type":      setup.entry_type,
+                    "order_type":      order_type,
+                    "entry_ts":        time.time(),
+                    "session":         session,
+                    "entry_spread":    0.0,
+                }
+                _freq_floors = {"AGGRESSIVE": 1800, "NORMAL": 3600, "CONSERVATIVE": 7200}
+                if isinstance(state.recently_traded, dict):
+                    state.recently_traded[symbol] = time.time() + _freq_floors.get(_FREQ_MODE, 3600)
+                _rescued = True
+                send_telegram(
+                    f"📈 <b>NEW TRADE [LIVE] — {symbol} {direction}</b> (rescued)\n"
+                    f"Entry: <b>{_pos.get('open_price', entry):.5g}</b> | SL: <b>{_pos.get('sl', sl):.5g}</b>\n"
+                    f"Lots: <b>{lot_size}</b> | Ticket: <code>{_tk}</code>"
+                )
+                break
+        except Exception as _re:
+            log.debug(f"Late-order rescue failed: {_re}")
+        if _rescued:
+            return True
         log.warning(f"{symbol}: order rejected ({result}) — 60 s backoff")
         if isinstance(state.recently_traded, dict):
             state.recently_traded[symbol] = time.time() + 60
@@ -2428,8 +2476,9 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
         except Exception as _e:
             log.debug(f"record_signal hook error: {_e}")
 
-        # Mark symbol as recently traded with 2-hour TTL (allows re-entry next session)
-        _cooldown_secs = max(getattr(FREQ, "cooldown_scans", 6) * cfg.SCAN_INTERVAL * 10, 7200)
+        # Mark symbol as recently traded — cooldown scales with freq mode
+        _freq_floors = {"AGGRESSIVE": 1800, "NORMAL": 3600, "CONSERVATIVE": 7200}
+        _cooldown_secs = _freq_floors.get(_FREQ_MODE, 3600)
         if isinstance(state.recently_traded, dict):
             state.recently_traded[symbol] = time.time() + _cooldown_secs
         else:
@@ -2926,6 +2975,14 @@ def main():
                         if p.get("type") == "SELL" and any(x in p.get("symbol","") for x in ("EURUSD","GBPUSD","AUDUSD","NZDUSD"))
                         or p.get("type") == "BUY"  and any(x in p.get("symbol","") for x in ("USDCAD","USDCHF","USDJPY"))
                     )
+
+                    # Deduplicate: one trade per symbol per direction (highest confidence wins)
+                    _seen_sym: dict = {}
+                    for _s in high_conf:
+                        _key = (_s.symbol, _s.direction)
+                        if _key not in _seen_sym or _s.confidence > _seen_sym[_key].confidence:
+                            _seen_sym[_key] = _s
+                    high_conf = list(_seen_sym.values())
 
                     for setup in high_conf:
                         if open_count >= MAX_OPEN_TRADES:

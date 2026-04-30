@@ -744,15 +744,26 @@ def calculate_lot_size(equity: float, risk_pct: float, entry: float,
 
     lot_size = risk_amount / risk_per_lot
 
-    # Round down to lot step, then clamp to max_lot
+    # Round down to lot step, then clamp to broker max_lot
     lot_size = math.floor(lot_size / lot_step) * lot_step
     lot_size = max(min_lot, min(lot_size, max_lot))
 
-    # Hard notional exposure cap: never risk more than 20% of equity in one trade
-    if tick_value > 0 and tick_size > 0:
-        max_exposure_lots = (equity * 0.20) / (entry * tick_value / tick_size)
-        lot_size = min(lot_size, max_exposure_lots)
-        lot_size = max(min_lot, math.floor(lot_size / lot_step) * lot_step)
+    # Hard per-trade ceiling that scales with equity — prevents runaway sizing
+    # while allowing proper compounding as the account grows.
+    # Tiers (standard lots):  <$500 → 0.05  |  <$2k → 0.20  |  <$5k → 0.50  |  <$10k → 1.00  |  10k+ → 2% of equity in lots
+    if equity < 500:
+        lot_ceiling = 0.05
+    elif equity < 2_000:
+        lot_ceiling = 0.20
+    elif equity < 5_000:
+        lot_ceiling = 0.50
+    elif equity < 10_000:
+        lot_ceiling = 1.00
+    else:
+        lot_ceiling = math.floor((equity * 0.02 / 100) / lot_step) * lot_step  # 2% of equity in lots, capped
+
+    lot_size = min(lot_size, lot_ceiling)
+    lot_size = max(min_lot, math.floor(lot_size / lot_step) * lot_step)
 
     return round(lot_size, 2)
 

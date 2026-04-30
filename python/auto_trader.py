@@ -853,10 +853,15 @@ def send_command(command: str) -> str:
         return "PAPER|simulated"
 
     try:
+        # Purge any stale result left over from a previous timed-out command
+        try:
+            os.remove(RESULT_PATH)
+        except FileNotFoundError:
+            pass
         with open(CMD_PATH, "w") as f:
             f.write(command)
         # Poll for result — use try/except to avoid TOCTOU race
-        for _ in range(30):  # 3 second timeout
+        for _ in range(100):  # 10 second timeout (MetaQuotes demo can be slow)
             time.sleep(0.1)
             try:
                 with open(RESULT_PATH) as f:

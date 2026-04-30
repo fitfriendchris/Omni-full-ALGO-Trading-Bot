@@ -1286,10 +1286,12 @@ class AlertMonitor:
 
         for tid in current - self._trades:
             t    = state["active_trades"].get(tid, {})
-            sym  = t.get("symbol", "?")
-            dir_ = t.get("direction", "?")
-            ep   = t.get("entry_price", t.get("entry", 0))
-            sl   = t.get("current_sl", t.get("sl", 0))
+            sym  = t.get("symbol") or "?"
+            dir_ = t.get("direction") or "?"
+            if sym == "?" or dir_ == "?":
+                continue  # Skip ghost trades with missing data
+            ep   = float(t.get("entry_price") or t.get("entry") or 0)
+            sl   = float(t.get("current_sl") or t.get("sl") or 0)
             icon = "🟢" if dir_ == "BUY" else "🔴"
             send(self.chat_id,
                  f"{icon} <b>Trade Opened</b>\n"

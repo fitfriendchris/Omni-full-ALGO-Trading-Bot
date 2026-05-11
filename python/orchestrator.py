@@ -59,6 +59,7 @@ from signal_writers import (
     write_signals_json, prune_signals,
 )
 from pine_codegen import write_pine
+from amd_engine import detect_amd, AMDPhase, pip_size_for
 
 log = logging.getLogger("orchestrator")
 
@@ -170,12 +171,15 @@ def _load_open_positions(path: Optional[Path]) -> dict[str, PositionCtx]:
     out: dict[str, PositionCtx] = {}
     for r in raw or []:
         try:
+            initial_sl = float(r.get("initial_sl", r.get("sl", r["entry"])))
             out[r["symbol"]] = PositionCtx(
+                symbol=r["symbol"],
                 direction=r["direction"],
                 entry_price=float(r["entry"]),
                 current_price=float(r.get("current", r["entry"])),
-                sl=float(r["sl"]),
-                size=float(r.get("size", 0.0)),
+                initial_sl=initial_sl,
+                current_sl=float(r.get("current_sl", r.get("sl", initial_sl))),
+                volume=float(r.get("volume", r.get("size", 0.01))),
                 add_count=int(r.get("add_count", 0)),
             )
         except Exception as e:  # skip malformed rows
@@ -236,8 +240,10 @@ def run_cycle(
     open_positions = open_positions or {}
     watchlist = symbols or rules.get("watchlist", [])
     dt_cfg = rules.get("dual_tf", {}) or {}
-    htf_tf = dt_cfg.get("htf_timeframe", "H1")
-    ltf_tf = dt_cfg.get("ltf_timeframe", "M5")
+    htf_tf  = dt_cfg.get("htf_timeframe",   "H1")
+    ltf_tf  = dt_cfg.get("ltf_timeframe",   "M5")
+    # Macro timeframe for D1/H4 cascade confirmation (skipped on error/fixture)
+    macro_tf = dt_cfg.get("macro_timeframe", "H4")
 
     ts_now = datetime.now(timezone.utc)
     ts_iso = ts_now.isoformat()
@@ -267,8 +273,14 @@ def run_cycle(
 
     for symbol in watchlist:
         try:
-            htf_bars = _fetch_with_timeout(fetcher, symbol, htf_tf, n_htf)
-            ltf_bars = _fetch_with_timeout(fetcher, symbol, ltf_tf, n_ltf)
+            htf_bars   = _fetch_with_timeout(fetcher, symbol, htf_tf,   n_htf)
+            ltf_bars   = _fetch_with_timeout(fetcher, symbol, ltf_tf,   n_ltf)
+            # Fetch macro bars for H4/D1 cascade; silently skip on failure
+            macro_bars = None
+            try:
+                macro_bars = _fetch_with_timeout(fetcher, symbol, macro_tf, 100)
+            except Exception:
+                pass
 
             # Freshness check — skip if bars haven't been updated recently
             if not _bars_are_fresh(htf_bars):
@@ -300,7 +312,9 @@ def run_cycle(
             htf_snap = analyze(htf_bars)
             ltf_snap = analyze(ltf_bars)
 
-            sel: TradeSelection = select_trade(htf_bars, ltf_bars, rules=dt_cfg or None)
+            sel: TradeSelection = select_trade(htf_bars, ltf_bars,
+                                               rules=dt_cfg or None,
+                                               macro_bars=macro_bars)
 
             scale_act: Optional[ScaleAction] = None
             pos = open_positions.get(symbol)
@@ -309,6 +323,100 @@ def run_cycle(
                                            rules=rules.get("scaling"))
 
             sig = build_signal(symbol, ltf_tf, sel, scale=scale_act, ts=ts_now)
+
+            # AMD scan — runs on M15 bars; result merged into signal metadata.
+            try:
+                amd_cfg = rules.get("amd", {})
+                if amd_cfg.get("enabled", True):
+                    m15_bars = _fetch_with_timeout(fetcher, symbol, "M15", 200)
+                    if _bars_are_fresh(m15_bars):
+                        ps = pip_size_for(symbol)
+                        amd = detect_amd(
+                            m15_bars,
+                            pip_size=ps,
+                            asian_start_h=amd_cfg.get("asian_start_h", 0),
+                            asian_end_h=amd_cfg.get("asian_end_h", 7),
+                            min_confidence=amd_cfg.get("min_confidence", 0.50),
+                        )
+                        if amd is not None:
+                            amd_meta = {
+                                "phase":      amd.phase.value,
+                                "direction":  amd.direction,
+                                "confidence": round(amd.confidence, 3),
+                                "reasons":    amd.reasons,
+                            }
+                            if amd.asian_range:
+                                amd_meta["asian_high"] = amd.asian_range.high
+                                amd_meta["asian_low"]  = amd.asian_range.low
+                            if amd.phase == AMDPhase.DISTRIBUTION and amd.entry:
+                                amd_meta.update({
+                                    "entry":  amd.entry,
+                                    "sl":     amd.sl,
+                                    "tp1":    amd.tp1,
+                                    "tp2":    amd.tp2,
+                                    "tp3":    amd.tp3,
+                                    "rr_tp1": amd.rr_tp1,
+                                    "rr_tp2": amd.rr_tp2,
+                                    "rr_tp3": amd.rr_tp3,
+                                })
+                                # Elevate signal confidence when AMD aligns with
+                                # the dual-TF direction.
+                                if (amd.direction == "BULL" and sel.direction == "BULL") or \
+                                   (amd.direction == "BEAR" and sel.direction == "BEAR"):
+                                    bonus = min(0.15, amd.confidence * 0.20)
+                                    if hasattr(sig, "confidence"):
+                                        sig = sig.__class__(
+                                            **{**sig.__dict__,
+                                               "confidence": min(1.0, sig.confidence + bonus)}
+                                        )
+                                    amd_meta["dual_tf_aligned"] = True
+                                    amd_meta["confidence_bonus"] = round(bonus, 3)
+                                else:
+                                    amd_meta["dual_tf_aligned"] = False
+
+                            # HTF liquidity pools (always surfaced)
+                            if amd.htf_liquidity:
+                                amd_meta["htf_liquidity"] = [
+                                    {"price": lv.price, "kind": lv.kind,
+                                     "distance": round(lv.distance, 6)}
+                                    for lv in amd.htf_liquidity
+                                ]
+
+                            # Continuation (Stage 2) — re-accumulation → re-manip → D2
+                            if amd.continuation is not None:
+                                c = amd.continuation
+                                amd_meta["continuation"] = {
+                                    "direction":   c.direction,
+                                    "confidence":  round(c.confidence, 3),
+                                    "re_accum_high": c.re_accum.high,
+                                    "re_accum_low":  c.re_accum.low,
+                                    "re_accum_bars": c.re_accum.bar_count,
+                                    "re_manip_extreme": c.re_manip.extreme,
+                                    "entry":  c.entry,
+                                    "sl":     c.sl,
+                                    "tp1":    c.tp1,
+                                    "tp2":    c.tp2,
+                                    "tp3":    c.tp3,
+                                    "rr_tp1": c.rr_tp1,
+                                    "rr_tp2": c.rr_tp2,
+                                    "rr_tp3": c.rr_tp3,
+                                    "targets": [
+                                        {"price": t.price, "kind": t.kind}
+                                        for t in c.targets
+                                    ],
+                                    "reasons": c.reasons,
+                                }
+
+                            if hasattr(sig, "metadata") and isinstance(sig.metadata, dict):
+                                sig.metadata["amd"] = amd_meta
+                            log.info(
+                                "AMD %s: phase=%s dir=%s conf=%.2f%s",
+                                symbol, amd.phase.value, amd.direction, amd.confidence,
+                                f" +continuation@{amd.continuation.confidence:.2f}"
+                                if amd.continuation else "",
+                            )
+            except Exception as _amd_err:
+                log.debug("amd scan skipped for %s: %s", symbol, _amd_err)
 
             # Attach regime metadata if detector is available
             if _have_regime and detect_regime:

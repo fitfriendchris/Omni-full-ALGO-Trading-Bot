@@ -1,0 +1,117 @@
+{
+  "projects": [
+    {
+      "id": "apex",
+      "name": "APEX Coaching",
+      "repo": "fitfriendchris/Apex",
+      "local_path": "~/Apex",
+      "status": "production",
+      "tier": "high",
+      "checks": {
+        "deploy_status": {
+          "url": "https://fitfriendchris.github.io/Apex",
+          "enabled": true
+        },
+        "git_sync": {
+          "enabled": true,
+          "branch": "main"
+        },
+        "supabase_health": {
+          "enabled": true
+        },
+        "stripe_integrity": {
+          "enabled": true
+        }
+      },
+      "alert_channels": ["dashboard", "log"]
+    },
+    {
+      "id": "omni",
+      "name": "Omni ICT Algo Trading Bot",
+      "repo": "fitfriendchris/Omni-full-ALGO-Trading-Bot",
+      "local_path": "~/Omni-full-ALGO-Trading-Bot",
+      "status": "production",
+      "tier": "critical",
+      "checks": {
+        "mt5_connection": {
+          "enabled": true,
+          "data_path": "~/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/users/user/AppData/Roaming/MetaQuotes/Terminal/Common/Files/omni_data.json",
+          "max_stale_seconds": 60
+        },
+        "bot_processes": {
+          "enabled": true,
+          "processes": ["auto_trader.py", "watchdog.py", "dashboard.py", "telegram_bot.py", "hermes_bridge.py"]
+        },
+        "hermes_health": {
+          "enabled": true,
+          "processes": ["hermes", "ollama"],
+          "max_memory_mb": 450
+        },
+        "account_health": {
+          "enabled": true,
+          "min_balance": 10.0
+        },
+        "git_sync": {
+          "enabled": true,
+          "branch": "main"
+        },
+        "test_suite": {
+          "enabled": true
+        }
+      },
+      "alert_channels": ["dashboard", "log", "telegram"]
+    },
+    {
+      "id": "circle",
+      "name": "THE CIRCLE",
+      "status": "development",
+      "tier": "medium",
+      "checks": {
+        "launch_readiness": {
+          "enabled": true,
+          "checklist_path": "~/workspace/THE_CIRCLE/launch_checklist.md"
+        }
+      },
+      "alert_channels": ["log"]
+    },
+    {
+      "id": "vape",
+      "name": "Vape Vending Business",
+      "status": "research",
+      "tier": "low",
+      "checks": {
+        "legal_compliance": {
+          "enabled": true,
+          "last_review": "2026-04-01"
+        },
+        "venue_pipeline": {
+          "enabled": true
+        }
+      },
+      "alert_channels": ["log"]
+    },
+    {
+      "id": "digital_products",
+      "name": "Digital Fitness Products",
+      "status": "maintenance",
+      "tier": "low",
+      "checks": {
+        "linktree_uptime": {
+          "enabled": true,
+          "url": "https://linktr.ee/fitfriendchris"
+        },
+        "sales_analytics": {
+          "enabled": true
+        }
+      },
+      "alert_channels": ["log"]
+    }
+  ],
+  "settings": {
+    "check_interval_minutes": 15,
+    "report_interval_hours": 4,
+    "deep_audit_interval_hours": 24,
+    "max_concurrent_audits": 2,
+    "alert_cooldown_minutes": 30
+  }
+}

@@ -27,7 +27,10 @@ volatility layers still produce sensible trails from bars alone.
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from smart_trailing_stop import (
@@ -36,6 +39,8 @@ from smart_trailing_stop import (
 )
 
 log = logging.getLogger(__name__)
+
+_SCAN_CTX_PATH = Path(__file__).resolve().parent.parent / "shared" / "scan_context.json"
 
 
 def is_enabled(rules: dict) -> bool:
@@ -105,6 +110,27 @@ def _build_context(pos: dict, charts: dict, scan_context: Optional[dict]) -> Mar
     symbol = pos.get("symbol", "")
     chart  = charts.get(symbol, {}) if isinstance(charts, dict) else {}
 
+    # ── scan_context injection from orchestrator's latest ICT scan ────
+    # orchestrator writes a per-symbol scan blob to shared/scan_context.json
+    # on every cycle. If the file exists and is fresh (< 90s), load it and
+    # merge it into the adapter's context so smart_trail gets real structure
+    # (swing highs / lows / CHoCH flags) instead of empty fallbacks.
+    _scan_blob: dict = {}
+    _scan_age_s: float = float("inf")
+    try:
+        if _SCAN_CTX_PATH.exists():
+            _scan_raw = json.loads(_SCAN_CTX_PATH.read_text())
+            _scan_ts = datetime.fromisoformat(_scan_raw.get("ts", "1970-01-01T00:00:00+00:00"))
+            _scan_age_s = (datetime.now(timezone.utc) - _scan_ts).total_seconds()
+            if _scan_age_s < 90:
+                _scan_blob = _scan_raw.get("data", {})
+    except Exception:
+        pass
+
+    # Prefer orchestrator scan context over stale auto_trader last_scan_context
+    if _scan_age_s < 90 and symbol in _scan_blob:
+        scan_context = _scan_blob
+
     bars_m15 = _bars_from_chart(chart, "M15")
     bars_h1  = _bars_from_chart(chart, "H1")
 
@@ -136,7 +162,8 @@ def _build_position(pos: dict, pip_size: float) -> Optional[Position]:
         direction = pos.get("type", "").upper()
         if direction not in ("BUY", "SELL"):
             return None
-        entry = float(pos.get("open_price", 0))
+        # MT5 exports "open_price"; legacy code may use "entry". Accept both.
+        entry = float(pos.get("open_price", pos.get("entry", 0)))
         sl    = float(pos.get("sl", 0))
         cur   = float(pos.get("current_price", 0))
         if entry <= 0 or sl <= 0 or cur <= 0:

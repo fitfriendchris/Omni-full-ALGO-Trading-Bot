@@ -1,0 +1,15 @@
+#!/bin/bash
+# Omni Monitor — Scheduled Health Checks
+# Install via: crontab -e
+
+# Every 15 minutes: quick health check
+*/15 * * * * cd ~/Omni-full-ALGO-Trading-Bot && source .venv/bin/activate && python monitors/omni_monitor.py --once >> monitors/logs/cron.log 2>&1
+
+# Every 4 hours: detailed audit report generation
+0 */4 * * * cd ~/Omni-full-ALGO-Trading-Bot && source .venv/bin/activate && python monitors/omni_monitor.py --once --full-report >> monitors/logs/audit.log 2>&1
+
+# Daily at 8 AM CDT: comprehensive deep audit of all projects
+0 13 * * * cd ~/Omni-full-ALGO-Trading-Bot && source .venv/bin/activate && python monitors/omni_monitor.py --once --deep-audit >> monitors/logs/deep_audit.log 2>&1
+
+# Every 5 minutes during market hours (8 AM - 5 PM CDT): MT5 critical monitoring
+*/5 8-17 * * 1-5 cd ~/Omni-full-ALGO-Trading-Bot && source .venv/bin/activate && python monitors/omni_monitor.py --project omni --critical-only >> monitors/logs/omni_critical.log 2>&1

@@ -2,8 +2,10 @@
 ai_engine.py — OMNI AI Market Regime Analyzer & Parameter Adapter
 Runs as a background daemon thread, writes ai_state.json every 5 minutes.
 
-Optional Claude integration: set ANTHROPIC_API_KEY to enable NL briefings.
-pip install anthropic  (already in requirements.txt)
+LLM insight is routed through llm_router.py, which supports:
+  Ollama (local)   → set OMNI_AI_PROVIDER=ollama
+  Claude API       → set ANTHROPIC_API_KEY + OMNI_AI_PROVIDER=claude
+  Hybrid (default) → simple summaries via Ollama, complex ICT via Claude
 
 Exports:
     OmniAI            — background engine class
@@ -21,6 +23,8 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Optional
+
+from llm_router import llm_insight
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 from pathlib import Path as _Path
@@ -348,90 +352,7 @@ def _evaluate_signals(data: dict, regime: dict) -> list:
     return signals[:10]
 
 
-# ── Claude API insight (optional) ─────────────────────────────────────────────
-def _claude_insight(regime: dict, params: dict, data: dict) -> str:
-    """Call Claude API for a natural-language briefing. Falls back silently."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return _rule_insight(regime, params)
-
-    try:
-        import anthropic
-
-        account = data.get("account", {})
-        top_prices = data.get("prices", [])[:6]
-        price_txt = "\n".join(
-            f"  {p['symbol']}: {p['bid']} (spread {p['spread']})"
-            for p in top_prices if p.get("bid")
-        )
-
-        # Gather open positions for context (not for bias detection)
-        positions  = data.get("positions", [])
-        pos_summary = ", ".join(
-            f"{p.get('symbol')} {p.get('type')} {p.get('profit',0):+.2f}USD"
-            for p in positions[:4]
-        ) or "None"
-
-        # Chart structure for key symbols
-        chart_context = []
-        for sym, sym_charts in list(data.get("charts", {}).items())[:4]:
-            d1 = sym_charts.get("D1", [])
-            h4 = sym_charts.get("H4", [])
-            if d1 and h4:
-                d1_close = d1[0].get("close", d1[0].get("c", 0))
-                h4_close = h4[0].get("close", h4[0].get("c", 0))
-                chart_context.append(f"  {sym}: D1_close={d1_close:.5g}, H4_close={h4_close:.5g}")
-        chart_txt = "\n".join(chart_context) or "  (no chart data)"
-
-        prompt = (
-            f"=== ICT MARKET ANALYSIS REQUEST ===\n"
-            f"Time: {regime['session']} session | AMD Phase: {regime['amd_stage']}\n"
-            f"Market Regime: {regime['phase']} | Structural Bias: {regime['bias']}\n"
-            f"Kill Zone Active: {regime['killzone_active']} | Regime Confidence: {regime['confidence']}%\n\n"
-            f"Account: {account.get('equity', 0):.2f} {account.get('currency', 'USD')} equity\n"
-            f"Open Positions: {pos_summary}\n\n"
-            f"Live Prices:\n{price_txt}\n\n"
-            f"D1/H4 Structure Sample:\n{chart_txt}\n\n"
-            f"Bot Parameters: risk={params['base_risk_pct']}% | "
-            f"minRR={params['min_rr']} | minConf={params['min_confidence']} | "
-            f"priority={params['priority_setups']}\n\n"
-            "Provide a focused ICT analysis:\n"
-            "1. Current market maker model phase (accumulation/manipulation/distribution)\n"
-            "2. Which 1-2 symbols have the best setup potential right now and why\n"
-            "3. One specific risk to watch (liquidity level, session overlap, spread concern)\n"
-            "Be concise (3-4 sentences total). Use ICT terminology: OB, FVG, EQH/EQL, SMT, AMD."
-        )
-
-        import concurrent.futures
-        import os as _os
-        client = anthropic.Anthropic(api_key=api_key)
-        model = _os.getenv("OMNI_CLAUDE_MODEL", "claude-sonnet-4-6")
-        def _call():
-            return client.messages.create(
-                model=model,
-                max_tokens=400,
-                system=(
-                    "You are an expert ICT (Inner Circle Trader) market analyst embedded in a live "
-                    "automated trading system. Your analysis directly influences trading decisions. "
-                    "Use precise ICT terminology. Be actionable and specific — no generic advice. "
-                    "Reference the actual price data and session context provided."
-                ),
-                messages=[{"role": "user", "content": prompt}],
-            )
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(_call)
-            try:
-                msg = future.result(timeout=15)
-            except concurrent.futures.TimeoutError:
-                log.warning("Claude API timeout after 15s; using rule-based insight")
-                return _rule_insight(regime, params)
-        return msg.content[0].text.strip()
-
-    except Exception as e:
-        log.debug("Claude insight failed: %s", e)
-        return _rule_insight(regime, params)
-
-
+# ── Fallback insight (rule-based, no LLM required) ─────────────────────────
 def _rule_insight(regime: dict, params: dict) -> str:
     """Rule-based insight when API is unavailable."""
     session  = regime.get("session", "—")
@@ -521,7 +442,7 @@ class OmniAI:
             )
 
         signals = _evaluate_signals(data, regime)
-        insight = _claude_insight(regime, self._cached_params, data)
+        insight = llm_insight(regime, self._cached_params, data)
 
         _save_ai_state({
             "timestamp": datetime.now(timezone.utc).isoformat(),

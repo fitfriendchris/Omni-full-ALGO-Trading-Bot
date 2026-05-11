@@ -10,5 +10,4 @@ tpCol   = input.color(color.new(color.green,   0),  "TP color")
 lineW   = input.int(2, "Line width", minval=1, maxval=5)
 
 // ── Signals ───────────────────────────────
-// [0] skipped: AUDUSD BEAR none
-// [1] skipped: USDCAD BEAR none
+// (no signals this cycle)

@@ -402,13 +402,16 @@ def find_order_blocks(bars: list[Bar], displacement_atr_mult: float = 1.5,
                     ))
                     break
 
-    # Mitigation: an OB is mitigated once a later bar trades back into its zone
+    # Mitigation: OB is invalidated only when price CLOSES through the OB body.
+    # A wick touch or partial fill is the ENTRY zone — don't mark it consumed.
+    # BULL OB body: (body_bot, body_top) = (close, open) of the bearish anchor.
+    # Fully mitigated when a subsequent bar closes BELOW body_bot (bearish close-through).
     for ob in out:
         for k in range(ob.break_idx + 1, n):
-            if ob.side == "BULL" and bars[k].low <= ob.top:
+            if ob.side == "BULL" and bars[k].close < ob.body_bot:
                 ob.mitigated = True
                 break
-            if ob.side == "BEAR" and bars[k].high >= ob.bot:
+            if ob.side == "BEAR" and bars[k].close > ob.body_top:
                 ob.mitigated = True
                 break
 
@@ -527,15 +530,19 @@ class SMCSnapshot:
 
 
 def _mark_fvg_mitigations(bars: list[Bar], fvgs: list[FairValueGap]) -> None:
-    """Mark FVGs as mitigated once a subsequent bar trades back into the gap zone."""
+    """Mark FVGs mitigated only when price closes THROUGH the full gap.
+    A bar trading into (but not closing through) the gap is the entry zone.
+    BULL FVG [bot, top]: fully consumed when a bar closes below bot.
+    BEAR FVG [bot, top]: fully consumed when a bar closes above top.
+    """
     for fvg in fvgs:
         if fvg.mitigated:
             continue
         for bar in bars[fvg.middle_idx + 1:]:
-            if fvg.side == "BULL" and bar.low <= fvg.top:
+            if fvg.side == "BULL" and bar.close < fvg.bot:
                 fvg.mitigated = True
                 break
-            if fvg.side == "BEAR" and bar.high >= fvg.bot:
+            if fvg.side == "BEAR" and bar.close > fvg.top:
                 fvg.mitigated = True
                 break
 

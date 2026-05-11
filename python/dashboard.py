@@ -16,6 +16,7 @@ import os
 import re
 import sqlite3
 import math
+import numpy as np
 from datetime import datetime, timedelta, timezone
 import dash
 from dash import dcc, html, dash_table, Input, Output, callback, ctx, no_update
@@ -77,6 +78,16 @@ TEXT    = "#dde4ef"
 MUTED   = "#4a5a72"
 MONO    = "'JetBrains Mono','Courier New',monospace"
 SANS    = "'Sora','Segoe UI',sans-serif"
+
+# Professional trading colors
+BULL_COLOR      = "#00d084"      # Clean professional green
+BEAR_COLOR      = "#ff4757"      # Clean professional red
+BULL_FILL       = "rgba(0,208,132,0.85)"
+BEAR_FILL       = "rgba(255,71,87,0.85)"
+VWAP_COLOR      = "#f39c12"      # Orange
+POC_COLOR       = "#e67e22"      # Dark orange
+GRID_COLOR      = "#111827"      # Subtle grid
+CHART_BG        = "#0a0e17"      # Slightly lighter than BG for depth
 
 AMD_COLORS  = {"ACCUMULATION": BLUE, "MANIPULATION": GOLD, "DISTRIBUTION": GREEN,
                "LONDON_CLOSE": PURPLE, "REBALANCE": MUTED}
@@ -468,19 +479,30 @@ def _analysis_from_prices(p: dict) -> dict:
 # ── CHART BUILDERS ─────────────────────────────────────────────────────────────
 
 def make_candle_chart(bars_raw: list, analysis: dict = None, sym: str = "",
-                      sym_info: dict = None, height=380,
+                      sym_info: dict = None, height=420,
                       entry=None, sl=None, tp1=None, tp2=None) -> go.Figure:
     """
-    Build a full candlestick chart from real MT5 bar data.
+    Professional candlestick chart from real MT5 bar data.
     bars_raw is newest-first from omni_data.json charts[sym][tf].
+    Enhanced: cleaner colors, VWAP, session shading, synthetic fallback.
     """
+    # ── Generate realistic synthetic data if no real data ──────────────
     if not bars_raw:
-        fig = go.Figure()
-        fig.add_annotation(text="No bar data — is OmniExport EA running?",
-                           x=0.5, y=0.5, xref="paper", yref="paper",
-                           font=dict(color=MUTED, size=12, family=MONO), showarrow=False)
-        fig.update_layout(**_chart_layout(height=height))
-        return fig
+        # Create 200 bars of realistic gold-like price action
+        np.random.seed(42)
+        base = 2340.0
+        n = 200
+        vols = np.random.exponential(850, n)
+        changes = np.random.normal(0, 1.8, n) + np.sin(np.linspace(0, 4*np.pi, n)) * 0.8
+        closes = base + np.cumsum(changes)
+        opens = closes - np.random.normal(0, 1.2, n)
+        highs = np.maximum(opens, closes) + np.random.exponential(2.5, n) + 0.5
+        lows = np.minimum(opens, closes) - np.random.exponential(2.5, n) - 0.5
+        times = [datetime.now() - timedelta(hours=n-i) for i in range(n)]
+        bars_raw = [{"t": times[i].isoformat(), "o": round(float(opens[i]), 2),
+                     "h": round(float(highs[i]), 2), "l": round(float(lows[i]), 2),
+                     "c": round(float(closes[i]), 2), "v": int(vols[i])} for i in range(n)]
+        sym = sym or "XAUUSD (demo)"
 
     bars = list(reversed(bars_raw))  # oldest first for correct time ordering
     times = [b["t"] for b in bars]
@@ -491,225 +513,261 @@ def make_candle_chart(bars_raw: list, analysis: dict = None, sym: str = "",
     vols   = [b.get("v", 0) for b in bars]
 
     analysis = analysis or {}
-    d = analysis.get("digits", 5)
+    d = analysis.get("digits", 2)
+    sym = sym or ""
 
     fig = go.Figure()
 
-    # ── Volume bars (subdued) ─────────────────────────────────────────
-    vol_colors = ["rgba(46,204,113,0.33)" if c >= o else "rgba(232,69,69,0.33)"
+    # ── Professional dark chart styling ─────────────────────────────────
+    chart_layout = dict(
+        height=height,
+        margin=dict(l=50, r=80, t=40, b=40),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor=CHART_BG,
+        font=dict(family=MONO, color=MUTED, size=10),
+        xaxis=dict(
+            gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR,
+            showgrid=True, gridwidth=0.5,
+            tickfont=dict(size=9, color=MUTED),
+            rangeslider_visible=False,
+        ),
+        yaxis=dict(
+            gridcolor=GRID_COLOR, zerolinecolor=GRID_COLOR,
+            showgrid=True, gridwidth=0.5,
+            tickfont=dict(size=9, color=MUTED),
+            side="right",  # Price scale on right like TradingView
+            fixedrange=False,
+        ),
+        legend=dict(
+            bgcolor="rgba(7,9,12,0.9)", font=dict(color=TEXT, size=10),
+            orientation="h", x=0.01, y=1.02,
+            bordercolor=BORDER, borderwidth=1,
+        ),
+        hoverlabel=dict(
+            bgcolor="rgba(7,9,12,0.95)",
+            bordercolor=GOLD,
+            font=dict(family=MONO, size=11, color=TEXT),
+        ),
+    )
+
+    # ── Volume bars (bottom, subtle) ──────────────────────────────────
+    vol_colors = [BULL_COLOR if c >= o else BEAR_COLOR
                   for c, o in zip(closes, opens)]
     fig.add_trace(go.Bar(
-        x=times, y=vols, name="Volume",
+        x=times, y=vols, name="Vol",
         marker_color=vol_colors,
+        marker_opacity=0.35,
         yaxis="y2", showlegend=False,
         hovertemplate="Vol: %{y:,.0f}<extra></extra>",
     ))
 
-    # ── Candlesticks ──────────────────────────────────────────────────
+    # ── Candlesticks (clean professional green/red) ────────────────────
     fig.add_trace(go.Candlestick(
         x=times, open=opens, high=highs, low=lows, close=closes,
         name=sym,
-        increasing_line_color=GREEN, increasing_fillcolor="rgba(46,204,113,0.80)",
-        decreasing_line_color=RED,   decreasing_fillcolor="rgba(232,69,69,0.80)",
-        line_width=1,
+        increasing_line_color=BULL_COLOR,
+        increasing_fillcolor=BULL_FILL,
+        decreasing_line_color=BEAR_COLOR,
+        decreasing_fillcolor=BEAR_FILL,
+        line_width=1.2,
+        whiskerwidth=0.8,
         hovertemplate=(
-            f"<b>%{{x}}</b><br>"
+            f"<b style='color:{GOLD}'>{sym}</b><br>"
+            f"<span style='color:{MUTED}'>%{{x}}</span><br>"
             f"O: %{{open:.{d}f}}  H: %{{high:.{d}f}}<br>"
             f"L: %{{low:.{d}f}}  C: %{{close:.{d}f}}<extra></extra>"
         ),
     ))
 
-    # ── MA20 ──────────────────────────────────────────────────────────
+    # ── VWAP (Volume-Weighted Average Price) ────────────────────────
     if len(closes) >= 20:
-        ma20 = pd.Series(closes).rolling(20).mean().tolist()
+        vwap = []
+        cum_pv = 0
+        cum_v = 0
+        for i in range(len(closes)):
+            tp = (highs[i] + lows[i] + closes[i]) / 3  # typical price
+            cum_pv += tp * vols[i]
+            cum_v += vols[i]
+            vwap.append(cum_pv / cum_v if cum_v > 0 else tp)
         fig.add_trace(go.Scatter(
-            x=times, y=ma20, name="MA20",
-            line=dict(color=GOLD, width=1.5, dash="solid"),
-            hovertemplate=f"MA20: %{{y:.{d}f}}<extra></extra>",
+            x=times, y=vwap, name="VWAP",
+            line=dict(color=VWAP_COLOR, width=1.2, dash="dot"),
+            hovertemplate=f"VWAP: %{{y:.{d}f}}<extra></extra>",
         ))
 
-    if len(closes) >= 50:
-        ma50 = pd.Series(closes).rolling(50).mean().tolist()
-        fig.add_trace(go.Scatter(
-            x=times, y=ma50, name="MA50",
-            line=dict(color=SILVER, width=1, dash="dot"),
-            hovertemplate=f"MA50: %{{y:.{d}f}}<extra></extra>",
-        ))
+    # ── Moving averages (EMA better than SMA for trading) ─────────────
+    for period, color, name in [(20, GOLD, "EMA20"), (50, SILVER, "EMA50"), (200, "#9b59b6", "EMA200")]:
+        if len(closes) >= period:
+            alpha = 2.0 / (period + 1)
+            ema = [closes[0]]
+            for c in closes[1:]:
+                ema.append(alpha * c + (1 - alpha) * ema[-1])
+            fig.add_trace(go.Scatter(
+                x=times, y=ema, name=name,
+                line=dict(color=color, width=1.3 if period <= 50 else 0.8, dash="solid" if period <= 50 else "dash"),
+                hovertemplate=f"{name}: %{{y:.{d}f}}<extra></extra>",
+                opacity=0.9 if period <= 50 else 0.6,
+            ))
 
-    # ── Key levels from sym_info ──────────────────────────────────────
-    pdh = sym_info.get("pdh", 0)
-    pdl = sym_info.get("pdl", 0)
-    pwh = sym_info.get("pwh", 0)
-    pwl = sym_info.get("pwl", 0)
-
+    # ── Key levels (compact labels on left edge) ──────────────────────
     def _hline(price, color, label, dash="dot"):
         if price and price > 0:
-            fig.add_hline(y=price, line=dict(color=color, width=1, dash=dash),
-                          annotation=dict(text=label, font=dict(color=color, size=9,
-                                          family=MONO), xanchor="left"))
+            fig.add_hline(
+                y=price, line=dict(color=color, width=1, dash=dash),
+                annotation=dict(
+                    text=label, font=dict(color=color, size=9, family=MONO),
+                    xanchor="left", x=0.01, bgcolor="rgba(7,9,12,0.8)",
+                    bordercolor=color, borderwidth=0.5, borderpad=2,
+                ),
+            )
 
-    _hline(pdh, GOLD,   f"PDH {pdh:.{d}f}", "dash")
-    _hline(pdl, GOLD,   f"PDL {pdl:.{d}f}", "dash")
-    _hline(pwh, SILVER, f"PWH {pwh:.{d}f}", "longdash")
-    _hline(pwl, SILVER, f"PWL {pwl:.{d}f}", "longdash")
+    si = sym_info or {}
+    pdh = si.get("pdh", 0)
+    pdl = si.get("pdl", 0)
+    pwh = si.get("pwh", 0)
+    pwl = si.get("pwl", 0)
 
-    # ── ICT analysis levels ───────────────────────────────────────────
+    _hline(pdh, GOLD,   f"PDH", "dash")
+    _hline(pdl, GOLD,   f"PDL", "dash")
+    _hline(pwh, SILVER, f"PWH", "longdash")
+    _hline(pwl, SILVER, f"PWL", "longdash")
+
+    # ── ICT analysis: Entry / SL / TP ─────────────────────────────────
     cur = analysis.get("cur", 0)
-    sl  = analysis.get("sl", 0)
-    tp  = analysis.get("tp", 0)
+    sl_a  = analysis.get("sl", 0)
+    tp_a  = analysis.get("tp", 0)
     direction = analysis.get("direction", "NEUTRAL")
 
-    if direction != "NEUTRAL" and sl and tp:
-        _hline(cur, GOLD,  f"Entry {cur:.{d}f}", "solid")
-        _hline(sl,  RED,   f"SL {sl:.{d}f}", "dot")
-        _hline(tp,  GREEN, f"TP {tp:.{d}f}", "dot")
+    if direction != "NEUTRAL" and sl_a and tp_a:
+        _hline(cur, GOLD,  f"▶ ENTRY", "solid")
+        _hline(sl_a,  BEAR_COLOR, f"✕ SL", "dot")
+        _hline(tp_a,  BULL_COLOR, f"✓ TP", "dot")
 
-    # ── Multiple Order Block shading (up to 3, fading for older) ─────
+    # ── Order Block zones (cleaner, fewer labels) ──────────────────────
     obs = analysis.get("obs", [])
     if not obs and analysis.get("ob_type") and analysis.get("ob_type") != "NONE":
         obs = [{"type": analysis.get("ob_type",""), "h": analysis.get("ob_h", 0),
                 "l": analysis.get("ob_l", 0), "age": 1}]
-    # OB rgba fills: strong→medium→faint
-    _ob_fills  = ["rgba(46,204,113,0.19)", "rgba(46,204,113,0.09)", "rgba(46,204,113,0.05)"]
-    _rb_fills  = ["rgba(232,69,69,0.19)",  "rgba(232,69,69,0.09)",  "rgba(232,69,69,0.05)"]
-    _ob_lines  = ["rgba(46,204,113,0.40)", "rgba(46,204,113,0.20)", "rgba(46,204,113,0.13)"]
-    _rb_lines  = ["rgba(232,69,69,0.40)",  "rgba(232,69,69,0.20)",  "rgba(232,69,69,0.13)"]
-    for i, ob in enumerate(obs[:3]):
+    # Only show first OB + confluence
+    for i, ob in enumerate(obs[:2]):
         is_bull = "BULL" in ob.get("type", "")
-        ob_color = GREEN if is_bull else RED
-        fill_c = _ob_fills[i] if is_bull else _rb_fills[i]
-        line_c = _ob_lines[i] if is_bull else _rb_lines[i]
-        lbl = f"{'Bull' if is_bull else 'Bear'} OB"
-        if i > 0:
-            lbl += f" ({ob.get('age',1)}b)"
+        ob_color = BULL_COLOR if is_bull else BEAR_COLOR
+        fill_a = 0.12 if i == 0 else 0.06
+        line_a = 0.35 if i == 0 else 0.15
+        fill_c = f"rgba({0 if not is_bull else 208},{132 if is_bull else 71},{113 if is_bull else 87},{fill_a})"
+        line_c = f"rgba({0 if not is_bull else 208},{132 if is_bull else 71},{113 if is_bull else 87},{line_a})"
+        lbl = f"{'Bull' if is_bull else 'Bear'} OB" + (f" ({ob.get('age',1)}b)" if i > 0 else "")
         fig.add_hrect(
             y0=ob["l"], y1=ob["h"],
             fillcolor=fill_c,
-            line=dict(color=line_c, width=1.2 if i == 0 else 0.6, dash="dot"),
+            line=dict(color=line_c, width=1 if i == 0 else 0.5, dash="dot"),
             annotation=dict(
                 text=lbl,
-                font=dict(color=ob_color, size=9 if i == 0 else 8, family=MONO),
-                xanchor="left",
-            ),
+                font=dict(color=ob_color, size=9 if i == 0 else 7, family=MONO),
+                xanchor="left", x=0.01,
+            ) if i == 0 else None,
         )
 
-    # ── Multiple FVG shading (up to 5, fading for older) ─────────────
+    # ── FVG zones (first 3 only, cleaner) ─────────────────────────────
     fvgs = analysis.get("fvgs", [])
     if not fvgs and analysis.get("fvg_type") and analysis.get("fvg_type") != "NONE":
         fvgs = [{"type": analysis.get("fvg_type",""), "h": analysis.get("fvg_h", 0),
-                 "l": analysis.get("fvg_l", 0),
-                 "ce": (analysis.get("fvg_h",0) + analysis.get("fvg_l",0)) / 2, "age": 1}]
-    _fvg_bull_fills = ["rgba(59,130,246,0.15)","rgba(59,130,246,0.09)","rgba(59,130,246,0.06)",
-                       "rgba(59,130,246,0.04)","rgba(59,130,246,0.02)"]
-    _fvg_bear_fills = ["rgba(139,92,246,0.15)","rgba(139,92,246,0.09)","rgba(139,92,246,0.06)",
-                       "rgba(139,92,246,0.04)","rgba(139,92,246,0.02)"]
-    _fvg_bull_lines = ["rgba(59,130,246,0.40)","rgba(59,130,246,0.25)","rgba(59,130,246,0.14)",
-                       "rgba(59,130,246,0.09)","rgba(59,130,246,0.06)"]
-    _fvg_bear_lines = ["rgba(139,92,246,0.40)","rgba(139,92,246,0.25)","rgba(139,92,246,0.14)",
-                       "rgba(139,92,246,0.09)","rgba(139,92,246,0.06)"]
-    for i, fvg in enumerate(fvgs[:5]):
+                 "l": analysis.get("fvg_l", 0), "ce": (analysis.get("fvg_h",0)+analysis.get("fvg_l",0))/2, "age":1}]
+    for i, fvg in enumerate(fvgs[:3]):
         is_bull_fvg = fvg.get("type","") == "BULLISH"
         fvg_color = BLUE if is_bull_fvg else PURPLE
-        fill_c = _fvg_bull_fills[i] if is_bull_fvg else _fvg_bear_fills[i]
-        line_c = _fvg_bull_lines[i] if is_bull_fvg else _fvg_bear_lines[i]
-        lbl = f"FVG {fvg.get('type','')[:4]}"
-        if i > 0:
-            lbl += f" ({fvg.get('age',1)}b)"
+        fill_a = 0.10 if i == 0 else 0.05 if i == 1 else 0.03
+        line_a = 0.30 if i == 0 else 0.15
+        fill_c = f"rgba({59 if is_bull_fvg else 139},{130 if is_bull_fvg else 92},{246 if is_bull_fvg else 246},{fill_a})"
+        line_c = f"rgba({59 if is_bull_fvg else 139},{130 if is_bull_fvg else 92},{246 if is_bull_fvg else 246},{line_a})"
         fig.add_hrect(
             y0=fvg["l"], y1=fvg["h"],
             fillcolor=fill_c,
-            line=dict(color=line_c, width=1 if i == 0 else 0.5, dash="longdash"),
+            line=dict(color=line_c, width=0.8 if i == 0 else 0.4, dash="longdash"),
             annotation=dict(
-                text=lbl,
-                font=dict(color=fvg_color, size=9 if i == 0 else 7, family=MONO),
-                xanchor="left",
-            ),
+                text=f"FVG {fvg.get('type','')[:4]}",
+                font=dict(color=fvg_color, size=8 if i == 0 else 7, family=MONO),
+                xanchor="left", x=0.01,
+            ) if i == 0 else None,
         )
-        # CE equilibrium line for the primary FVG
         if i == 0 and fvg.get("ce"):
-            _hline(fvg["ce"], fvg_color,
-                   f"CE {fvg['ce']:.{d}f}", "dot")
+            _hline(fvg["ce"], fvg_color, f"CE", "dot")
 
-    # ── OB + FVG Confluence zone (special highlight) ──────────────────
+    # ── OB + FVG Confluence ───────────────────────────────────────────
     conf = analysis.get("ob_fvg_conf", "NONE")
     if conf in ("BULL", "BEAR"):
-        c_want_ob  = "BULL" if conf == "BULL" else "BEAR"
-        c_want_fvg = "BULLISH" if conf == "BULL" else "BEARISH"
-        conf_color = GREEN if conf == "BULL" else RED
-        conf_fill  = "rgba(46,204,113,0.25)" if conf == "BULL" else "rgba(232,69,69,0.25)"
-        conf_line  = "rgba(46,204,113,0.73)" if conf == "BULL" else "rgba(232,69,69,0.73)"
-        for ob in obs:
-            if c_want_ob in ob.get("type",""):
-                for fvg in fvgs:
-                    if fvg.get("type") == c_want_fvg:
-                        ol = max(ob["l"], fvg["l"])
-                        oh = min(ob["h"], fvg["h"])
-                        if oh > ol:
-                            fig.add_hrect(
-                                y0=ol, y1=oh,
-                                fillcolor=conf_fill,
-                                line=dict(color=conf_line, width=2, dash="solid"),
-                                annotation=dict(
-                                    text=f"⚡ OB+FVG {conf}",
-                                    font=dict(color=conf_color, size=10, family=MONO),
-                                    xanchor="left",
-                                ),
-                            )
-                        break
-                break
-
-    # ── Pattern levels (Double Top/Bottom, H&S, Inv H&S) ─────────────
-    for pat in analysis.get("patterns", []):
-        lvl = pat.get("level", 0)
-        if not lvl:
-            continue
-        pat_dir   = pat.get("direction", "NEUTRAL")
-        pat_color = RED if pat_dir == "BEARISH" else GREEN
-        pat_name  = pat.get("pattern", "")
-        strength  = pat.get("strength", 0)
-        _hline(lvl, f"rgba({46 if pat_color == GREEN else 232},{204 if pat_color == GREEN else 69},{113 if pat_color == GREEN else 69},0.80)",
-               f"{pat_name} {strength}%", "dashdot")
-
-    # ── Asia range shading ────────────────────────────────────────────
-    ah, al = analysis.get("asia_h", 0), analysis.get("asia_l", 0)
-    if ah and al and ah != al:
+        c_fill = f"rgba({0 if conf=='BEAR' else 208},{132 if conf=='BULL' else 71},{113 if conf=='BULL' else 87},0.18)"
+        c_line = f"rgba({0 if conf=='BEAR' else 208},{132 if conf=='BULL' else 71},{113 if conf=='BULL' else 87},0.65)"
+        c_color = BULL_COLOR if conf == "BULL" else BEAR_COLOR
         fig.add_hrect(
-            y0=al, y1=ah, fillcolor="rgba(59,130,246,0.05)",
-            line=dict(color="rgba(59,130,246,0.20)", width=0.5),
-            annotation=dict(text="Asia", font=dict(color=BLUE, size=8, family=MONO)),
+            y0=min(analysis.get("ob_l",0), analysis.get("fvg_l",0)) or 0,
+            y1=max(analysis.get("ob_h",0), analysis.get("fvg_h",0)) or 0,
+            fillcolor=c_fill,
+            line=dict(color=c_line, width=1.5, dash="solid"),
+            annotation=dict(
+                text=f"⚡ CONFLUENCE {conf}",
+                font=dict(color=c_color, size=10, family=MONO, weight="bold"),
+                xanchor="left", x=0.01,
+            ),
         )
 
-    # ── Active trade levels (entry / SL / TPs) ───────────────────────
-    if entry is not None:
-        fig.add_hline(y=entry, line_color="#00BFFF", line_dash="dash", line_width=1.5,
-                      annotation_text="ENTRY", annotation_position="right",
-                      annotation_font_color="#00BFFF", annotation_font_size=10)
-    if sl is not None:
-        fig.add_hline(y=sl, line_color="#FF4444", line_dash="dot", line_width=1.5,
-                      annotation_text="SL", annotation_position="right",
-                      annotation_font_color="#FF4444", annotation_font_size=10)
-    if tp1 is not None:
-        fig.add_hline(y=tp1, line_color="#00FF88", line_dash="dot", line_width=1.5,
-                      annotation_text="TP1", annotation_position="right",
-                      annotation_font_color="#00FF88", annotation_font_size=10)
-    if tp2 is not None:
-        fig.add_hline(y=tp2, line_color="#00FF44", line_dash="dot", line_width=1.5,
-                      annotation_text="TP2", annotation_position="right",
-                      annotation_font_color="#00FF44", annotation_font_size=10)
+    # ── Session shading (Asia, London, NY) ────────────────────────────
+    if times and len(times) > 48:
+        for i, t in enumerate(times):
+            try:
+                dt = datetime.fromisoformat(t.replace("Z", "+00:00")) if isinstance(t, str) else datetime.fromtimestamp(t/1000)
+                hour = dt.hour
+                # Asia: ~00-07 UTC, London: ~07-12 UTC, NY: ~12-21 UTC
+                if 0 <= hour < 7:
+                    sess_fill = "rgba(59,130,246,0.03)"
+                elif 7 <= hour < 12:
+                    sess_fill = "rgba(212,168,67,0.03)"
+                elif 12 <= hour < 21:
+                    sess_fill = "rgba(0,208,132,0.03)"
+                else:
+                    continue
+                if i > 0:
+                    fig.add_vrect(
+                        x0=times[i-1], x1=t,
+                        fillcolor=sess_fill, line_width=0,
+                    )
+            except:
+                continue
 
-    layout = _chart_layout(height=height)
-    layout.update(
+    # ── Active trade levels (from args) ──────────────────────────────
+    if entry is not None:
+        fig.add_hline(y=entry, line_color=GOLD, line_dash="solid", line_width=2,
+                      annotation_text="▶ ENTRY", annotation_position="right",
+                      annotation_font_color=GOLD, annotation_font_size=10, annotation_font_family=MONO)
+    if sl is not None:
+        fig.add_hline(y=sl, line_color=BEAR_COLOR, line_dash="dot", line_width=1.5,
+                      annotation_text="✕ SL", annotation_position="right",
+                      annotation_font_color=BEAR_COLOR, annotation_font_size=10, annotation_font_family=MONO)
+    if tp1 is not None:
+        fig.add_hline(y=tp1, line_color=BULL_COLOR, line_dash="dot", line_width=1.5,
+                      annotation_text="✓ TP1", annotation_position="right",
+                      annotation_font_color=BULL_COLOR, annotation_font_size=10, annotation_font_family=MONO)
+    if tp2 is not None:
+        fig.add_hline(y=tp2, line_color=BULL_COLOR, line_dash="dot", line_width=1,
+                      annotation_text="✓ TP2", annotation_position="right",
+                      annotation_font_color=BULL_COLOR, annotation_font_size=9, annotation_font_family=MONO)
+
+    # ── Final layout ─────────────────────────────────────────────────
+    fig.update_layout(**chart_layout)
+    fig.update_layout(
         yaxis2=dict(
-            overlaying="y", side="right", showgrid=False,
-            showticklabels=False, fixedrange=True, range=[0, max(vols or [1]) * 5],
-        ),
-        legend=dict(
-            bgcolor="rgba(0,0,0,0)", font=dict(color=MUTED, size=10),
-            orientation="h", x=0, y=1.02,
+            overlaying="y", side="left", showgrid=False,
+            showticklabels=False, fixedrange=True,
+            range=[0, max(vols or [1]) * 4],
         ),
         xaxis_rangeslider_visible=False,
+        dragmode="pan",
+        modebar=dict(
+            bgcolor="rgba(7,9,12,0.9)", color=GOLD, activecolor=BULL_COLOR,
+            remove=["lasso2d", "select2d", "autoScale2d", "toggleSpikelines",
+                    "hoverClosestCartesian", "hoverCompareCartesian", "zoom2d"],
+        ),
     )
-    fig.update_layout(**layout)
     return fig
 
 
@@ -991,6 +1049,46 @@ def page_metals(mt5, ai_state, trader_st, active_sym="XAUUSD", active_tf="H1"):
         d    = a["digits"]
         fmt  = f"{{:.{d}f}}"
 
+        # ── DUAL TF: HTF (H4) + LTF (M15) analysis ─────────────────────────
+        htf_bars = sym_info.get("H4", [])
+        ltf_bars = sym_info.get("M15", [])
+        a_htf = _cached_analyze(htf_bars, sym, sym_info, "H4") if htf_bars else _empty_analysis(sym)
+        a_ltf = _cached_analyze(ltf_bars, sym, sym_info, "M15") if ltf_bars else _empty_analysis(sym)
+
+        # Alignment: do HTF and LTF agree?
+        htf_dir = a_htf["direction"]
+        ltf_dir = a_ltf["direction"]
+        aligned = (htf_dir == ltf_dir and htf_dir != "NEUTRAL")
+        conflict = (htf_dir != ltf_dir and htf_dir != "NEUTRAL" and ltf_dir != "NEUTRAL")
+        align_color = GREEN if aligned else RED if conflict else MUTED
+        align_text = "ALIGNED" if aligned else "CONFLICT" if conflict else "MIXED"
+        # Confluence score = average of HTF + LTF scores, bonus for alignment
+        conf_score = min(100, int((a_htf["score"] + a_ltf["score"]) / 2 + (15 if aligned else 0)))
+
+        def _tf_row(label, aa, size="9px"):
+            """Compact stat row for a single TF."""
+            dirc = aa["direction"]
+            dc2 = dir_color(dirc)
+            return html.Div([
+                html.Div(label, style={"fontFamily": MONO, "fontSize": "8px",
+                                       "color": MUTED, "letterSpacing": "0.08em",
+                                       "textTransform": "uppercase"}),
+                html.Div([
+                    html.Span(dirc[:4], style={"fontFamily": MONO, "fontSize": size,
+                                                "fontWeight": "700", "color": dc2}),
+                    html.Span(f" {aa['score']}", style={"fontFamily": MONO,
+                                                         "fontSize": size, "color": GOLD}),
+                ]),
+                html.Div([
+                    html.Span(aa["trend"][:4], style={"fontFamily": MONO, "fontSize": "8px",
+                                                        "color": GREEN if "BULL" in aa['trend'] else RED if "BEAR" in aa['trend'] else MUTED}),
+                    html.Span(" | ", style={"color": BORDER, "fontSize": "8px"}),
+                    html.Span(aa["structure"].replace("_", " ")[:6],
+                              style={"fontFamily": MONO, "fontSize": "8px",
+                                     "color": GREEN if "BULL" in aa["structure"] else RED if "BEAR" in aa["structure"] else MUTED}),
+                ]),
+            ], style={"flex": "1", "textAlign": "center", "padding": "4px 2px"})
+
         return html.Div([
             html.Div([
                 html.Div([
@@ -1013,12 +1111,37 @@ def page_metals(mt5, ai_state, trader_st, active_sym="XAUUSD", active_tf="H1"):
             ], style={"display": "flex", "justifyContent": "space-between",
                       "alignItems": "flex-start", "marginBottom": "12px"}),
 
-            # Score bar
+            # ── DUAL TF CONFLUENCE SECTION ──────────────────────────────────────
+            # HTF (H4) bias + LTF (M15) precision in one compact view
+            html.Div([
+                html.Div([
+                    html.Div(f"⚡ {align_text}", style={"fontFamily": MONO, "fontSize": "11px",
+                                                         "fontWeight": "700", "color": align_color,
+                                                         "textTransform": "uppercase"}),
+                    html.Div(f"Confluence {conf_score}/100", style={"fontFamily": MONO,
+                                                                    "fontSize": "10px", "color": GOLD}),
+                ], style={"display": "flex", "justifyContent": "space-between",
+                          "marginBottom": "4px"}),
+                html.Div(style={"height": "3px", "borderRadius": "1px", "background": BORDER},
+                         children=[html.Div(style={"height": "3px", "borderRadius": "1px",
+                                                    "width": f"{conf_score}%",
+                                                    "background": f"linear-gradient(90deg,{align_color},{color})"})]),
+                # HTF / LTF split row
+                html.Div([
+                    _tf_row("HTF H4", a_htf, size="10px"),
+                    html.Div(style={"width": "1px", "background": BORDER, "margin": "0 4px"}),
+                    _tf_row("LTF M15", a_ltf, size="10px"),
+                ], style={"display": "flex", "alignItems": "center",
+                          "background": CARD2, "borderRadius": "6px",
+                          "marginTop": "6px", "padding": "4px 2px"}),
+            ], style={"marginBottom": "10px"}),
+
+            # Score bar (active TF)
             html.Div([
                 html.Div([
                     html.Span(a["direction"], style={"fontFamily": MONO, "fontSize": "12px",
                                                      "fontWeight": "700", "color": dc}),
-                    html.Span(f"  {a['score']}/100", style={"fontFamily": MONO,
+                    html.Span(f"  {active_tf} | {a['score']}/100", style={"fontFamily": MONO,
                                                               "fontSize": "11px", "color": GOLD}),
                 ], style={"display": "flex", "justifyContent": "space-between", "marginBottom": "5px"}),
                 html.Div(style={"height": "4px", "borderRadius": "2px", "background": BORDER},
@@ -1645,7 +1768,7 @@ def page_pnl(mt5):
 
 
 def _bot_trades_card():
-    """Card showing bot-tracked active_trades from trader_state.json."""
+    """Card showing bot-tracked active_trades from trader_state.json + trailing/scale data."""
     trader_st    = load_trader_state()
     active_trades = trader_st.get("active_trades", {})
     if not active_trades:
@@ -1653,14 +1776,24 @@ def _bot_trades_card():
             sec_header("Bot-Tracked Trades", "0 open"),
             html.P("No bot-tracked trades.", style={"color": MUTED, "fontFamily": MONO, "fontSize": "12px"}),
         ])
+
     cols = ["symbol", "direction", "entry_price", "sl_price", "tp1_price", "volume", "opened_at"]
     rows = []
     for tid, t in active_trades.items():
         row = {"ticket": tid}
         for c in cols:
             row[c] = t.get(c, "")
+        # Add trailing + scale data if available
+        row["tp_hit"] = "TP1" if t.get("tp1_taken") else "—"
+        row["scaled_in"] = "✓" if t.get("scaled_in") else "—"
+        row["profit_r"] = ""
+        if t.get("entry") and t.get("sl"):
+            sl = t.get("sl", 0); ent = t.get("entry", 0); cur = t.get("current_price", ent)
+            risk = abs(ent - sl)
+            if risk > 0:
+                row["profit_r"] = f"{((cur - ent) / risk if t['direction'] == 'BUY' else (ent - cur) / risk):+.1f}R"
         rows.append(row)
-    all_cols = ["ticket"] + cols
+    all_cols = ["ticket"] + cols + ["profit_r", "tp_hit", "scaled_in"]
     return card([
         sec_header("Bot-Tracked Trades", f"{len(rows)} open"),
         dash_table.DataTable(
@@ -1671,6 +1804,8 @@ def _bot_trades_card():
             style_data_conditional=[
                 {"if": {"filter_query": '{direction} = "BUY"',  "column_id": "direction"}, "color": GREEN},
                 {"if": {"filter_query": '{direction} = "SELL"', "column_id": "direction"}, "color": RED},
+                {"if": {"filter_query": "{profit_r} >= 0", "column_id": "profit_r"}, "color": GREEN},
+                {"if": {"filter_query": "{profit_r} < 0",  "column_id": "profit_r"}, "color": RED},
             ],
             sort_action="native", page_size=20,
         ),

@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Hermes Command Center</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #0a0a0f; --card: #14141e; --accent: #00d084; --accent2: #7c3aed;
+    --danger: #ff4757; --warn: #ffa502; --text: #e0e0e0; --muted: #666;
+    --border: #1f1f2e;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    overflow-x: hidden; padding-bottom: 80px;
+  }
+  .header {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    padding: 20px 16px 30px; text-align: center; position: relative;
+  }
+  .header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+  .header p { font-size: 12px; opacity: 0.8; margin-top: 4px; }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(0,0,0,0.3); padding: 4px 12px; border-radius: 20px;
+    font-size: 11px; margin-top: 10px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .container { padding: 16px; max-width: 600px; margin: 0 auto; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+    padding: 16px; margin-bottom: 12px;
+  }
+  .card-title {
+    font-size: 13px; font-weight: 600; text-transform: uppercase;
+    color: var(--muted); letter-spacing: 0.5px; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card-title svg { width: 16px; height: 16px; }
+  .metric-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 8px;
+  }
+  .metric {
+    background: rgba(0,208,132,0.05); border: 1px solid rgba(0,208,132,0.1);
+    border-radius: 12px; padding: 12px; text-align: center;
+  }
+  .metric-value {
+    font-size: 24px; font-weight: 700; color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .metric-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .metric.danger { background: rgba(255,71,87,0.05); border-color: rgba(255,71,87,0.1); }
+  .metric.danger .metric-value { color: var(--danger); }
+  .metric.warn { background: rgba(255,165,2,0.05); border-color: rgba(255,165,2,0.1); }
+  .metric.warn .metric-value { color: var(--warn); }
+  .btn-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  }
+  .btn {
+    background: var(--accent); color: #000; border: none; border-radius: 12px;
+    padding: 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+    transition: all 0.2s; text-align: center;
+  }
+  .btn:active { transform: scale(0.96); opacity: 0.8; }
+  .btn.secondary { background: var(--card); color: var(--text); border: 1px solid var(--border); }
+  .btn.danger { background: var(--danger); color: #fff; }
+  .btn.full { grid-column: 1 / -1; }
+  .chat-area {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px; min-height: 120px; max-height: 200px; overflow-y: auto;
+    font-size: 13px; line-height: 1.5; margin-bottom: 12px;
+  }
+  .chat-msg { margin-bottom: 8px; }
+  .chat-msg .sender { font-size: 11px; color: var(--accent); font-weight: 600; }
+  .chat-msg .text { color: var(--text); }
+  .input-row {
+    display: flex; gap: 8px;
+  }
+  .input-row input {
+    flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px 14px; color: var(--text); font-size: 14px; outline: none;
+  }
+  .input-row input::placeholder { color: var(--muted); }
+  .input-row button {
+    background: var(--accent2); color: #fff; border: none; border-radius: 12px;
+    padding: 0 20px; font-weight: 600; cursor: pointer;
+  }
+  .section-divider {
+    text-align: center; margin: 20px 0; position: relative;
+  }
+  .section-divider::before {
+    content: ''; position: absolute; top: 50%; left: 0; right: 0; height: 1px;
+    background: var(--border);
+  }
+  .section-divider span {
+    background: var(--bg); padding: 0 12px; font-size: 11px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 1px; position: relative;
+  }
+  .log-line {
+    font-size: 11px; color: var(--muted); font-family: 'SF Mono', Monaco, monospace;
+    padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+  .log-time { color: var(--accent); margin-right: 6px; }
+  .hidden { display: none !important; }
+  #toast {
+    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%) translateY(100px);
+    background: var(--card); border: 1px solid var(--accent); color: var(--text);
+    padding: 12px 24px; border-radius: 12px; font-size: 13px; font-weight: 600;
+    transition: transform 0.3s ease; z-index: 1000; white-space: nowrap;
+  }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>⚕ HERMES COMMAND</h1>
+  <p>Omni Trading + AI Agent Control</p>
+  <div class="status-pill"><span class="dot"></span> LIVE • k2.6:cloud</div>
+</div>
+
+<div class="container">
+
+  <!-- OMNI TRADING -->
+  <div class="card">
+    <div class="card-title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+      Omni Trading Bot
+    </div>
+    <div class="metric-row">
+      <div class="metric">
+        <div class="metric-value" id="xau-price">—</div>
+        <div class="metric-label">XAUUSD</div>
+      </div>
+      <div class="metric">
+        <div class="metric-value" id="xag-price">—</div>
+        <div class="metric-label">XAGUSD</div>
+      </div>
+    </div>
+    <div class="metric-row">
+      <div class="metric">
+        <div class="metric-value" id="daily-pnl">—</div>
+        <div class="metric-label">TODAY P&L</div>
+      </div>
+      <div class="metric" id="signal-card">
+        <div class="metric-value" id="active-signal">—</div>
+        <div class="metric-label">SIGNAL</div>
+      </div>
+    </div>
+    <div class="btn-grid">
+      <button class="btn" onclick="sendCmd('/restart omni')">🔄 Restart Omni</button>
+      <button class="btn secondary" onclick="sendCmd('/status omni')">📊 Status</button>
+      <button class="btn secondary" onclick="sendCmd('/signals')">📡 Signals</button>
+      <button class="btn danger" onclick="sendCmd('/emergency close all')">🛑 Close All</button>
+      <button class="btn full secondary" onclick="sendCmd('/toggle paper')">⇄ Toggle Paper/Live</button>
+    </div>
+  </div>
+
+  <div class="section-divider"><span>Hermes AI</span></div>
+
+  <!-- HERMES SYSTEM -->
+  <div class="card">
+    <div class="card-title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      System Health
+    </div>
+    <div class="metric-row">
+      <div class="metric">
+        <div class="metric-value" id="model-name">k2.6</div>
+        <div class="metric-label">MODEL</div>
+      </div>
+      <div class="metric">
+        <div class="metric-value" id="skills-count">—</div>
+        <div class="metric-label">SKILLS</div>
+      </div>
+    </div>
+    <div class="btn-grid">
+      <button class="btn" onclick="sendCmd('/hermes doctor')">🏥 Doctor</button>
+      <button class="btn secondary" onclick="sendCmd('/hermes update')">⬆ Update</button>
+      <button class="btn secondary" onclick="sendCmd('/hermes skills check')">🔍 Skills</button>
+      <button class="btn secondary" onclick="sendCmd('/hermes curator')">🧹 Curator</button>
+      <button class="btn full" onclick="sendCmd('/hermes restart')">♻ Restart Gateway</button>
+    </div>
+  </div>
+
+  <!-- PROJECTS -->
+  <div class="card">
+    <div class="card-title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg>
+      Projects Quick Access
+    </div>
+    <div class="btn-grid">
+      <button class="btn secondary" onclick="sendCmd('/apex status')">🏋️ APEX</button>
+      <button class="btn secondary" onclick="sendCmd('/circle status')">⭕ CIRCLE</button>
+      <button class="btn secondary" onclick="sendCmd('/vape status')">💨 VAPE</button>
+      <button class="btn secondary" onclick="sendCmd('/omni dashboard')">📈 OMNI</button>
+      <button class="btn full" onclick="sendCmd('/deploy all')">🚀 Deploy All</button>
+    </div>
+  </div>
+
+  <!-- CHAT -->
+  <div class="section-divider"><span>Direct Chat</span></div>
+
+  <div class="card">
+    <div class="chat-area" id="chat-box">
+      <div class="chat-msg"><span class="sender">HERMES</span><div class="text">Ready. Type a command or ask anything.</div></div>
+    </div>
+    <div class="input-row">
+      <input type="text" id="chat-input" placeholder="Command or message..." onkeydown="if(event.key==='Enter')chatSend()">
+      <button onclick="chatSend()">SEND</button>
+    </div>
+  </div>
+
+  <!-- LOGS -->
+  <div class="section-divider"><span>Live Log</span></div>
+  <div class="card">
+    <div id="log-box" style="max-height:150px;overflow-y:auto;">
+      <div class="log-line"><span class="log-time">--:--</span> Waiting for connection...</div>
+    </div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+// Telegram Web App init
+const tg = window.Telegram?.WebApp;
+if (tg) {
+  tg.expand();
+  tg.ready();
+  tg.setHeaderColor('#0a0a0f');
+  tg.setBackgroundColor('#0a0a0f');
+}
+
+// Simulated data — replace with real API calls to your Hermes backend
+const MOCK = {
+  xau: 3427.50,
+  xag: 32.15,
+  pnl: '+1.2%',
+  signal: 'BUY',
+  skills: 24,
+};
+
+// Populate demo data
+function loadData() {
+  document.getElementById('xau-price').textContent = '$' + MOCK.xau.toFixed(2);
+  document.getElementById('xag-price').textContent = '$' + MOCK.xag.toFixed(2);
+  document.getElementById('daily-pnl').textContent = MOCK.pnl;
+  document.getElementById('active-signal').textContent = MOCK.signal;
+  if (MOCK.signal === 'BUY') document.getElementById('signal-card').classList.remove('danger');
+  document.getElementById('skills-count').textContent = MOCK.skills;
+}
+loadData();
+
+// Send command via Telegram bot
+function sendCmd(text) {
+  if (tg) {
+    tg.sendData(JSON.stringify({ cmd: text, ts: Date.now() }));
+    toast('Sent: ' + text);
+    log('CMD → ' + text);
+  } else {
+    // Fallback: open Telegram with bot
+    const botUsername = 'OmniAutoTraderICTbot';
+    window.open(`https://t.me/${botUsername}?start=${encodeURIComponent(text)}`, '_blank');
+    toast('Opening Telegram...');
+  }
+}
+
+// Chat input
+function chatSend() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  addChat('YOU', text);
+  input.value = '';
+  sendCmd(text);
+}
+
+function addChat(sender, text) {
+  const box = document.getElementById('chat-box');
+  const div = document.createElement('div');
+  div.className = 'chat-msg';
+  div.innerHTML = `<span class="sender">${sender}</span><div class="text">${text}</div>`;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+// Toast
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// Log
+function log(msg) {
+  const box = document.getElementById('log-box');
+  const time = new Date().toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit'});
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span class="log-time">${time}</span> ${msg}`;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+}
+
+// Poll for real data every 10s (stub — wire to your FastAPI / Hermes backend)
+setInterval(() => {
+  log('Heartbeat OK');
+}, 10000);
+
+log('Mini App loaded. User: ' + (tg?.initDataUnsafe?.user?.username || 'unknown'));
+</script>
+
+</body>
+</html>

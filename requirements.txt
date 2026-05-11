@@ -15,8 +15,9 @@ uvicorn[standard]>=0.29.0
 websockets>=12.0
 python-multipart>=0.0.9
 
-# AI / Claude integration
+# AI / LLM integration (Claude API + local Ollama)
 anthropic>=0.7.0
+requests>=2.31.0
 
 # Optional: TradingView webhook server + scheduler
 flask>=2.3.0

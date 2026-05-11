@@ -189,11 +189,13 @@ class _Config:
     )
 
     # ── Symbols ───────────────────────────────────────────────────────────────
+    # Gold and Silver first — they are the primary focus.
+    # Remaining pairs are traded only when broker offers them.
     TRADE_SYMBOLS: list = (
         os.getenv("OMNI_SYMBOLS", "").split(",")
         if os.getenv("OMNI_SYMBOLS")
-        else _jcfg.get("watchlist", ["XAUUSD","XAGUSD","EURUSD","GBPUSD",
-                                      "USDJPY","AUDUSD","USDCAD"])
+        else _jcfg.get("watchlist", ["XAUUSD","XAGUSD",
+                                      "EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD"])
     )
 
     def validate(self) -> bool:

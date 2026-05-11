@@ -91,20 +91,29 @@ _pending: dict[int, dict] = {}
 
 # ── Telegram API ──────────────────────────────────────────────────────────────
 
+_TG_AUTH_FAILED = False  # latched on 401/403 so we stop spamming retries
+
 def _api(method: str, **params) -> dict:
+    global _TG_AUTH_FAILED
+    if _TG_AUTH_FAILED:
+        return {}
     url  = f"{BASE_URL}/{method}"
     data = json.dumps(params).encode("utf-8")
     req  = urllib.request.Request(url, data=data,
                                   headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=35) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
-        log.warning("Telegram %s HTTP %s: %s", method, e.code,
-                    e.read().decode("utf-8", errors="replace"))
+        body = e.read().decode("utf-8", errors="replace")
+        if e.code in (401, 403):
+            _TG_AUTH_FAILED = True
+            log.error("Telegram auth failed (HTTP %s) — check OMNI_TELEGRAM_TOKEN: %s", e.code, body)
+        else:
+            log.warning("Telegram %s HTTP %s: %s", method, e.code, body)
         return {}
     except Exception as e:
-        log.warning("Telegram %s error: %s", method, e)
+        log.debug("Telegram %s error: %s", method, e)
         return {}
 
 
@@ -343,9 +352,45 @@ def _save_active_account(acc_id: str) -> None:
 
 # ── File helpers ──────────────────────────────────────────────────────────────
 
-def _json(path: Path):
+def _parse_json_safe(raw: bytes) -> dict | None:
+    """Parse JSON with Wine 4MB truncation recovery (same logic as mt5_connector)."""
+    import re as _re
+    text = raw.decode("utf-8", errors="replace").rstrip('\x00')
+    text = _re.sub(r',\s*([\]}])', r'\1', text)
     try:
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    last = text.rfind('},')
+    if last == -1:
+        last = text.rfind('}')
+    if last != -1:
+        trunk = text[:last + 1]
+        od = ad = 0
+        ins = esc = False
+        for ch in trunk:
+            if esc: esc = False; continue
+            if ch == '\\' and ins: esc = True; continue
+            if ch == '"': ins = not ins; continue
+            if ins: continue
+            if ch == '{': od += 1
+            elif ch == '}': od -= 1
+            elif ch == '[': ad += 1
+            elif ch == ']': ad -= 1
+        try:
+            return json.loads(trunk + ']' * max(ad, 0) + '}' * max(od, 0))
+        except Exception:
+            pass
+    return None
+
+
+def _json(path: Path):
+    if not path or not path.exists():
+        return None
+    try:
+        raw = path.read_bytes()
+        result = _parse_json_safe(raw)
+        return result
     except Exception:
         return None
 
@@ -382,25 +427,56 @@ def _mt5_data_path(acc_id: str = "") -> Path | None:
         for a in accounts:
             if a.get("data_path"):
                 return Path(a["data_path"])
-    if cfg and cfg.get("data_path"):
-        return Path(cfg["data_path"])
-    return None
+        if cfg.get("data_path"):
+            return Path(cfg["data_path"])
+    # Fall back to OMNI_JSON_PATH env var (set in .env / launchd plist)
+    env_path = os.getenv("OMNI_JSON_PATH", "")
+    if env_path:
+        return Path(env_path)
+    # Last resort: auto-detect macOS Wine path
+    _wine = (Path.home() / "Library/Application Support"
+             / "net.metaquotes.wine.metatrader5/drive_c/users/user"
+             / "AppData/Roaming/MetaQuotes/Terminal/Common/Files/omni_data.json")
+    return _wine if _wine.exists() else None
 
 
 def _live_equity(acc_id: str = "") -> tuple[float, float, float, float, str]:
-    """Returns (balance, equity, free_margin, profit, currency) from live MT5 data."""
+    """Returns (balance, equity, free_margin, profit, currency).
+
+    Priority: live MT5 JSON → trader_state cached equity → zeros.
+    Falls back gracefully when MT5 data is stale or EA not running.
+    Returns currency="SYNC" when MT5 reports account data not yet ready
+    (broker handshake still in progress) — callers should show a syncing message.
+    """
+    bal = eq = free = prof = 0.0
+    curr = "USD"
+
     mt5_path = _mt5_data_path(acc_id)
     if mt5_path and mt5_path.exists():
         data = _json(mt5_path)
         if data:
             acc  = data.get("account", {})
-            bal  = acc.get("balance")  or 0.0
-            eq   = acc.get("equity")   or 0.0
-            free = acc.get("free_margin", acc.get("margin_free", 0)) or 0.0
-            prof = acc.get("profit")   or 0.0
-            curr = acc.get("currency", "USD")
-            return bal, eq, free, prof, curr
-    return 0.0, 0.0, 0.0, 0.0, "USD"
+            # EA sets ready=false for ~10-30s after broker connect while
+            # AccountInfo* functions still return zeros
+            acc_ready = acc.get("ready", True)
+            if acc_ready is False:
+                return 0.0, 0.0, 0.0, 0.0, "SYNC"
+            bal  = float(acc.get("balance") or 0.0)
+            eq   = float(acc.get("equity")  or 0.0)
+            free = float(acc.get("free_margin", acc.get("margin_free", 0)) or 0.0)
+            prof = float(acc.get("profit")  or 0.0)
+            curr = acc.get("currency") or "USD"
+
+    # If MT5 returned zeros (EA offline / stale) fall back to trader_state
+    if bal == 0.0 and eq == 0.0:
+        state = _json(_state_path(acc_id)) or {}
+        peak  = float(state.get("peak_equity") or 0.0)
+        # Use peak equity as best estimate of account value when MT5 is offline
+        if peak > 0:
+            bal = eq = peak
+            prof = float(state.get("day_profit") or 0.0)
+
+    return bal, eq, free, prof, curr
 
 
 # ── Command handlers ──────────────────────────────────────────────────────────
@@ -456,13 +532,18 @@ def cmd_dashboard(acc_id: str = "") -> str:
         f"<b>🤖 OMNI-ICT Dashboard</b>  <code>{ts}</code>",
         "",
         f"<b>💰 Account</b>",
-        f"  Balance:  {curr} {bal:,.2f}",
-        f"  Equity:   {curr} {eq:,.2f}",
-        f"  Open P&L: {curr} {prof:+,.2f}",
-        f"  Today:    {curr} {day_pnl:+,.2f}  ({day_tr} trades)",
-        f"  Drawdown: {dd:.2f}%  |  Peak: {curr} {peak:,.2f}",
-        f"  Streaks:  ✅{wins}W  ❌{losses}L",
     ]
+    if curr == "SYNC":
+        lines.append("  ⏳ <i>Syncing with broker — balance available in ~30s</i>")
+    else:
+        lines += [
+            f"  Balance:  {curr} {bal:,.2f}",
+            f"  Equity:   {curr} {eq:,.2f}",
+            f"  Open P&L: {curr} {prof:+,.2f}",
+            f"  Today:    {curr} {day_pnl:+,.2f}  ({day_tr} trades)",
+            f"  Drawdown: {dd:.2f}%  |  Peak: {curr} {peak:,.2f}",
+            f"  Streaks:  ✅{wins}W  ❌{losses}L",
+        ]
     if halted:
         lines.append(f"  🛑 <b>HALTED</b>: {state.get('halt_reason','')}")
     if trading_disabled:
@@ -509,6 +590,12 @@ def cmd_equity(acc_id: str = "") -> str:
         data = _json(mt5_path)
         if data:
             acc  = data.get("account", {})
+            # Check if broker handshake is still in progress
+            if acc.get("ready") is False:
+                ts = data.get("timestamp", "")[:19]
+                return (f"<b>💰 Live Account</b>  <code>{ts}</code>\n"
+                        "⏳ <i>MT5 account syncing with broker…\n"
+                        "Balance will appear in ~30 seconds.</i>")
             bal  = acc.get("balance", 0) or 0
             eq   = acc.get("equity",  0) or 0
             free = acc.get("free_margin", acc.get("margin_free", 0)) or 0
@@ -718,7 +805,15 @@ def cmd_log(service: str) -> str:
     if not log_path.exists():
         return f"❌ Log not found: <code>{log_path.name}</code>"
     try:
-        lines = log_path.read_text(errors="replace").splitlines()
+        # Read last ~8 KB from the end — avoids OOM on large log files
+        chunk = 8 * 1024
+        with open(log_path, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - chunk))
+            raw = fh.read(chunk)
+        text  = raw.decode("utf-8", errors="replace")
+        lines = text.splitlines()
         tail  = lines[-20:] if len(lines) >= 20 else lines
         block = "\n".join(tail)
         return (f"<b>📋 {svc}.log</b> (last {len(tail)} lines)\n"
@@ -1233,10 +1328,12 @@ def cmd_help() -> str:
 
 class AlertMonitor:
     def __init__(self, chat_id):
-        self.chat_id     = chat_id
-        self._seen       = set()
-        self._halt_state = None
-        self._trades     = set()
+        self.chat_id        = chat_id
+        self._seen          = set()
+        self._halt_state    = None
+        self._trades        = set()
+        self._last_equity   = 0.0
+        self._last_dash_push = 0.0   # epoch — throttle auto-dashboard pushes
         alerts = _json(ALERTS_PATH)
         if isinstance(alerts, list):
             for a in alerts:
@@ -1245,11 +1342,13 @@ class AlertMonitor:
         state  = _json(_state_path(acc_id))
         if isinstance(state, dict):
             self._trades = set(state.get("active_trades", {}).keys())
+        _, self._last_equity, _, _, _ = _live_equity(acc_id)
 
     def check(self) -> None:
         self._alerts()
         self._halt()
         self._trades_check()
+        self._equity_update()
 
     def _alerts(self) -> None:
         alerts = _json(ALERTS_PATH)
@@ -1319,6 +1418,43 @@ class AlertMonitor:
                      f"⚪ <b>Trade Closed</b>  <code>{tid}</code>\n"
                      f"<i>(details pending — use /pnl for daily P&amp;L)</i>")
         self._trades = current
+
+    def _equity_update(self) -> None:
+        """Push a refreshed mini-dashboard when equity moves ≥0.10 or every 5 min."""
+        acc_id = _load_active_account()
+        bal, eq, _, prof, curr = _live_equity(acc_id)
+        now = time.time()
+        equity_moved = eq > 0 and abs(eq - self._last_equity) >= 0.10
+        periodic     = (now - self._last_dash_push) >= 300  # every 5 min
+        if not (equity_moved or periodic):
+            return
+        self._last_equity    = eq
+        self._last_dash_push = now
+        state  = _json(_state_path(acc_id)) or {}
+        peak   = float(state.get("peak_equity") or eq or 0)
+        dd     = ((peak - eq) / peak * 100) if peak > 0 else 0.0
+        day_pnl = float(state.get("day_profit") or 0.0)
+        day_tr  = int(state.get("day_trades") or 0)
+        wins    = int(state.get("win_streak") or 0)
+        losses  = int(state.get("loss_streak") or 0)
+        trades  = state.get("active_trades", {})
+        ts      = __import__("datetime").datetime.now(
+                    __import__("datetime").timezone.utc).strftime("%H:%M UTC")
+        # Data source tag
+        mt5_path = _mt5_data_path(acc_id)
+        mt5_live = (mt5_path and mt5_path.exists() and
+                    (time.time() - mt5_path.stat().st_mtime) < 60) if mt5_path else False
+        src_tag = "🟢 live" if mt5_live else "🟡 cached"
+        open_tr = f"{len(trades)} open" if trades else "no open trades"
+        msg = (
+            f"<b>📊 OMNI-ICT</b>  <code>{ts}</code>  {src_tag}\n"
+            f"Balance: <b>{curr} {bal:,.2f}</b>  Equity: <b>{curr} {eq:,.2f}</b>\n"
+            f"Open P&amp;L: <b>{curr} {prof:+,.2f}</b>  |  {open_tr}\n"
+            f"Today: <b>{curr} {day_pnl:+,.2f}</b> ({day_tr} trades)  "
+            f"DD: {dd:.2f}%  Peak: {curr} {peak:,.2f}\n"
+            f"Streaks: ✅{wins}W  ❌{losses}L"
+        )
+        send(self.chat_id, msg)
 
 
 # ── Dispatcher ────────────────────────────────────────────────────────────────

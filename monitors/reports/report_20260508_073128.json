@@ -1,0 +1,111 @@
+{
+  "timestamp": "2026-05-08T07:31:28.434908+00:00",
+  "projects": [
+    {
+      "project_id": "apex",
+      "project_name": "APEX Coaching",
+      "overall_status": "warning",
+      "checks": [
+        {
+          "check_name": "deploy_status",
+          "status": "ok",
+          "message": "https://fitfriendchris.github.io/Apex reachable",
+          "timestamp": "2026-05-08T07:31:23.876641+00:00",
+          "details": null
+        },
+        {
+          "check_name": "git_sync",
+          "status": "warning",
+          "message": "Uncommitted changes (1 files)",
+          "timestamp": "2026-05-08T07:31:24.411670+00:00",
+          "details": null
+        }
+      ],
+      "last_check": "2026-05-08T07:31:24.411777+00:00",
+      "next_audit_due": null
+    },
+    {
+      "project_id": "omni",
+      "project_name": "Omni ICT Algo Trading Bot",
+      "overall_status": "critical",
+      "checks": [
+        {
+          "check_name": "mt5_connection",
+          "status": "ok",
+          "message": "Fresh: 0s old",
+          "timestamp": "2026-05-08T07:31:24.413243+00:00",
+          "details": {
+            "age_seconds": 0.28459739685058594
+          }
+        },
+        {
+          "check_name": "bot_processes",
+          "status": "warning",
+          "message": "Missing: auto_trader.py, dashboard.py, hermes_bridge.py | Running: watchdog.py, telegram_bot.py",
+          "timestamp": "2026-05-08T07:31:24.603387+00:00",
+          "details": {
+            "missing": [
+              "auto_trader.py",
+              "dashboard.py",
+              "hermes_bridge.py"
+            ],
+            "running": [
+              "watchdog.py",
+              "telegram_bot.py"
+            ]
+          }
+        },
+        {
+          "check_name": "account_health",
+          "status": "warning",
+          "message": "Could not read account: [Errno 21] Is a directory: '.'",
+          "timestamp": "2026-05-08T07:31:24.603585+00:00",
+          "details": null
+        },
+        {
+          "check_name": "git_sync",
+          "status": "warning",
+          "message": "Uncommitted changes (38 files)",
+          "timestamp": "2026-05-08T07:31:25.031660+00:00",
+          "details": null
+        },
+        {
+          "check_name": "test_suite",
+          "status": "ok",
+          "message": "164 tests passed",
+          "timestamp": "2026-05-08T07:31:28.433359+00:00",
+          "details": null
+        }
+      ],
+      "last_check": "2026-05-08T07:31:28.433441+00:00",
+      "next_audit_due": null
+    },
+    {
+      "project_id": "circle",
+      "project_name": "THE CIRCLE",
+      "overall_status": "ok",
+      "checks": [],
+      "last_check": "2026-05-08T07:31:28.434502+00:00",
+      "next_audit_due": null
+    },
+    {
+      "project_id": "vape",
+      "project_name": "Vape Vending Business",
+      "overall_status": "ok",
+      "checks": [],
+      "last_check": "2026-05-08T07:31:28.434673+00:00",
+      "next_audit_due": null
+    },
+    {
+      "project_id": "digital_products",
+      "project_name": "Digital Fitness Products",
+      "overall_status": "ok",
+      "checks": [],
+      "last_check": "2026-05-08T07:31:28.434821+00:00",
+      "next_audit_due": null
+    }
+  ],
+  "issues_found": 2,
+  "audits_triggered": 2,
+  "summary": "\u26a0\ufe0f APEX Coaching: WARNING\n\ud83d\udea8 Omni ICT Algo Trading Bot: CRITICAL\n\u2705 THE CIRCLE: OK\n\u2705 Vape Vending Business: OK\n\u2705 Digital Fitness Products: OK"
+}

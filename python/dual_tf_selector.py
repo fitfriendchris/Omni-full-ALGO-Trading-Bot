@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional, Literal
 
 from smc_engine import (
@@ -158,14 +159,13 @@ def _most_recent_unmitigated_fvg(snap: SMCSnapshot, side: Direction) -> Optional
 
 def _recent_sweep_then_choch(snap: SMCSnapshot, side: Direction,
                              max_gap_bars: int = 10) -> Optional[tuple[Sweep, StructureEvent]]:
-    """Find a sweep *against* `side` followed within `max_gap_bars` by a CHoCH
-    *in favour of* `side`. The sweep direction must be the opposing side
-    (sweep of the other side's liquidity → reversal into our side)."""
-    opposing: Direction = "BEAR" if side == "BULL" else "BULL"
-    sweeps = [s for s in snap.sweeps if s.side == opposing]
+    """Find a liquidity sweep in `side`'s direction followed within `max_gap_bars`
+    by a CHoCH confirming `side`. ICT: equal lows swept (BULL sweep) → CHoCH BULL.
+    Sweep.side == direction of the REACTION (BULL sweep = sell-side liq cleared)."""
+    sweeps = [s for s in snap.sweeps if s.side == side]
     chs = [e for e in snap.structure if e.kind == "CHOCH" and e.direction == side]
-    for sw in sweeps:
-        for ch in chs:
+    for sw in reversed(sweeps):
+        for ch in reversed(chs):
             if 0 < (ch.bar_idx - sw.bar_idx) <= max_gap_bars:
                 return sw, ch
     return None
@@ -182,10 +182,20 @@ def _sl_from_ob(ob: OrderBlock, side: Direction, buffer_frac: float = 0.10) -> f
     return ob.bot - pad if side == "BULL" else ob.top + pad
 
 
-def _sl_from_fvg(fvg: FairValueGap, side: Direction, buffer_frac: float = 0.10) -> float:
+def _sl_from_fvg(fvg: FairValueGap, side: Direction,
+                 buffer_frac: float = 0.10, atr: float = 0.0) -> float:
     zone = fvg.top - fvg.bot
     pad  = zone * buffer_frac
-    return fvg.bot - pad if side == "BULL" else fvg.top + pad
+    raw  = fvg.bot - pad if side == "BULL" else fvg.top + pad
+    # Enforce minimum SL distance = 0.25 ATR so degenerate tiny FVGs don't produce
+    # near-zero risk (which would make R:R math meaningless).
+    if atr > 0:
+        min_dist = atr * 0.25
+        if side == "BULL":
+            raw = min(raw, fvg.top - min_dist)
+        else:
+            raw = max(raw, fvg.bot + min_dist)
+    return raw
 
 
 def _tp_from_rr(entry: float, sl: float, side: Direction, rr: float) -> float:
@@ -223,11 +233,12 @@ def _silver_bullet_score(ltf: "SMCSnapshot", direction: str) -> float:
     """
     ICT Silver Bullet: OB + FVG + sweep all within a 5-bar window on LTF.
     Returns extra confidence bonus 0–0.35.
+    Bug fix: Sweep uses `.side` not `.direction`.
     """
     if not (ltf.order_blocks and ltf.fvgs and ltf.sweeps):
         return 0.0
     recent_sweep = next(
-        (s for s in reversed(ltf.sweeps) if s.direction == direction), None
+        (s for s in reversed(ltf.sweeps) if s.side == direction), None  # was s.direction
     )
     if not recent_sweep:
         return 0.0
@@ -246,6 +257,48 @@ def _silver_bullet_score(ltf: "SMCSnapshot", direction: str) -> float:
         return 0.35
     if ob_in_window or fvg_in_window:
         return 0.15
+    return 0.0
+
+
+def _kill_zone_bonus() -> float:
+    """Return a confidence bonus when inside ICT kill zones (UTC).
+    London open: 07-09 UTC (+0.10), NY open: 12-14 UTC (+0.10),
+    London close: 11-13 UTC (+0.05), Asia open: 22-00 UTC (+0.03).
+    """
+    h = datetime.now(timezone.utc).hour
+    if 7 <= h < 9 or 12 <= h < 14:
+        return 0.10
+    if 11 <= h < 13:
+        return 0.05
+    if h >= 22 or h < 1:
+        return 0.03
+    return 0.0
+
+
+def _ote_entry(ob: OrderBlock, side: Direction) -> float:
+    """ICT Optimal Trade Entry: 50% of OB body (body_top + body_bot midpoint).
+    Provides tighter SL and better R:R vs entering at current price.
+    """
+    return (ob.body_top + ob.body_bot) / 2.0
+
+
+def _cisd_bonus(ltf: SMCSnapshot, direction: str) -> float:
+    """Change in State of Delivery: 3+ same-direction bars engulfed by 1 strong
+    opposing candle. Returns +0.15 confidence bonus when detected."""
+    bars = ltf.bars
+    if len(bars) < 4:
+        return 0.0
+    # Look back through the last 8 bars for a CISD pattern
+    for i in range(len(bars) - 1, 3, -1):
+        engulf = bars[i]
+        if direction == "BULL" and engulf.is_bull and engulf.body > 0:
+            run = [bars[j] for j in range(max(0, i - 4), i) if bars[j].is_bear]
+            if len(run) >= 3 and engulf.body >= (engulf.body + sum(b.body for b in run)) * 0.45:
+                return 0.15
+        elif direction == "BEAR" and engulf.is_bear and engulf.body > 0:
+            run = [bars[j] for j in range(max(0, i - 4), i) if bars[j].is_bull]
+            if len(run) >= 3 and engulf.body >= (engulf.body + sum(b.body for b in run)) * 0.45:
+                return 0.15
     return 0.0
 
 
@@ -269,10 +322,19 @@ def _confluence_bonus(ltf: "SMCSnapshot", direction: str, ltf_atr: float) -> flo
 
 
 def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
-                 rules: dict = None) -> TradeSelection:
+                 rules: dict = None,
+                 macro_bars: list[Bar] = None) -> TradeSelection:
     """
-    Run HTF bias + LTF trigger matching. Return a TradeSelection with
-    `is_actionable=True` iff a valid setup is detected.
+    Run HTF bias + LTF trigger matching with ICT precision entries.
+
+    Improvements over v1:
+    - OTE entry: enters at 50% OB body (tighter SL, better R:R)
+    - Kill zone time bonus: +0.10 during London/NY open
+    - CISD bonus: +0.15 when 3-bar engulfing confirms direction
+    - Macro bias guard: if H4/D1 bars provided, must align with H1 bias
+    - Sweep gate: FVG fill gets -0.10 penalty when no prior sweep exists
+
+    Returns TradeSelection with `is_actionable=True` iff a valid setup detected.
     """
     from smc_engine import atr as _atr
 
@@ -283,8 +345,8 @@ def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
     min_conf = float(cfg.get("min_confidence", 0.50))
     tp_rr = float(cfg.get("tp_rr", 2.0))
     sl_buf = float(cfg.get("sl_buffer_frac", 0.10))
-    ob_prox = float(cfg.get("ob_proximity_atr_frac", 0.50))
-    fvg_prox = float(cfg.get("fvg_proximity_atr_frac", 0.50))
+    ob_prox = float(cfg.get("ob_proximity_atr_frac", 1.0))    # widened: 0.5→1.0 ATR
+    fvg_prox = float(cfg.get("fvg_proximity_atr_frac", 1.0))  # widened: 0.5→1.0 ATR
 
     if not enabled or not htf_bars or not ltf_bars:
         return TradeSelection(direction="NEUTRAL", entry_type="none",
@@ -295,6 +357,16 @@ def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
     ltf = analyze(ltf_bars)
     bias = detect_htf_bias(htf)
 
+    # Optional macro bias confirmation (H4 or D1 bars)
+    macro_penalty = 0.0   # applied to EVERY trigger confidence when TFs disagree
+    macro_note = ""
+    if macro_bars and len(macro_bars) >= 20:
+        macro_snap = analyze(macro_bars)
+        macro_bias = detect_htf_bias(macro_snap)
+        if macro_bias.direction not in ("NEUTRAL", bias.direction):
+            macro_penalty = -0.30   # enough to block marginal setups, not veto strong ones
+            macro_note = f"macro={macro_bias.direction} disagrees with HTF={bias.direction}"
+
     base = TradeSelection(
         direction=bias.direction, entry_type="none",
         entry_price=None, sl=None, tp=None,
@@ -302,6 +374,9 @@ def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
         htf_bias=bias, htf_snapshot=htf, ltf_snapshot=ltf,
         reasons=[f"HTF bias={bias.direction} via {bias.source} (score={bias.score:.2f})"],
     )
+
+    if macro_penalty < 0:
+        base.reasons.append(f"macro TF conflict -0.30 ({macro_note})")
 
     if bias.direction == "NEUTRAL":
         base.reasons.append("no bias → skip")
@@ -313,56 +388,71 @@ def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
         return base
 
     ltf_atr = _atr(ltf_bars)
-    sb_bonus = _silver_bullet_score(ltf, bias.direction)
-    cf_bonus = _confluence_bonus(ltf, bias.direction, ltf_atr)
-    if sb_bonus > 0:
-        base.reasons.append(f"Silver Bullet bonus +{sb_bonus:.2f}")
-    if cf_bonus > 0:
-        base.reasons.append(f"Confluence bonus +{cf_bonus:.2f}")
+    kz_bonus  = _kill_zone_bonus()
+    sb_bonus  = _silver_bullet_score(ltf, bias.direction)
+    cf_bonus  = _confluence_bonus(ltf, bias.direction, ltf_atr)
+    cd_bonus  = _cisd_bonus(ltf, bias.direction)
+    # Sweep gate: FVG/CHoCH without prior sweep gets a penalty
+    has_sweep = any(s.side == bias.direction for s in ltf.sweeps)
 
-    # 1) OB mitigation trigger
+    if kz_bonus > 0:
+        base.reasons.append(f"Kill zone +{kz_bonus:.2f}")
+    if sb_bonus > 0:
+        base.reasons.append(f"Silver Bullet +{sb_bonus:.2f}")
+    if cf_bonus > 0:
+        base.reasons.append(f"Confluence +{cf_bonus:.2f}")
+    if cd_bonus > 0:
+        base.reasons.append(f"CISD +{cd_bonus:.2f}")
+
+    # 1) OB mitigation trigger — OTE entry at 50% of OB body
     if "ob_mitigation" in entries:
         ob = _most_recent_unmitigated_ob(ltf, bias.direction)
         if ob is not None and _proximity_ok(px, ob.top, ob.bot, ltf_atr, ob_prox):
-            entry = px
+            # Use OTE (50% of OB body) as entry — tighter SL than current price
+            ote = _ote_entry(ob, bias.direction)
+            entry = ote if ob.bot <= ote <= ob.top else px
             sl = _sl_from_ob(ob, bias.direction, buffer_frac=sl_buf)
+            if abs(entry - sl) < 1e-9:
+                entry = px   # fallback to market if OB degenerate
             tp = _tp_from_rr(entry, sl, bias.direction, rr=tp_rr)
-            conf = min(1.0, bias.score + (0.20 if ob.strength == "STRONG" else 0.10)
-                       + sb_bonus + cf_bonus)
+            str_bonus = 0.20 if ob.strength == "STRONG" else 0.10
+            conf = min(1.0, bias.score + str_bonus + kz_bonus + sb_bonus + cf_bonus + cd_bonus + macro_penalty)
             base.entry_type = "ob_mitigation"
-            base.entry_price = entry
-            base.sl = sl
-            base.tp = tp
+            base.entry_price = round(entry, 5)
+            base.sl = round(sl, 5)
+            base.tp = round(tp, 5)
             base.confidence = conf
-            base.ltf_trigger = f"LTF OB {ob.side} @ idx {ob.anchor_idx}"
+            base.ltf_trigger = f"LTF OB {ob.side} @ idx {ob.anchor_idx} OTE={entry:.5f}"
             base.reasons.append(base.ltf_trigger)
             if conf >= min_conf:
                 return base
 
-    # 2) FVG fill trigger
+    # 2) FVG fill trigger — with sweep gate
     if "fvg_fill" in entries:
         fvg = _most_recent_unmitigated_fvg(ltf, bias.direction)
         if fvg is not None and _proximity_ok(px, fvg.top, fvg.bot, ltf_atr, fvg_prox):
             entry = px
-            sl = _sl_from_fvg(fvg, bias.direction, buffer_frac=sl_buf)
+            sl = _sl_from_fvg(fvg, bias.direction, buffer_frac=sl_buf, atr=ltf_atr)
             tp = _tp_from_rr(entry, sl, bias.direction, rr=tp_rr)
-            conf = min(1.0, bias.score + 0.10 + sb_bonus + cf_bonus)
+            sweep_pen = 0.0 if has_sweep else -0.10
+            conf = min(1.0, bias.score + 0.10 + kz_bonus + sb_bonus + cf_bonus + cd_bonus + sweep_pen + macro_penalty)
+            if sweep_pen < 0:
+                base.reasons.append("no prior sweep → FVG fill penalty -0.10")
             base.entry_type = "fvg_fill"
-            base.entry_price = entry
-            base.sl = sl
-            base.tp = tp
+            base.entry_price = round(entry, 5)
+            base.sl = round(sl, 5)
+            base.tp = round(tp, 5)
             base.confidence = conf
             base.ltf_trigger = f"LTF FVG {fvg.side} @ idx {fvg.middle_idx}"
             base.reasons.append(base.ltf_trigger)
             if conf >= min_conf:
                 return base
 
-    # 3) Sweep + CHoCH trigger
+    # 3) Sweep + CHoCH trigger — highest confidence entry type
     if "sweep_choch" in entries:
         pair = _recent_sweep_then_choch(ltf, bias.direction)
         if pair is not None:
             sw, ch = pair
-            # SL below sweep extreme (BULL) or above sweep extreme (BEAR)
             sw_bar = ltf_bars[sw.bar_idx]
             if bias.direction == "BULL":
                 sl = sw_bar.low - (ltf_atr * sl_buf)
@@ -370,11 +460,11 @@ def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
                 sl = sw_bar.high + (ltf_atr * sl_buf)
             entry = px
             tp = _tp_from_rr(entry, sl, bias.direction, rr=tp_rr)
-            conf = min(1.0, bias.score + 0.25 + sb_bonus + cf_bonus)
+            conf = min(1.0, bias.score + 0.25 + kz_bonus + sb_bonus + cf_bonus + cd_bonus + macro_penalty)
             base.entry_type = "sweep_choch"
-            base.entry_price = entry
-            base.sl = sl
-            base.tp = tp
+            base.entry_price = round(entry, 5)
+            base.sl = round(sl, 5)
+            base.tp = round(tp, 5)
             base.confidence = conf
             base.ltf_trigger = f"LTF sweep@{sw.bar_idx} → CHoCH@{ch.bar_idx}"
             base.reasons.append(base.ltf_trigger)

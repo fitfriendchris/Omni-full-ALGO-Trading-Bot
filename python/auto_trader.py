@@ -683,6 +683,42 @@ except ImportError:
 _MT5_AT_CACHE: dict = {"mtime": -1.0, "data": {}}
 
 # ── Data Loading ──────────────────────────────────────────────────────────────
+def _parse_mt5_json(raw: bytes) -> dict:
+    """Parse MT5 JSON, recovering from Wine's 4MB file-write truncation."""
+    text = raw.decode("utf-8", errors="replace").rstrip('\x00')
+    text = re.sub(r',\s*([\]}])', r'\1', text)
+    # Fast path
+    try:
+        if _orjson_at is not None:
+            return _orjson_at.loads(text)
+        return json.loads(text)
+    except Exception:
+        pass
+    # Recovery: truncate at last complete object boundary and close open structures
+    last_safe = text.rfind('},')
+    if last_safe == -1:
+        last_safe = text.rfind('}')
+    if last_safe != -1:
+        trunk = text[:last_safe + 1]
+        obj_d = arr_d = 0
+        in_s = esc = False
+        for ch in trunk:
+            if esc:             esc = False; continue
+            if ch == '\\' and in_s: esc = True; continue
+            if ch == '"':       in_s = not in_s; continue
+            if in_s:            continue
+            if ch == '{':       obj_d += 1
+            elif ch == '}':     obj_d -= 1
+            elif ch == '[':     arr_d += 1
+            elif ch == ']':     arr_d -= 1
+        closer = ']' * max(arr_d, 0) + '}' * max(obj_d, 0)
+        try:
+            return json.loads(trunk + closer)
+        except Exception:
+            pass
+    return {}
+
+
 def load_mt5_data() -> dict:
     """Load MT5 data with mtime-based caching so we never re-parse unchanged file."""
     try:
@@ -691,18 +727,12 @@ def load_mt5_data() -> dict:
             return _MT5_AT_CACHE["data"]
         with open(JSON_PATH, "rb") as f:
             raw = f.read()
-        if _orjson_at is not None:
-            try:
-                data = _orjson_at.loads(raw)
-            except Exception:
-                text = raw.decode("utf-8", errors="replace")
-                data = json.loads(re.sub(r',\s*([\]}])', r'\1', text))
-        else:
-            text = raw.decode("utf-8", errors="replace")
-            data = json.loads(re.sub(r',\s*([\]}])', r'\1', text))
-        _MT5_AT_CACHE["mtime"] = mtime
-        _MT5_AT_CACHE["data"]  = data
-        return data
+        data = _parse_mt5_json(raw)
+        if data:
+            _MT5_AT_CACHE["mtime"] = mtime
+            _MT5_AT_CACHE["data"]  = data
+            return data
+        raise ValueError("empty parse result")
     except Exception as e:
         log.warning(f"Data load error: {e}")
         return _MT5_AT_CACHE.get("data", {})
@@ -2692,13 +2722,25 @@ def main():
     else:
         log.warning("Could not load MT5 data at startup — skipping reconciliation")
 
-    scan_count     = 0
-    data_fail_count = 0
+    scan_count       = 0
+    data_fail_count  = 0
+    _last_stale_log  = 0.0   # throttle: only log stale once per 60s
+    _last_nodata_log = 0.0
 
     while True:
         try:
             scan_count += 1
             state.last_scan = datetime.now().isoformat()
+
+            # ── Weekend guard — forex closes Fri 22:00 UTC, opens Sun 22:00 UTC ──
+            _utc_now = datetime.now(timezone.utc)
+            _dow = _utc_now.weekday()  # 0=Mon … 6=Sun
+            _is_weekend = (_dow == 5) or (_dow == 6 and _utc_now.hour < 22)
+            if _is_weekend:
+                if _utc_now.minute == 0:  # log once per hour
+                    log.info("Forex weekend — market closed. Sleeping until Sunday 22:00 UTC.")
+                time.sleep(60)
+                continue
 
             # ── Kill switch check ──────────────────────────────────────
             if os.path.exists(KILL_SWITCH_PATH):
@@ -2731,27 +2773,25 @@ def main():
             data = load_mt5_data()
             if not data:
                 data_fail_count += 1
-                if data_fail_count % 6 == 0:
-                    log.error(f"MT5 data missing for {data_fail_count * SCAN_INTERVAL}s — is OmniExport EA running?")
-                else:
-                    log.warning("No MT5 data — waiting for EA...")
+                _now = time.time()
+                if _now - _last_nodata_log >= 60:
+                    log.error(f"MT5 data missing ({data_fail_count * SCAN_INTERVAL:.0f}s) — is OmniExport EA running?")
+                    _last_nodata_log = _now
                 time.sleep(SCAN_INTERVAL)
                 continue
 
             # ── Staleness guard — abort if data file is too old ────────
             try:
-                # Prefer .tmp if it's fresher (EA writes .tmp then renames)
-                _tmp = JSON_PATH + ".tmp"
-                _mtime = max(
-                    os.path.getmtime(JSON_PATH) if os.path.exists(JSON_PATH) else 0,
-                    os.path.getmtime(_tmp) if os.path.exists(_tmp) else 0,
-                )
+                _mtime = os.path.getmtime(JSON_PATH) if os.path.exists(JSON_PATH) else 0
                 data_age = time.time() - _mtime
                 if data_age > cfg.MAX_DATA_AGE_SECS:
-                    log.error(
-                        f"MT5 data stale ({data_age:.0f}s old, max {cfg.MAX_DATA_AGE_SECS}s) — "
-                        f"is OmniExport EA running? Trading paused."
-                    )
+                    _now = time.time()
+                    if _now - _last_stale_log >= 60:
+                        log.error(
+                            f"MT5 data stale ({data_age:.0f}s old, max {cfg.MAX_DATA_AGE_SECS}s) — "
+                            f"is OmniExport EA running? Trading paused."
+                        )
+                        _last_stale_log = _now
                     time.sleep(SCAN_INTERVAL)
                     continue
             except OSError:

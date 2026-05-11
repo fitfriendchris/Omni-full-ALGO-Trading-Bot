@@ -82,18 +82,29 @@ def _default_specs(project_root: Path) -> list[ServiceSpec]:
             env={"PYTHONUNBUFFERED": "1"},
         ),
         ServiceSpec(
+            name="swarm",
+            argv=[PY, "-u", str(HERE / "swarm.py")],
+            cwd=HERE,
+            env={"PYTHONUNBUFFERED": "1"},
+            restart=True,
+            max_restarts=50,
+        ),
+        ServiceSpec(
             name="orchestrator",
             argv=[PY, "-u", str(HERE / "orchestrator.py"), "--loop", "60"],
             cwd=HERE,
             env={"PYTHONUNBUFFERED": "1"},
         ),
-        ServiceSpec(
-            name="auto_trader",
-            argv=[PY, "-u", str(HERE / "auto_trader.py"), "--risk", "MODERATE", "--freq", "AGGRESSIVE"],
-            cwd=HERE,
-            env={"PYTHONUNBUFFERED": "1", "OMNI_PAPER_MODE": "false"},
-            restart=True,
-        ),
+        # auto_trader.py is used as a library by execution_agent in live mode.
+        # Do NOT run it as a standalone supervised process — the swarm handles execution.
+        # Uncomment below only for legacy single-process mode (without swarm).
+        # ServiceSpec(
+        #     name="auto_trader",
+        #     argv=[PY, "-u", str(HERE / "auto_trader.py"), "--risk", "MODERATE", "--freq", "AGGRESSIVE"],
+        #     cwd=HERE,
+        #     env={"PYTHONUNBUFFERED": "1"},
+        #     restart=True,
+        # ),
         ServiceSpec(
             name="telegram_bot",
             argv=[PY, "-u", str(HERE / "telegram_bot.py")],
@@ -231,11 +242,54 @@ def _terminate(rs: RunningService, grace: float = 5.0) -> None:
             pass
 
 
+def _free_port(port: int) -> None:
+    """Kill any process holding a TCP port (handles stale server survivors not in state file)."""
+    try:
+        import subprocess as _sp
+        out = _sp.check_output(["lsof", "-ti", f":{port}"], text=True).strip()
+        for pid_str in out.splitlines():
+            pid = int(pid_str.strip())
+            try:
+                os.kill(pid, signal.SIGTERM)
+                log.info("freed port %d from stale pid=%d", port, pid)
+            except ProcessLookupError:
+                pass
+    except Exception:
+        pass
+
+
+def _kill_survivors() -> None:
+    """Kill child PIDs still alive from the previous watchdog run (prevents orphan accumulation)."""
+    state = _read_state()
+    for name, info in state.get("services", {}).items():
+        pid = info.get("pid")
+        if not pid:
+            continue
+        try:
+            os.kill(int(pid), 0)  # raises if not running
+            log.info("killing survivor from previous run: %s (pid=%s)", name, pid)
+            os.kill(int(pid), signal.SIGTERM)
+            time.sleep(0.3)
+            try:
+                os.kill(int(pid), 0)
+                os.kill(int(pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        except ProcessLookupError:
+            pass
+        except Exception as e:
+            log.debug("survivor check %s pid=%s: %s", name, pid, e)
+    # Free bound ports so new server instances can start cleanly
+    _free_port(8787)
+
+
 def supervise(specs: list[ServiceSpec],
               *,
               poll_s: float = 2.0,
               grace_s: float = 5.0) -> int:
     """Run the supervise loop until SIGINT / SIGTERM."""
+    _kill_survivors()
+
     running: dict[str, RunningService] = {
         s.name: RunningService(spec=s) for s in specs
     }

@@ -1,0 +1,175 @@
+{
+  "run_at": "2026-05-20T17:56:26.963603",
+  "period": "May 8\u201321 2026 (last ~2 weeks)",
+  "equity": 1000.0,
+  "by_symbol": {
+    "XAUUSD": {
+      "symbol": "XAUUSD",
+      "legacy": {
+        "trades": 25,
+        "wins": 16,
+        "losses": 9,
+        "win_rate": 64.0,
+        "profit_factor": 2.54,
+        "total_pnl": 403.08,
+        "max_drawdown_pct": 7.11
+      },
+      "v2": {
+        "trades": 13,
+        "wins": 4,
+        "losses": 9,
+        "win_rate": 30.77,
+        "profit_factor": 0.47,
+        "total_pnl": -138.92,
+        "max_drawdown_pct": 7.11,
+        "spread": 0.58,
+        "tick_size": 0.01
+      }
+    },
+    "XAGUSD": {
+      "symbol": "XAGUSD",
+      "legacy": {
+        "trades": 59,
+        "wins": 40,
+        "losses": 19,
+        "win_rate": 67.8,
+        "profit_factor": 3.42,
+        "total_pnl": 2774.7,
+        "max_drawdown_pct": 15.12
+      },
+      "v2": {
+        "trades": 43,
+        "wins": 25,
+        "losses": 18,
+        "win_rate": 58.14,
+        "profit_factor": 1.86,
+        "total_pnl": 961.96,
+        "max_drawdown_pct": 15.12,
+        "spread": 0.082,
+        "tick_size": 0.001
+      }
+    },
+    "EURUSD": {
+      "symbol": "EURUSD",
+      "legacy": {
+        "trades": 22,
+        "wins": 19,
+        "losses": 3,
+        "win_rate": 86.4,
+        "profit_factor": 7.83,
+        "total_pnl": 873.14,
+        "max_drawdown_pct": 5.88
+      },
+      "v2": {
+        "trades": 14,
+        "wins": 11,
+        "losses": 3,
+        "win_rate": 78.57,
+        "profit_factor": 5.39,
+        "total_pnl": 560.91,
+        "max_drawdown_pct": 5.88,
+        "spread": 1e-05,
+        "tick_size": 1e-05
+      }
+    },
+    "GBPUSD": {
+      "symbol": "GBPUSD",
+      "legacy": {
+        "trades": 32,
+        "wins": 27,
+        "losses": 5,
+        "win_rate": 84.4,
+        "profit_factor": 15.23,
+        "total_pnl": 2026.17,
+        "max_drawdown_pct": 5.97
+      },
+      "v2": {
+        "trades": 13,
+        "wins": 9,
+        "losses": 4,
+        "win_rate": 69.23,
+        "profit_factor": 9.89,
+        "total_pnl": 908.7,
+        "max_drawdown_pct": 5.97,
+        "spread": 0.00014000000000000001,
+        "tick_size": 1e-05
+      }
+    },
+    "USDJPY": {
+      "symbol": "USDJPY",
+      "legacy": {
+        "trades": 32,
+        "wins": 25,
+        "losses": 7,
+        "win_rate": 78.1,
+        "profit_factor": 9.83,
+        "total_pnl": 1956.75,
+        "max_drawdown_pct": 8.39
+      },
+      "v2": {
+        "trades": 12,
+        "wins": 8,
+        "losses": 4,
+        "win_rate": 66.67,
+        "profit_factor": 5.97,
+        "total_pnl": 463.2,
+        "max_drawdown_pct": 8.39,
+        "spread": 0.015,
+        "tick_size": 0.001
+      }
+    },
+    "AUDUSD": {
+      "symbol": "AUDUSD",
+      "legacy": {
+        "trades": 12,
+        "wins": 9,
+        "losses": 3,
+        "win_rate": 75.0,
+        "profit_factor": 1.68,
+        "total_pnl": 42.94,
+        "max_drawdown_pct": 2.12
+      },
+      "v2": {
+        "trades": 6,
+        "wins": 3,
+        "losses": 3,
+        "win_rate": 50.0,
+        "profit_factor": 0.62,
+        "total_pnl": -23.78,
+        "max_drawdown_pct": 2.12,
+        "spread": 8e-05,
+        "tick_size": 1e-05
+      }
+    },
+    "USDCAD": {
+      "symbol": "USDCAD",
+      "legacy": {
+        "trades": 37,
+        "wins": 28,
+        "losses": 9,
+        "win_rate": 75.7,
+        "profit_factor": 4.28,
+        "total_pnl": 1293.52,
+        "max_drawdown_pct": 14.53
+      },
+      "v2": {
+        "trades": 11,
+        "wins": 5,
+        "losses": 6,
+        "win_rate": 45.45,
+        "profit_factor": 0.86,
+        "total_pnl": -40.21,
+        "max_drawdown_pct": 14.53,
+        "spread": 0.00014000000000000001,
+        "tick_size": 1e-05
+      }
+    }
+  },
+  "aggregate": {
+    "legacy_trades": 219,
+    "v2_trades": 112,
+    "legacy_total_pnl": 9370.3,
+    "v2_total_pnl": 2691.86,
+    "v2_pnl_delta": -6678.44
+  }
+}

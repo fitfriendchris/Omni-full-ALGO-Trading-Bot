@@ -1,0 +1,19 @@
+[
+  {
+    "time": "2026-05-20 04:30:00",
+    "direction": "SELL",
+    "entry": 73.88900000000001,
+    "sl": 73.994921,
+    "tp": 72.911884,
+    "exit": 73.994921,
+    "pnl": -5.5,
+    "r": -1.0,
+    "reason": "SL",
+    "lot": 0.5,
+    "risk_usd": 2.0,
+    "equity": 94.5,
+    "h4_amd": "DISTRIBUTION_DOWN",
+    "confidence": 90,
+    "rr": 9.224950670783462
+  }
+]

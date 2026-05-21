@@ -2921,6 +2921,10 @@ def main():
                                                     confidence=conf_int,
                                                     reasons=sel.reasons,
                                                     rr_ratio=dual_tf_cfg.get("tp_rr", 2.0),
+                                                    ema20=sel.ema20,
+                                                    ema200=sel.ema200,
+                                                    ema800=sel.ema800,
+                                                    tf_emas=sel.tf_emas,
                                                 )
                                                 all_setups.append(dual_setup)
                                                 existing_keys.add((sym, direction))

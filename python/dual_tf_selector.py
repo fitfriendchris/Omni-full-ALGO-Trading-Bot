@@ -83,6 +83,10 @@ class TradeSelection:
     ltf_trigger:   Optional[str] = None     # short human-readable trigger tag
     htf_snapshot:  Optional[SMCSnapshot] = None
     ltf_snapshot:  Optional[SMCSnapshot] = None
+    ema20:         float = 0.0               # EMA 20 on LTF
+    ema200:        float = 0.0               # EMA 200 on LTF
+    ema800:        float = 0.0               # EMA 800 on LTF (macro)
+    tf_emas:       dict = field(default_factory=dict)  # EMA20 for ALL timeframes
 
     @property
     def is_actionable(self) -> bool:
@@ -276,10 +280,28 @@ def _kill_zone_bonus() -> float:
 
 
 def _ote_entry(ob: OrderBlock, side: Direction) -> float:
-    """ICT Optimal Trade Entry: 50% of OB body (body_top + body_bot midpoint).
-    Provides tighter SL and better R:R vs entering at current price.
+    """ICT AMD / Market Maker Model entry: manipulation wick extreme of the OB.
+
+    When price sweeps liquidity and forms an OB, the optimal entry is the
+    manipulation wick extreme (the stop-run spike), NOT the OB midpoint.
+
+    BULL (swept low):  enter at OB bottom (the swept level)
+    BEAR (swept high): enter at OB top    (the swept level)
     """
-    return (ob.body_top + ob.body_bot) / 2.0
+    if side == "BULL":
+        return ob.bot      # Enter at swept low (manipulation wick extreme)
+    return ob.top          # Enter at swept high (manipulation wick extreme)
+
+
+def _sl_from_ob(ob: OrderBlock, side: Direction, buffer_frac: float = 0.10) -> float:
+    """SL just beyond the manipulation wick extreme — if price comes back past
+    here, the sweep was NOT a true liquidity grab."""
+    rng = max(1e-12, ob.top - ob.bot)
+    if side == "BULL":
+        # SL below the swept low — if price goes back below, stop hunt failed
+        return ob.bot - rng * buffer_frac
+    # SL above the swept high — if price goes back above, stop hunt failed
+    return ob.top + rng * buffer_frac
 
 
 def _cisd_bonus(ltf: SMCSnapshot, direction: str) -> float:
@@ -357,6 +379,23 @@ def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
     ltf = analyze(ltf_bars)
     bias = detect_htf_bias(htf)
 
+    # ── EMA computation on LTF bars ──
+    ema20_val = ema200_val = ema800_val = 0.0
+    if ltf_bars and len(ltf_bars) >= 20:
+        from ict_precision import _calc_ema
+        closes = [b.close for b in ltf_bars]
+        ema20_val = _calc_ema(closes, 20)[-1]
+        if len(ltf_bars) >= 200:
+            ema200_val = _calc_ema(closes, 200)[-1]
+        if len(ltf_bars) >= 800:
+            ema800_val = _calc_ema(closes, 800)[-1]
+        # Deviation: how many ATRs is current price from EMA20
+        from smc_engine import atr as _atr
+        ltf_atr_ema = _atr(ltf_bars)  # same ATR already computed later in this function
+        ema_dev = abs(closes[-1] - ema20_val) / ltf_atr_ema if ltf_atr_ema > 0 else 0.0
+    else:
+        ema_dev = 0.0
+
     # Optional macro bias confirmation (H4 or D1 bars)
     macro_penalty = 0.0   # applied to EVERY trigger confidence when TFs disagree
     macro_note = ""
@@ -372,6 +411,7 @@ def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
         entry_price=None, sl=None, tp=None,
         confidence=bias.score,
         htf_bias=bias, htf_snapshot=htf, ltf_snapshot=ltf,
+        ema20=round(ema20_val, 5), ema200=round(ema200_val, 5), ema800=round(ema800_val, 5),
         reasons=[f"HTF bias={bias.direction} via {bias.source} (score={bias.score:.2f})"],
     )
 
@@ -417,6 +457,13 @@ def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
             tp = _tp_from_rr(entry, sl, bias.direction, rr=tp_rr)
             str_bonus = 0.20 if ob.strength == "STRONG" else 0.10
             conf = min(1.0, bias.score + str_bonus + kz_bonus + sb_bonus + cf_bonus + cd_bonus + macro_penalty)
+            # EMA boost: entry near EMA20 = higher probability fill
+            if ema20_val > 0 and abs(entry - ema20_val) <= ltf_atr * 0.5:
+                conf = min(1.0, conf + 0.05)
+                base.reasons.append(f"EMA20 return boost +0.05 (entry {entry:.5f} near EMA20 {ema20_val:.5f})")
+            elif ema_dev > 2.0:
+                conf = min(1.0, conf + 0.03)
+                base.reasons.append(f"EMA20 stretched boost +0.03 ({ema_dev:.1f}x ATR from mean)")
             base.entry_type = "ob_mitigation"
             base.entry_price = round(entry, 5)
             base.sl = round(sl, 5)
@@ -436,6 +483,13 @@ def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
             tp = _tp_from_rr(entry, sl, bias.direction, rr=tp_rr)
             sweep_pen = 0.0 if has_sweep else -0.10
             conf = min(1.0, bias.score + 0.10 + kz_bonus + sb_bonus + cf_bonus + cd_bonus + sweep_pen + macro_penalty)
+            # EMA boost for FVG fills too
+            if ema20_val > 0 and abs(entry - ema20_val) <= ltf_atr * 0.5:
+                conf = min(1.0, conf + 0.05)
+                base.reasons.append(f"EMA20 return boost +0.05 (entry {entry:.5f} near EMA20 {ema20_val:.5f})")
+            elif ema_dev > 2.0:
+                conf = min(1.0, conf + 0.03)
+                base.reasons.append(f"EMA20 stretched boost +0.03 ({ema_dev:.1f}x ATR from mean)")
             if sweep_pen < 0:
                 base.reasons.append("no prior sweep → FVG fill penalty -0.10")
             base.entry_type = "fvg_fill"
@@ -461,6 +515,13 @@ def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
             entry = px
             tp = _tp_from_rr(entry, sl, bias.direction, rr=tp_rr)
             conf = min(1.0, bias.score + 0.25 + kz_bonus + sb_bonus + cf_bonus + cd_bonus + macro_penalty)
+            # EMA boost for sweep+choch
+            if ema20_val > 0 and abs(entry - ema20_val) <= ltf_atr * 0.5:
+                conf = min(1.0, conf + 0.05)
+                base.reasons.append(f"EMA20 return boost +0.05 (entry {entry:.5f} near EMA20 {ema20_val:.5f})")
+            elif ema_dev > 2.0:
+                conf = min(1.0, conf + 0.03)
+                base.reasons.append(f"EMA20 stretched boost +0.03 ({ema_dev:.1f}x ATR from mean)")
             base.entry_type = "sweep_choch"
             base.entry_price = round(entry, 5)
             base.sl = round(sl, 5)

@@ -1,0 +1,68 @@
+{
+  "XAUUSD": {
+    "trades": 29,
+    "win_rate": 79.3,
+    "profit": 468.32000000000005,
+    "return_pct": 468.32,
+    "max_dd": 38.23,
+    "sharpe": 0.0,
+    "bars": 300,
+    "start": "2026.05.04 08:00:00",
+    "end": "2026.05.21 08:00:00"
+  },
+  "XAGUSD": {
+    "trades": 47,
+    "win_rate": 68.1,
+    "profit": 1410.85,
+    "return_pct": 1410.85,
+    "max_dd": 27.13,
+    "sharpe": 0.0,
+    "bars": 300,
+    "start": "2026.05.04 08:00:00",
+    "end": "2026.05.21 08:00:00"
+  },
+  "EURUSD": {
+    "trades": 40,
+    "win_rate": 90.0,
+    "profit": 205.05,
+    "return_pct": 205.05,
+    "max_dd": 5.78,
+    "sharpe": 0.0,
+    "bars": 300,
+    "start": "2026.05.04 21:00:00",
+    "end": "2026.05.21 08:00:00"
+  },
+  "GBPUSD": {
+    "trades": 0,
+    "win_rate": 0.0,
+    "profit": -100.0,
+    "return_pct": 0.0,
+    "max_dd": 0.0,
+    "sharpe": 0.0,
+    "bars": 0,
+    "start": "",
+    "end": ""
+  },
+  "AUDUSD": {
+    "trades": 0,
+    "win_rate": 0.0,
+    "profit": -100.0,
+    "return_pct": 0.0,
+    "max_dd": 0.0,
+    "sharpe": 0.0,
+    "bars": 0,
+    "start": "",
+    "end": ""
+  },
+  "USDCAD": {
+    "trades": 20,
+    "win_rate": 100.0,
+    "profit": 106.5,
+    "return_pct": 106.5,
+    "max_dd": 0,
+    "sharpe": 0.0,
+    "bars": 300,
+    "start": "2026.05.04 21:00:00",
+    "end": "2026.05.21 08:00:00"
+  }
+}

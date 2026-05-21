@@ -123,7 +123,12 @@ class BacktestConfig:
     tp2_pct:        float = 0.30  # Close 30% at TP2
     tp3_pct:        float = 0.20  # Runner 20% to TP3
     spread_points:  int   = 20    # Simulated spread
-    # ICT params
+    # ── Reality modeling (honest backtest) ──
+    commission_per_lot: float = 7.0   # $ per lot round-turn (MidasFX ~$7 forex, $10 gold)
+    slippage_pips:      float = 1.0   # Base slippage on entry (pips)
+    sl_slippage_pips:   float = 2.0   # Extra slippage on stop losses (worse fills)
+    limit_order_mode:   bool  = True  # Only fill if price retraces to entry level
+    volatility_slip_mult: float = 1.5  # Slippage × this when ATR > 2× normal
     ob_lookback:    int   = 10
     fvg_lookback:   int   = 8
     sweep_confirm:  int   = 2     # Bars to confirm sweep
@@ -176,14 +181,22 @@ class BacktestResult:
 def parse_bars(raw: list) -> list:
     return [Bar(b["t"], b["o"], b["h"], b["l"], b["c"], b.get("v",0)) for b in raw]
 
-def load_data() -> dict:
-    try:
-        with open(JSON_PATH, "r", encoding="utf-8") as f:
-            raw = re.sub(r',\s*([\]}])', r'\1', f.read())
-        return json.loads(raw)
-    except Exception as e:
-        print(f"[BT] Load error: {e}")
-        return {}
+def load_data(max_attempts: int = 5) -> dict:
+    """Load MT5 data with retry — survives EA write-in-progress corruption."""
+    for attempt in range(max_attempts):
+        try:
+            with open(JSON_PATH, "r", encoding="utf-8") as f:
+                raw = re.sub(r',\s*([\]\}])', r'\1', f.read())
+            data = json.loads(raw)
+            if data:
+                return data
+        except Exception:
+            pass
+        if attempt < max_attempts - 1:
+            import time
+            time.sleep(0.3 * (attempt + 1))
+    print(f"[BT] Load error: all {max_attempts} retries failed; EA may be writing")
+    return {}
 
 def get_session(bar_time: str) -> str:
     try:
@@ -448,13 +461,26 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
                         tr.sl = tr.entry_price - tick_size
 
             if closed:
+                # ── REALITY: Slippage on stop losses + commission ──
+                # Stop losses get worse fills (2 pip extra slippage by default)
+                if exit_r == "SL":
+                    slip = config.sl_slippage_pips * tick_size * config.volatility_slip_mult
+                    if tr.direction == "BUY":
+                        exit_p -= slip  # Worse fill (lower price)
+                    else:
+                        exit_p += slip  # Worse fill (higher price)
+
+                # Round-turn commission per lot
+                commission = config.commission_per_lot * tr.lot_size
+
                 # Calculate P&L
                 if tr.direction == "BUY":
                     pips = (exit_p - tr.entry_price) / tick_size
                 else:
                     pips = (tr.entry_price - exit_p) / tick_size
 
-                pnl  = pips * tick_value * tr.lot_size
+                gross_pnl  = pips * tick_value * tr.lot_size
+                pnl = gross_pnl - commission  # Net after commission
                 r    = pnl / tr.risk_amount if tr.risk_amount > 0 else 0
 
                 tr.exit_time  = bar.time
@@ -544,6 +570,18 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
 
         new_setup = None
 
+        # ── ATR helper for backtest SL sizing ──
+        def _bt_atr(bars, period=14):
+            if len(bars) < period: return 0.0
+            trs = []
+            for i in range(1, min(period, len(bars))):
+                b0, b1 = bars[i-1], bars[i]
+                tr = max(b1.h - b1.l, abs(b1.h - b0.c), abs(b1.l - b0.c))
+                trs.append(tr)
+            return sum(trs) / len(trs) if trs else 0.0
+
+        atr_bt = _bt_atr(prev_bars, 14) if prev_bars else 0.0
+
         # ── SELL setup: sweep of high ────────────────────────────────
         for level in sorted(liq_highs)[:4]:
             b1 = prev_bars[0] if prev_bars else None
@@ -554,8 +592,15 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
 
                 if ob:
                     ob_l, ob_h = ob
-                    entry   = ob_h + spread
-                    sl      = ob_h + (ob_h - ob_l) * 2.0
+                    # AMD Market Maker Model: enter at manipulation wick extreme
+                    sweep_extreme = b1.h  # The wick high that swept liquidity
+                    entry = sweep_extreme + spread
+                    # SL just beyond the manipulation wick — if price comes back, stop hunt failed
+                    sl_buffer = max(atr_bt * 0.5, (sweep_extreme - level) * 0.2)
+                    sl = sweep_extreme + sl_buffer
+                    # Cap SL at 1.5× ATR to prevent runaway risk
+                    if atr_bt > 0:
+                        sl = min(sl, entry + atr_bt * 1.5)
                     risk_r  = sl - entry
                     if risk_r <= 0: continue
                     tp1 = entry - risk_r * 1.5
@@ -593,8 +638,15 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
 
                     if ob:
                         ob_l, ob_h = ob
-                        entry   = ob_l - spread
-                        sl      = ob_l - (ob_h - ob_l) * 2.0
+                        # AMD Market Maker Model: enter at manipulation wick extreme
+                        sweep_extreme = b1.l  # The wick low that swept liquidity
+                        entry = sweep_extreme - spread
+                        # SL just beyond the manipulation wick — if price comes back, stop hunt failed
+                        sl_buffer = max(atr_bt * 0.5, (level - sweep_extreme) * 0.2)
+                        sl = sweep_extreme - sl_buffer
+                        # Cap SL at 1.5× ATR to prevent runaway risk
+                        if atr_bt > 0:
+                            sl = max(sl, entry - atr_bt * 1.5)
                         risk_r  = entry - sl
                         if risk_r <= 0: continue
                         tp1 = entry + risk_r * 1.5
@@ -651,9 +703,29 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
                         result.setups_found += 1
 
         if new_setup:
-            open_trades.append(new_setup)
+            # ── LIMIT ORDER SIMULATION ──
+            # In reality, we place a LIMIT at the entry level. The trade only fills
+            # if price retraces to that level. Skip if price never came back.
+            if config.limit_order_mode:
+                # Check if price hit our limit level within the next 3 bars
+                entry_level = new_setup.entry_price
+                filled = False
+                for j in range(idx + 1, min(idx + 4, len(bars_asc))):
+                    future_bar = bars_asc[j]
+                    if new_setup.direction == "BUY" and future_bar.l <= entry_level <= future_bar.h:
+                        filled = True
+                        break
+                    if new_setup.direction == "SELL" and future_bar.l <= entry_level <= future_bar.h:
+                        filled = True
+                        break
+                if not filled:
+                    result.setups_found -= 1  # Revert the count
+                    new_setup = None  # Trade never filled
 
-            # ── Persist opened-trade features to feature_store ────────────
+            if new_setup:
+                open_trades.append(new_setup)
+
+                # ── Persist opened-trade features to feature_store ────────────
             if config.persist_features:
                 fs = _get_bt_feature_store()
                 if fs is not None:
@@ -716,7 +788,9 @@ def run_backtest(config: BacktestConfig) -> BacktestResult:
         pips = ((last_price - tr.entry_price) / tick_size
                 if tr.direction == "BUY"
                 else (tr.entry_price - last_price) / tick_size)
-        pnl = pips * tick_value * tr.lot_size
+        gross_pnl = pips * tick_value * tr.lot_size
+        commission = config.commission_per_lot * tr.lot_size
+        pnl = gross_pnl - commission
         tr.exit_time = bars_asc[-1].time
         tr.exit_price = last_price
         tr.exit_reason = "END"

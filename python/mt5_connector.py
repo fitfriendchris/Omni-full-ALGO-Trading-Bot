@@ -240,7 +240,8 @@ def get_bars(symbol: str, timeframe: str, n: int = 200) -> list:
     Returns list of dicts with keys: time, open, high, low, close, volume.
     Timeframe strings: 'M1','M5','M15','H1','H4','D1','W1'
     """
-    data = _load()
+    # ── Use retry to survive EA write-in-progress corruption ──
+    data = load_with_retry(max_attempts=3)
     charts = data.get("charts", {})
     resolved = _resolve_symbol(charts, symbol)
     sym_data = charts.get(resolved, {})

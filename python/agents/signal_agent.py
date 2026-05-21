@@ -20,6 +20,7 @@ Self-tasks/events emitted:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -33,6 +34,10 @@ PROJECT_ROOT = HERE.parent
 RULES_PATH   = HERE / "rules.json"
 SIGNALS_PATH = PROJECT_ROOT / "shared" / "signals.json"
 CONF_OVERRIDES_PATH = PROJECT_ROOT / "shared" / "conf_overrides.json"
+MT5_DATA     = (Path.home() / "Library/Application Support"
+                / "net.metaquotes.wine.metatrader5/drive_c/users/user"
+                / "AppData/Roaming/MetaQuotes/Terminal/Common/Files"
+                / "omni_data.json")
 
 
 class SignalAgent(BaseAgent):
@@ -63,6 +68,43 @@ class SignalAgent(BaseAgent):
         except Exception:
             self._conf_overrides = {}
 
+    def _load_mt5_account(self) -> dict:
+        try:
+            with open(MT5_DATA) as fh:
+                return json.load(fh).get("account", {})
+        except Exception:
+            return {}
+
+    def _load_mt5_charts(self) -> dict:
+        try:
+            with open(MT5_DATA) as fh:
+                return json.load(fh).get("charts", {})
+        except Exception:
+            return {}
+
+    def _adx_trend_strength(self, bars: list[dict]) -> float:
+        if len(bars) < 14:
+            return 100.0
+        import math
+        trs = []; plus_dms = []; minus_dms = []
+        for i in range(1, len(bars)):
+            h = float(bars[i].get("h", 0)); l = float(bars[i].get("l", 0))
+            pc = float(bars[i-1].get("c", h))
+            tr = max(h - l, abs(h - pc), abs(l - pc))
+            trs.append(tr)
+            up_move = h - float(bars[i-1].get("h", h))
+            dn_move = float(bars[i-1].get("l", l)) - l
+            plus_dms.append(up_move if up_move > dn_move and up_move > 0 else 0)
+            minus_dms.append(dn_move if dn_move > up_move and dn_move > 0 else 0)
+        if not trs:
+            return 0.0
+        period = 14
+        atr_s = sum(trs[-period:]) / period if len(trs) >= period else sum(trs) / len(trs)
+        plus_di = sum(plus_dms[-period:]) / period * 100 / atr_s if atr_s > 0 else 0
+        minus_di = sum(minus_dms[-period:]) / period * 100 / atr_s if atr_s > 0 else 0
+        dx = abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) > 0 else 0
+        return dx
+
     async def _run_cycle(self) -> dict:
         rules    = self._load_rules()
         min_conf = float(rules.get("dual_tf", {}).get("min_confidence", 0.50))
@@ -81,6 +123,11 @@ class SignalAgent(BaseAgent):
         tradeable = []
         low_conf  = []
 
+        # Global reads once per cycle
+        account = self._load_mt5_account()
+        equity = float(account.get("equity", 0)) if isinstance(account, dict) else 0.0
+        charts = self._load_mt5_charts()
+
         for sig in sig_list:
             sid = sig.get("id", "")
             if not sid or sid in self._routed_ids:
@@ -92,7 +139,39 @@ class SignalAgent(BaseAgent):
             # Apply symbol-level confidence override from learning agent
             symbol = sig.get("symbol", "")
             override = self._conf_overrides.get(symbol, 0.0)
-            effective_conf = float(sig.get("confidence", 0)) + override
+            raw_conf = float(sig.get("confidence", 0))
+            effective_conf = raw_conf + override
+
+            # ── ADX gate ──
+            h1_bars = charts.get(symbol, {}).get("H1", []) if isinstance(charts, dict) else []
+            adx = self._adx_trend_strength(h1_bars)
+            if adx < 20 and raw_conf < 0.85:
+                self.log.debug("skip %s: ADX=%.1f < 20 (choppy)", symbol, adx)
+                low_conf.append(symbol)
+                self._routed_ids.add(sid)
+                continue
+
+            # ── Macro veto for low equity ──
+            # Block metals that have macro TF conflicts until their equity gate
+            # Forex (no equity_gate in rules) can trade at $75+
+            reasons = sig.get("reasons", [])
+            macro_disagree = any("macro TF conflict" in r for r in reasons)
+            sym_ove = rules.get("symbol_overrides", {}).get(symbol, {})
+            gate = sym_ove.get("equity_gate", {}).get("min_equity_usd", 75)
+            if macro_disagree and equity > 0 and equity < gate:
+                self.log.info("MACRO_VETO %s: conf=%.2f equity=$%.2f < gate=$%.0f — blocked",
+                              symbol, raw_conf, equity, gate)
+                self.broadcast("SIGNAL_REJECTED", {
+                    "symbol": symbol, "reason": "macro_veto_low_equity",
+                    "confidence": raw_conf, "equity": equity, "gate": gate,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                })
+                self._routed_ids.add(sid)
+                continue
+
+            # ── Equity-scaled confidence for small accounts ──
+            if 0 < equity < 500:
+                effective_conf = effective_conf * ((equity / 100) ** 0.5)
 
             # Check symbol-specific min_conf from rules
             sym_override = rules.get("symbol_overrides", {}).get(symbol, {})
@@ -106,6 +185,10 @@ class SignalAgent(BaseAgent):
                 self._routed_ids.add(sid)
                 continue
 
+            # Attach equity context for downstream execution agent
+            sig["_account_equity"] = equity
+            sig["_adx"] = adx
+
             tradeable.append(sig)
             self._routed_ids.add(sid)
 
@@ -114,7 +197,7 @@ class SignalAgent(BaseAgent):
         for sig in tradeable:
             self.send("risk_agent", "REQUEST_RISK_CHECK", {
                 "signal": sig,
-                "paper_mode": True,   # risk_agent reads OMNI_PAPER_MODE env
+                "paper_mode": os.getenv("OMNI_PAPER_MODE", "false").lower() == "true",
             }, priority=1)
             routed += 1
 

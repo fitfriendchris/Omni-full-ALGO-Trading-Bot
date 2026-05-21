@@ -1338,10 +1338,15 @@ class AlertMonitor:
         if isinstance(alerts, list):
             for a in alerts:
                 self._seen.add((a.get("service"), a.get("code"), a.get("ts")))
+        self._limit_orders = set()  # track pending order tickets
         acc_id = _load_active_account()
         state  = _json(_state_path(acc_id))
         if isinstance(state, dict):
             self._trades = set(state.get("active_trades", {}).keys())
+            for tid, t in state.get("active_trades", {}).items():
+                if t.get("order_type", "") in ("BUY_LIMIT", "SELL_LIMIT"):
+                    self._limit_orders.add(tid)
+        self._last_equity = 0.0
         _, self._last_equity, _, _, _ = _live_equity(acc_id)
 
     def check(self) -> None:
@@ -1349,6 +1354,64 @@ class AlertMonitor:
         self._halt()
         self._trades_check()
         self._equity_update()
+        self._limit_check()
+
+    def _limit_check(self) -> None:
+        """Check for new limit orders, fills, and stale cancellations."""
+        acc_id = _load_active_account()
+        state = _json(_state_path(acc_id))
+        if not isinstance(state, dict):
+            return
+        trades = state.get("active_trades", {})
+        current_limit = {tid for tid, t in trades.items()
+                         if t.get("order_type", "").upper() in ("BUY_LIMIT", "SELL_LIMIT")}
+        
+        # New limit order placed
+        for tid in current_limit - self._limit_orders:
+            t = trades.get(tid, {})
+            sym = t.get("symbol", "?")
+            dir_ = t.get("direction", "?")
+            entry = float(t.get("entry", 0) or t.get("entry_price", 0))
+            sl = float(t.get("sl", 0))
+            tp = float(t.get("tp", 0))
+            conf = t.get("confidence", 0)
+            conf_pct = int(conf * 100) if isinstance(conf, float) else int(conf or 0)
+            icon = "🟢" if "BUY" in dir_.upper() else "🔴"
+            send(self.chat_id,
+                 f"📥 <b>PENDING LIMIT ORDER</b>\n"
+                 f"{icon} <b>{sym}</b> {dir_}\n"
+                 f"Limit: <code>{entry:.5f}</code>  |  SL: <code>{sl:.5f}</code>\n"
+                 f"TP: <code>{tp:.5f}</code>  |  Conf: {conf_pct}%\n"
+                 f"<i>Waiting for price to return to OTE level…</i>")
+            self._limit_orders.add(tid)
+        
+        # Limit converted to market (fallback when price breached)
+        for tid in self._limit_orders:
+            if tid in trades:
+                t = trades.get(tid, {})
+                ot = t.get("order_type", "").upper()
+                if ot in ("BUY", "SELL", "MARKET"):
+                    # Was limit, now market → filled
+                    sym = t.get("symbol", "?")
+                    dir_ = t.get("direction", "?")
+                    entry = float(t.get("entry", 0) or t.get("entry_price", 0))
+                    icon = "✅" if "BUY" in dir_.upper() else "🟢"
+                    send(self.chat_id,
+                         f"🎯 <b>LIMIT FILLED → MARKET</b>\n"
+                         f"{icon} <b>{sym}</b> {dir_} @ <code>{entry:.5f}</code>\n"
+                         f"<i>Price never returned to limit — executed at market</i>")
+                    self._limit_orders.discard(tid)
+        
+        # Limit order stale/cancelled (removed from active_trades without becoming market)
+        for tid in self._limit_orders - current_limit:
+            if tid not in trades:
+                send(self.chat_id,
+                     f"❌ <b>LIMIT ORDER CANCELLED</b>  <code>{tid}</code>\n"
+                     f"<i>Price blew past entry by 10+ pips or TTL expired</i>")
+                self._limit_orders.discard(tid)
+        
+        # Update tracked set to match current
+        self._limit_orders = current_limit
 
     def _alerts(self) -> None:
         alerts = _json(ALERTS_PATH)

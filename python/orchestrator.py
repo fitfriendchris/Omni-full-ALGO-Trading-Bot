@@ -316,6 +316,34 @@ def run_cycle(
                                                rules=dt_cfg or None,
                                                macro_bars=macro_bars)
 
+            # ── Compute EMA20/200/800 on ALL available timeframes ────────
+            # LIMIT orders = scan speed is NOT critical. Fetch max history
+            # MT5 EA now exports: M5=1800 M15=600 M30=400 H1=300 H4=100 D1=60
+            tf_emas = {}
+            for tf_name, tf_n in [
+                ("M5",  1800),   # ~6 days of M5 → EMA800 valid
+                ("M15",  600),   # ~6 days of M15 → EMA800 valid
+                ("M30",  400),   # ~8 days of M30 → EMA800 valid
+                ("H1",   300),   # ~12 days of H1 → EMA800 valid
+                ("H4",   100),   # ~16 days of H4
+                ("D1",    60),   # ~2 months of D1
+                ("W1",    20),   # ~5 months of W1 (may be 0 for some symbols)
+            ]:
+                try:
+                    tf_bars = _fetch_with_timeout(fetcher, symbol, tf_name, tf_n)
+                    if tf_bars and len(tf_bars) >= 20:
+                        from ict_precision import _calc_ema
+                        closes = [b.close for b in tf_bars]
+                        emas_tf = {"ema20": round(_calc_ema(closes, 20)[-1], 5)}
+                        if len(tf_bars) >= 200:
+                            emas_tf["ema200"] = round(_calc_ema(closes, 200)[-1], 5)
+                        if len(tf_bars) >= 800:
+                            emas_tf["ema800"] = round(_calc_ema(closes, 800)[-1], 5)
+                        tf_emas[tf_name] = emas_tf
+                except Exception:
+                    pass  # TF not available — skip silently
+            sel.tf_emas = tf_emas
+
             scale_act: Optional[ScaleAction] = None
             pos = open_positions.get(symbol)
             if pos is not None:
@@ -434,6 +462,14 @@ def run_cycle(
                         })
                 except Exception as _e:
                     log.debug("regime detection skipped for %s: %s", symbol, _e)
+
+            # ── AMD phase veto — only trade during MANIPULATION or DISTRIBUTION ──
+            # ACCUMULATION = ranging chop — NO trades. This is the single biggest
+            # filter for trade quality.
+            amd_phase_value = amd_meta.get("phase", "") if amd_meta else ""
+            if amd_cfg.get("veto_accumulation", True) and amd_phase_value == "ACCUMULATION":
+                log.info("AMD VETO %s: accumulation phase — skipping signal", symbol)
+                continue  # Skip this symbol entirely
 
             produced.append(sig)
         except Exception as e:

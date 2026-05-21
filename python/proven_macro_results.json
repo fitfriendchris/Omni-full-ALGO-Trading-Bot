@@ -1,0 +1,18 @@
+{
+  "XAUUSD": {
+    "trades": 532,
+    "wins": 275,
+    "losses": 257,
+    "win_rate": 51.691729323308266,
+    "total_pnl": 146.76998921076714,
+    "final_equity": 646.7699892107661
+  },
+  "XAGUSD": {
+    "trades": 269,
+    "wins": 27,
+    "losses": 242,
+    "win_rate": 10.037174721189592,
+    "total_pnl": -1417.3456308146338,
+    "final_equity": -917.3456308146335
+  }
+}

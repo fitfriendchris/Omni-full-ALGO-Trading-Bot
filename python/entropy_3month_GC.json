@@ -1,0 +1,34 @@
+{
+  "symbol": "GC=F",
+  "interval": "5m",
+  "bars": 11630,
+  "start": "2026-03-22 22:10:00+00:00",
+  "end": "2026-05-21 09:35:00+00:00",
+  "trades": 0,
+  "wins": 0,
+  "losses": 0,
+  "wr": 0,
+  "total_pnl": 0,
+  "return_pct": 0.0,
+  "max_dd": 0.0,
+  "equity": 1000.0,
+  "peak": 1000.0,
+  "params": {
+    "lookback": 10,
+    "sl_buffer": 0.0,
+    "min_rr": 1.5,
+    "stdv_levels": [
+      "ce_0.5"
+    ],
+    "ote_levels": [
+      "ote_0.886"
+    ],
+    "confluence_tol": 0.1,
+    "entry_mode": "deep",
+    "cooldown_bars": 3,
+    "hold_bars": 20,
+    "symbol": "XAUUSD",
+    "cooldown": 3
+  },
+  "detail": []
+}

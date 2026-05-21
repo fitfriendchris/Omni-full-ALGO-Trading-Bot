@@ -1,0 +1,12 @@
+{
+  "XAGUSD": {
+    "total": 1,
+    "wins": 0,
+    "losses": 1,
+    "pnl": -5.5,
+    "max_dd": 5.5,
+    "final_equity": 94.5,
+    "peak": 100.0,
+    "return_pct": -5.5
+  }
+}

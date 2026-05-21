@@ -10,4 +10,11 @@ tpCol   = input.color(color.new(color.green,   0),  "TP color")
 lineW   = input.int(2, "Line width", minval=1, maxval=5)
 
 // ── Signals ───────────────────────────────
-// (no signals this cycle)
+// [0] skipped: EURUSD BEAR none
+// [1] skipped: GBPUSD BEAR none
+// [2] USDCAD-M5-1779357687489296-BULL
+if barstate.islast
+    line.new(bar_index - 50, 1.37662, bar_index, 1.37662, color=bullCol, width=lineW)
+    line.new(bar_index - 50, 1.37647, bar_index, 1.37647, color=slCol, style=line.style_dashed, width=1)
+    line.new(bar_index - 50, 1.37692, bar_index, 1.37692, color=tpCol, style=line.style_dashed, width=1)
+    label.new(bar_index, 1.37662, "USDCAD BULL fvg_fill (0.75)", color=bullCol, textcolor=color.white, style=label.style_label_left, size=size.small)

@@ -1,0 +1,332 @@
+{
+  "XAUUSD_1. Silver Bullet": {
+    "trades": 3,
+    "wins": 1,
+    "losses": 2,
+    "wr": 33.33333333333333,
+    "pnl": -3.7913029528921904,
+    "equity": 96.2086970471078,
+    "max_dd": 3.7913029528921958,
+    "return_pct": -3.7913029528921958
+  },
+  "XAUUSD_2. FVG after BOS": {
+    "trades": 6,
+    "wins": 1,
+    "losses": 5,
+    "wr": 16.666666666666664,
+    "pnl": -17.063941737452186,
+    "equity": 82.9360582625478,
+    "max_dd": 18.573230205731207,
+    "return_pct": -17.063941737452197
+  },
+  "XAUUSD_3. Liquidity Sweep + OB": {
+    "trades": 7,
+    "wins": 0,
+    "losses": 7,
+    "wr": 0.0,
+    "pnl": -13.154439318199586,
+    "equity": 86.84556068180041,
+    "max_dd": 13.154439318199593,
+    "return_pct": -13.154439318199593
+  },
+  "XAUUSD_4. Order Block Retest": {
+    "trades": 14,
+    "wins": 7,
+    "losses": 7,
+    "wr": 50.0,
+    "pnl": -8.902892184709419,
+    "equity": 91.09710781529057,
+    "max_dd": 10.228447095034625,
+    "return_pct": -8.90289218470943
+  },
+  "XAUUSD_6. Pin Bar": {
+    "trades": 20,
+    "wins": 1,
+    "losses": 19,
+    "wr": 5.0,
+    "pnl": -53.691464275877834,
+    "equity": 46.308535724122166,
+    "max_dd": 53.691464275877834,
+    "return_pct": -53.691464275877834
+  },
+  "XAUUSD_7. Engulfing Bar": {
+    "trades": 18,
+    "wins": 7,
+    "losses": 11,
+    "wr": 38.88888888888889,
+    "pnl": -20.354223091753365,
+    "equity": 79.6457769082466,
+    "max_dd": 20.354223091753397,
+    "return_pct": -20.354223091753397
+  },
+  "XAUUSD_8. Double Top/Bottom": {
+    "trades": 21,
+    "wins": 0,
+    "losses": 21,
+    "wr": 0.0,
+    "pnl": -84.0,
+    "equity": 16.0,
+    "max_dd": 84.0,
+    "return_pct": -84.0
+  },
+  "XAUUSD_9. Prev Day H/L": {
+    "trades": 9,
+    "wins": 5,
+    "losses": 4,
+    "wr": 55.55555555555556,
+    "pnl": -3.2097027796225936,
+    "equity": 96.79029722037741,
+    "max_dd": 4.261813277647249,
+    "return_pct": -3.209702779622589
+  },
+  "XAUUSD_10. RSI Overbought/Oversold": {
+    "trades": 21,
+    "wins": 5,
+    "losses": 16,
+    "wr": 23.809523809523807,
+    "pnl": -27.89662719185162,
+    "equity": 72.10337280814839,
+    "max_dd": 27.896627191851607,
+    "return_pct": -27.896627191851607
+  },
+  "XAUUSD_11. Round Numbers": {
+    "trades": 4,
+    "wins": 0,
+    "losses": 4,
+    "wr": 0.0,
+    "pnl": -23.252103733171644,
+    "equity": 76.74789626682835,
+    "max_dd": 23.25210373317165,
+    "return_pct": -23.25210373317165
+  },
+  "XAUUSD_12. Inside Bar Breakout": {
+    "trades": 13,
+    "wins": 4,
+    "losses": 9,
+    "wr": 30.76923076923077,
+    "pnl": -9.847483731997917,
+    "equity": 90.15251626800207,
+    "max_dd": 11.82369636620264,
+    "return_pct": -9.847483731997926
+  },
+  "XAUUSD_13. 3-Bar Pullback": {
+    "trades": 2,
+    "wins": 1,
+    "losses": 1,
+    "wr": 50.0,
+    "pnl": -2.4597159302163583,
+    "equity": 97.54028406978365,
+    "max_dd": 3.093529788907665,
+    "return_pct": -2.4597159302163476
+  },
+  "XAUUSD_15. Trend Continuation": {
+    "trades": 36,
+    "wins": 9,
+    "losses": 27,
+    "wr": 25.0,
+    "pnl": -37.99140198321324,
+    "equity": 62.00859801678678,
+    "max_dd": 38.04442406025497,
+    "return_pct": -37.99140198321322
+  },
+  "XAUUSD_17. Opening Range": {
+    "trades": 44,
+    "wins": 14,
+    "losses": 30,
+    "wr": 31.818181818181817,
+    "pnl": -59.248631301410576,
+    "equity": 40.75136869858938,
+    "max_dd": 60.52339506546869,
+    "return_pct": -59.24863130141061
+  },
+  "XAUUSD_18. Killzone": {
+    "trades": 21,
+    "wins": 6,
+    "losses": 15,
+    "wr": 28.57142857142857,
+    "pnl": -35.41973223453205,
+    "equity": 64.58026776546794,
+    "max_dd": 36.72047796524641,
+    "return_pct": -35.41973223453206
+  },
+  "XAUUSD_19. Judas Swing": {
+    "trades": 9,
+    "wins": 3,
+    "losses": 6,
+    "wr": 33.33333333333333,
+    "pnl": -8.257521052094633,
+    "equity": 91.74247894790535,
+    "max_dd": 10.374977718853758,
+    "return_pct": -8.257521052094646
+  },
+  "XAUUSD_20. Range Expansion": {
+    "trades": 17,
+    "wins": 2,
+    "losses": 15,
+    "wr": 11.76470588235294,
+    "pnl": -12.276218096212919,
+    "equity": 87.7237819037871,
+    "max_dd": 12.2762180962129,
+    "return_pct": -12.2762180962129
+  },
+  "XAGUSD_1. Silver Bullet": {
+    "trades": 4,
+    "wins": 0,
+    "losses": 4,
+    "wr": 0.0,
+    "pnl": -19.645167932443545,
+    "equity": 80.35483206755646,
+    "max_dd": 19.64516793244354,
+    "return_pct": -19.64516793244354
+  },
+  "XAGUSD_3. Liquidity Sweep + OB": {
+    "trades": 12,
+    "wins": 0,
+    "losses": 12,
+    "wr": 0.0,
+    "pnl": -61.17186967174421,
+    "equity": 38.82813032825579,
+    "max_dd": 61.17186967174422,
+    "return_pct": -61.17186967174422
+  },
+  "XAGUSD_4. Order Block Retest": {
+    "trades": 5,
+    "wins": 0,
+    "losses": 5,
+    "wr": 0.0,
+    "pnl": -18.92837617349844,
+    "equity": 81.07162382650154,
+    "max_dd": 18.928376173498464,
+    "return_pct": -18.928376173498464
+  },
+  "XAGUSD_6. Pin Bar": {
+    "trades": 18,
+    "wins": 0,
+    "losses": 18,
+    "wr": 0.0,
+    "pnl": -65.14870120078696,
+    "equity": 34.85129879921304,
+    "max_dd": 65.14870120078696,
+    "return_pct": -65.14870120078696
+  },
+  "XAGUSD_7. Engulfing Bar": {
+    "trades": 13,
+    "wins": 0,
+    "losses": 13,
+    "wr": 0.0,
+    "pnl": -43.130166640247964,
+    "equity": 56.86983335975205,
+    "max_dd": 43.13016664024795,
+    "return_pct": -43.13016664024795
+  },
+  "XAGUSD_8. Double Top/Bottom": {
+    "trades": 20,
+    "wins": 0,
+    "losses": 20,
+    "wr": 0.0,
+    "pnl": -74.9195,
+    "equity": 25.080500000000008,
+    "max_dd": 74.9195,
+    "return_pct": -74.9195
+  },
+  "XAGUSD_9. Prev Day H/L": {
+    "trades": 4,
+    "wins": 0,
+    "losses": 4,
+    "wr": 0.0,
+    "pnl": -8.867581252685778,
+    "equity": 91.13241874731422,
+    "max_dd": 8.867581252685781,
+    "return_pct": -8.867581252685781
+  },
+  "XAGUSD_10. RSI Overbought/Oversold": {
+    "trades": 14,
+    "wins": 0,
+    "losses": 14,
+    "wr": 0.0,
+    "pnl": -42.6469865236767,
+    "equity": 57.35301347632329,
+    "max_dd": 42.64698652367671,
+    "return_pct": -42.64698652367671
+  },
+  "XAGUSD_11. Round Numbers": {
+    "trades": 6,
+    "wins": 0,
+    "losses": 6,
+    "wr": 0.0,
+    "pnl": -24.34144056009746,
+    "equity": 75.65855943990253,
+    "max_dd": 24.341440560097467,
+    "return_pct": -24.341440560097467
+  },
+  "XAGUSD_12. Inside Bar Breakout": {
+    "trades": 12,
+    "wins": 0,
+    "losses": 12,
+    "wr": 0.0,
+    "pnl": -35.55970654764403,
+    "equity": 64.44029345235597,
+    "max_dd": 35.559706547644026,
+    "return_pct": -35.559706547644026
+  },
+  "XAGUSD_13. 3-Bar Pullback": {
+    "trades": 1,
+    "wins": 0,
+    "losses": 1,
+    "wr": 0.0,
+    "pnl": -6.000812017864409,
+    "equity": 93.9991879821356,
+    "max_dd": 6.000812017864405,
+    "return_pct": -6.000812017864405
+  },
+  "XAGUSD_15. Trend Continuation": {
+    "trades": 3,
+    "wins": 0,
+    "losses": 3,
+    "wr": 0.0,
+    "pnl": -14.4387421851867,
+    "equity": 85.5612578148133,
+    "max_dd": 14.438742185186697,
+    "return_pct": -14.438742185186697
+  },
+  "XAGUSD_17. Opening Range": {
+    "trades": 19,
+    "wins": 0,
+    "losses": 19,
+    "wr": 0.0,
+    "pnl": -67.26574845931877,
+    "equity": 32.73425154068122,
+    "max_dd": 67.26574845931879,
+    "return_pct": -67.26574845931879
+  },
+  "XAGUSD_18. Killzone": {
+    "trades": 11,
+    "wins": 0,
+    "losses": 11,
+    "wr": 0.0,
+    "pnl": -39.44363863048499,
+    "equity": 60.556361369515024,
+    "max_dd": 39.443638630484976,
+    "return_pct": -39.443638630484976
+  },
+  "XAGUSD_19. Judas Swing": {
+    "trades": 3,
+    "wins": 0,
+    "losses": 3,
+    "wr": 0.0,
+    "pnl": -11.923473613726106,
+    "equity": 88.0765263862739,
+    "max_dd": 11.923473613726102,
+    "return_pct": -11.923473613726102
+  },
+  "XAGUSD_20. Range Expansion": {
+    "trades": 12,
+    "wins": 0,
+    "losses": 12,
+    "wr": 0.0,
+    "pnl": -30.35112248567433,
+    "equity": 69.64887751432568,
+    "max_dd": 30.351122485674324,
+    "return_pct": -30.351122485674324
+  }
+}

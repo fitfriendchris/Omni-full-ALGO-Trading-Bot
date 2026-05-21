@@ -149,13 +149,14 @@ class ConfluenceScore:
     fvg_in_ote:        bool = False   # L5: FVG or OB sits within 61.8–79% OTE (IOFED)
     mss_confirmed:     bool = False   # L6: M15 or M5 MSS / CHoCH confirmed on LTF
     smt_divergence:    bool = False   # L7: correlated pair shows SMT divergence
+    ema_aligned:       bool = False   # L8: price returning to EMA20 on entry TF
 
     @property
     def layers_met(self) -> int:
         return sum([
             self.htf_bias_aligned, self.amd_phase_aligned, self.killzone_active,
             self.liquidity_swept,  self.fvg_in_ote,        self.mss_confirmed,
-            self.smt_divergence,
+            self.smt_divergence,   self.ema_aligned,
         ])
 
     @property
@@ -193,6 +194,12 @@ class ICTSetup:
     confluence: ConfluenceScore = field(default_factory=ConfluenceScore)
     grade:      str = ""     # A+, A, B+, B, C — derived from confluence layers
     liq_swept:  bool = False # True if a liquidity sweep preceded this entry
+    ema20:      float = 0.0  # EMA 20 on entry timeframe
+    ema200:     float = 0.0  # EMA 200 on entry timeframe  
+    ema800:     float = 0.0  # EMA 800 on entry timeframe (macro)
+    ema_aligned: bool = False # Price returning to EMA20 = high-probability entry
+    ema_deviation: float = 0.0 # How many ATRs price is from EMA20
+    tf_emas:    dict = field(default_factory=dict)  # EMA20 for ALL timeframes
 
 
 # ── Module-level data cache (keyed on file mtime) ─────────────────────────────
@@ -768,6 +775,86 @@ def _calc_atr(bars: list, period: int = 14) -> float:
     return sum(trs) / len(trs) if trs else 0.0
 
 
+def _calc_ema(values: list[float], period: int) -> list[float]:
+    """Compute EMA for a list of closing prices. Returns list same length as input."""
+    if len(values) < period:
+        return values[:]  # Not enough data, return as-is
+    k = 2.0 / (period + 1)
+    emas = [0.0] * len(values)
+    # First EMA = SMA of first `period` values
+    emas[period - 1] = sum(values[:period]) / period
+    for i in range(period, len(values)):
+        emas[i] = values[i] * k + emas[i - 1] * (1 - k)
+    return emas
+
+
+def _ema_from_bars(bars: list, period: int = 20) -> float:
+    """Most recent EMA value from bars (bars[0] = most recent).
+    Handles both ict_precision.Bar (.c) and smc_engine.Bar (.close)."""
+    if len(bars) < period:
+        return 0.0
+    # Polymorphic close extraction
+    if hasattr(bars[0], 'c'):
+        closes = [b.c for b in bars]
+    elif hasattr(bars[0], 'close'):
+        closes = [b.close for b in bars]
+    elif isinstance(bars[0], dict):
+        closes = [b.get('c', b.get('close', 0)) for b in bars]
+    else:
+        closes = [0.0] * len(bars)
+    emas = _calc_ema(closes, period)
+    return emas[-1] if emas else 0.0
+
+
+def get_ema_levels(bars: list) -> dict:
+    """
+    Return EMA 20, 200, 800 for any bar list.
+    Key insight: price always returns to EMA 20 on all timeframes.
+    Use for: entry validation, dynamic SL adjustment, confluence scoring.
+    """
+    result = {"ema_20": 0.0, "ema_200": 0.0, "ema_800": 0.0}
+    if len(bars) < 20:
+        return result
+    closes = [b.c for b in bars]
+    result["ema_20"] = _calc_ema(closes, 20)[-1]
+    if len(bars) >= 200:
+        result["ema_200"] = _calc_ema(closes, 200)[-1]
+    if len(bars) >= 800:
+        result["ema_800"] = _calc_ema(closes, 800)[-1]
+    return result
+
+
+def price_vs_ema20(bars: list) -> dict:
+    """
+    Returns relationship of current price to EMA 20.
+    Handles both ict_precision.Bar (o,h,l,c) and smc_engine.Bar (open,high,low,close).
+    """
+    if len(bars) < 20:
+        return {"ema20": 0.0, "dist_pct": 0.0, "above": False, "deviation": 0.0}
+    ema20 = _ema_from_bars(bars, 20)
+    # Handle both bar formats
+    if hasattr(bars[0], 'c'):
+        current = bars[0].c  # ict_precision.Bar
+    elif hasattr(bars[0], 'close'):
+        current = bars[0].close  # smc_engine.Bar
+    elif isinstance(bars[0], dict):
+        current = bars[0].get('c', bars[0].get('close', 0))
+    else:
+        current = 0.0
+    dist_pct = abs(current - ema20) / ema20 * 100 if ema20 > 0 else 0.0
+    above = current > ema20
+    # ATR-based deviation: how many ATRs is price from EMA20?
+    atr = _calc_atr(bars, 14)
+    deviation = abs(current - ema20) / atr if atr > 0 else 0.0
+    return {
+        "ema20": round(ema20, 5),
+        "current": round(current, 5),
+        "dist_pct": round(dist_pct, 3),
+        "above": above,
+        "deviation": round(deviation, 2),
+    }
+
+
 def find_bullish_ob(bars: list[Bar], start: int = 0, search: int = 15) -> Optional[tuple[float, float]]:
     """
     Bullish OB: last bearish candle before a strong bullish impulse.
@@ -1149,6 +1236,41 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
     if not d1_bars or not h4_bars or not h1_bars:
         return []
 
+    # ── Compute EMA levels across all timeframes ─────────────────────
+    # EMA 20, 200, 800 — price always returns to EMA20 on all TFs
+    w1_ema  = get_ema_levels(w1_bars)  if w1_bars  else {}
+    d1_ema  = get_ema_levels(d1_bars)  if d1_bars  else {}
+    h4_ema  = get_ema_levels(h4_bars)  if h4_bars  else {}
+    h1_ema  = get_ema_levels(h1_bars)  if h1_bars  else {}
+    m15_ema = get_ema_levels(m15_bars) if m15_bars else {}
+    m5_ema  = get_ema_levels(m5_bars)  if m5_bars  else {}
+
+    # Current price deviation from EMA20 on each timeframe
+    w1_vs_ema20  = price_vs_ema20(w1_bars)  if w1_bars  else {}
+    d1_vs_ema20  = price_vs_ema20(d1_bars)  if d1_bars  else {}
+    h4_vs_ema20  = price_vs_ema20(h4_bars)  if h4_bars  else {}
+    h1_vs_ema20  = price_vs_ema20(h1_bars)  if h1_bars  else {}
+    m15_vs_ema20 = price_vs_ema20(m15_bars) if m15_bars else {}
+    m5_vs_ema20  = price_vs_ema20(m5_bars)  if m5_bars  else {}
+
+    # Key insight for entry: if price is >2 ATR from EMA20, it's "stretched"
+    # and likely to return. This is a high-confluence entry signal.
+    m5_ema20_dev = m5_vs_ema20.get("deviation", 0) if m5_vs_ema20 else 0
+    h1_ema20_dev = h1_vs_ema20.get("deviation", 0) if h1_vs_ema20 else 0
+    price_stretched = (m5_ema20_dev > 2.0) or (h1_ema20_dev > 2.0)
+
+    # EMA alignment for confluence scoring
+    # If D1 price > EMA20 AND H4 price > EMA20 = bullish trend
+    # If D1 price < EMA20 AND H4 price < EMA20 = bearish trend
+    ema_trend_aligned = False
+    if d1_vs_ema20 and h4_vs_ema20:
+        d1_above = d1_vs_ema20.get("above", False)
+        h4_above = h4_vs_ema20.get("above", False)
+        if d1_above and h4_above:
+            ema_trend_aligned = True  # Both TFs bullish
+        elif not d1_above and not h4_above:
+            ema_trend_aligned = True  # Both TFs bearish
+
     # Key levels from EA
     pdh = sym_data.get("pdh", 0)
     pdl = sym_data.get("pdl", 0)
@@ -1313,20 +1435,22 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                 if _atr_local > 0 and abs(ob_high - level) > _atr_local * 2:
                     continue
 
-                # Pinpoint OB entry using precision levels
-                ob_prec = get_ob_precision_entry(ob_low, ob_high, "SELL")
-                entry = ob_prec["ote_50"]   # Enter at OB midpoint (50% OTE)
-
-                # Tight SL: just above swept level (the manipulation wick extreme)
-                # Invalidation = price returning above the swept high means setup is wrong
-                # SL: just above the actual sweep wick extreme (ICT structural SL)
+                # ICT AMD / Market Maker Model — ENTER AT MANIPULATION WICK EXTREME
+                # When price sweeps liquidity and forms an OB, the optimal entry
+                # is the manipulation wick extreme (the stop-run spike), NOT the
+                # OB midpoint. The SL goes just beyond the wick — if price comes back
+                # past the manipulation, the setup is invalidated.
                 sweep_extreme_high = max((b.h for b in sweep_bars[:4]), default=level * 1.002)
-                sl = max(sweep_extreme_high, level) * 1.001
-                # Ensure SL is at minimum above the OB top
-                sl = max(sl, ob_high + (ob_high - ob_low) * 0.3)
-                # ATR cap: SL cannot be more than 1.5× ATR from entry — prevents runaway risk
+                entry = sweep_extreme_high  # Enter at manipulation wick extreme
+                
+                # SL: just above the manipulation wick — if price retraces past here,
+                # the sweep was NOT a true liquidity grab (stop hunt failed)
+                sl_buffer = max(_atr_local * 0.5, (sweep_extreme_high - level) * 0.2)
+                sl = sweep_extreme_high + sl_buffer
+                # Cap SL at 1.5× ATR to prevent runaway risk
                 if _atr_local > 0:
                     sl = min(sl, entry + _atr_local * 1.5)
+                
                 risk = sl - entry
                 if risk <= 0:
                     continue
@@ -1479,18 +1603,22 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
                 if _atr_local > 0 and abs(ob_low - level) > _atr_local * 2:
                     continue
 
-                # Pinpoint OB entry using precision levels
-                ob_prec = get_ob_precision_entry(ob_low, ob_high, "BUY")
-                entry = ob_prec["ote_50"]   # Enter at OB midpoint (50% OTE)
-
-                # Tight SL: just below swept level (invalidation = price returning below sweep)
-                sweep_extreme_low = min((b.l for b in sweep_bars[:4]), default=ob_low)
-                sl = min(ob_low - (ob_high - ob_low) * 0.3,   # minimum: just below OB bottom
-                         level * (1 - tol * 0.5))              # target: just below swept level
-                sl = max(sl, sweep_extreme_low * 0.999)        # cap: just below sweep wick
-                # ATR cap: SL cannot be more than 1.5× ATR from entry — prevents runaway risk
+                # ICT AMD / Market Maker Model — ENTER AT MANIPULATION WICK EXTREME
+                # When price sweeps liquidity and forms an OB, the optimal entry
+                # is the manipulation wick extreme (the stop-run spike), NOT the
+                # OB midpoint. The SL goes just beyond the wick — if price comes back
+                # past the manipulation, the setup is invalidated.
+                sweep_extreme_low = min((b.l for b in sweep_bars[:4]), default=level * 0.998)
+                entry = sweep_extreme_low  # Enter at manipulation wick extreme
+                
+                # SL: just below the manipulation wick — if price retraces past here,
+                # the sweep was NOT a true liquidity grab (stop hunt failed)
+                sl_buffer = max(_atr_local * 0.5, (level - sweep_extreme_low) * 0.2)
+                sl = sweep_extreme_low - sl_buffer
+                # Cap SL at 1.5× ATR to prevent runaway risk
                 if _atr_local > 0:
                     sl = max(sl, entry - _atr_local * 1.5)
+                
                 risk = entry - sl
                 if risk <= 0:
                     continue
@@ -2245,6 +2373,82 @@ def scan_symbol(symbol: str, data: dict) -> list[ICTSetup]:
         _apply_pattern_model_boost(setups)
     except Exception:
         pass
+
+    # ── Enrich every setup with EMA context ───────────────────────────
+    for st in setups:
+        # Pick bars based on entry_type (LTF entries use M5, HTF use H1)
+        entry_tf_bars = m5_bars if "M5" in st.entry_type or "LTF" in st.entry_type else h1_bars
+        if not entry_tf_bars:
+            entry_tf_bars = h1_bars
+        
+        emas = get_ema_levels(entry_tf_bars)
+        st.ema20 = emas.get("ema_20", 0.0)
+        st.ema200 = emas.get("ema_200", 0.0)
+        st.ema800 = emas.get("ema_800", 0.0)
+        
+        pv = price_vs_ema20(entry_tf_bars)
+        st.ema_deviation = pv.get("deviation", 0.0)
+        
+        # ema_aligned: entry is near EMA20 (returning to mean) OR price stretched >2 ATR
+        entry = st.entry_price
+        if st.ema20 > 0 and entry > 0:
+            dist_from_ema = abs(entry - st.ema20) / st.ema20 * 100
+            # Aligned if entry is within 0.5 ATR of EMA20 (returning) OR >2 ATR stretched
+            atr_local = _calc_atr(entry_tf_bars, 14)
+            in_ema_zone = abs(entry - st.ema20) <= atr_local * 0.5 if atr_local > 0 else False
+            st.ema_aligned = in_ema_zone or st.ema_deviation > 2.0
+            
+            # Add to confluence score
+            st.confluence.ema_aligned = st.ema_aligned
+            
+            # Boost confidence: +5 if returning to EMA20, +3 if stretched
+            if in_ema_zone:
+                st.confidence = min(100, st.confidence + 5)
+                st.reasons.append(f"EMA20 return: entry {entry:.5f} within 0.5×ATR of EMA20 {st.ema20:.5f}")
+            elif st.ema_deviation > 2.0:
+                st.confidence = min(100, st.confidence + 3)
+                st.reasons.append(f"EMA20 stretched: price {st.ema_deviation:.1f}×ATR from EMA20 — mean reversion likely")
+            
+            # Add macro EMA alignment to reasons
+            if ema_trend_aligned:
+                if d1_bias == h4_struct[:4] if len(h4_struct) >= 4 else True:
+                    st.reasons.append(f"EMA trend aligned: D1/H4 EMA20 both {'above' if d1_bias == 'BULLISH' else 'below'} price")
+        
+        # Add EMA levels to reasons for visibility
+        if st.ema20 > 0:
+            st.reasons.append(f"EMA20={st.ema20:.5f} EMA200={st.ema200:.5f if st.ema200 else 0:.5f}")
+        
+        # ── Multi-TF EMAs (20, 200, 800) for all timeframes ─────────
+        all_tf_emas = {}
+        for tf_bars, tf_name in [
+            (w1_bars, "W1"), (d1_bars, "D1"), (h4_bars, "H4"),
+            (h1_bars, "H1"), (m15_bars, "M15"), (m5_bars, "M5")
+        ]:
+            if tf_bars and len(tf_bars) >= 20:
+                ema20_tf = _ema_from_bars(tf_bars, 20)
+                if ema20_tf > 0:
+                    emas_tf = {"ema20": round(ema20_tf, 5)}
+                    if len(tf_bars) >= 200:
+                        ema200_tf = _ema_from_bars(tf_bars, 200)
+                        if ema200_tf > 0:
+                            emas_tf["ema200"] = round(ema200_tf, 5)
+                    if len(tf_bars) >= 800:
+                        ema800_tf = _ema_from_bars(tf_bars, 800)
+                        if ema800_tf > 0:
+                            emas_tf["ema800"] = round(ema800_tf, 5)
+                    all_tf_emas[tf_name] = emas_tf
+        st.tf_emas = all_tf_emas
+        # Add condensed multi-TF EMA to reasons
+        if all_tf_emas:
+            tf_lines = []
+            for tf, vals in sorted(all_tf_emas.items(), key=lambda x: ["W1","D1","H4","H1","M15","M5"].index(x[0]) if x[0] in ["W1","D1","H4","H1","M15","M5"] else 99):
+                line = f"{tf} EMA20={vals['ema20']:.5f}"
+                if 'ema200' in vals:
+                    line += f" EMA200={vals['ema200']:.5f}"
+                if 'ema800' in vals:
+                    line += f" EMA800={vals['ema800']:.5f}"
+                tf_lines.append(line)
+            st.reasons.append("Multi-TF EMAs: " + " | ".join(tf_lines))
 
     # Sort by confidence
     setups.sort(key=lambda x: x.confidence, reverse=True)

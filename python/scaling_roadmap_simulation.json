@@ -1,0 +1,608 @@
+{
+  "log": [
+    {
+      "month": 1,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 31,
+      "pnl": 16.45,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 2,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 3,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 4,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 5,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 6,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 7,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 8,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 9,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 10,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 11,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 12,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 13,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 14,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 15,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 16,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 17,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 18,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 19,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 20,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 21,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 22,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 23,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 24,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 25,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 26,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 27,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 28,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 29,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 30,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 31,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 32,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 33,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 34,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 35,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 36,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 37,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 38,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 39,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 40,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 41,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 42,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 43,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 44,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 45,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 46,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 47,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 48,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 49,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 50,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 51,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 52,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 53,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 54,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 55,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 56,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 57,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 58,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 59,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    },
+    {
+      "month": 60,
+      "phase": "Foundation",
+      "risk": 1.0,
+      "trades": 0,
+      "pnl": 0,
+      "equity": 116.45,
+      "peak": 116.45,
+      "dd_pct": 0.0
+    }
+  ],
+  "final_equity": 116.44988974635237,
+  "months": 60,
+  "peak": 116.44988974635237,
+  "total_trades": 31
+}

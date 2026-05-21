@@ -1,7 +1,8 @@
 {
-  "_comment": "OMNI ICT Strategy Rules \u2014 v2.2 | HTF/LTF confluence, opposing liquidity, smart trailing v2",
-  "_version": "2.2",
-  "_last_updated": "2026-05-07",
+  "_comment": "OMNI ICT Strategy Rules — v2.2 | HTF/LTF confluence, opposing liquidity, smart trailing v2",
+  "_version": "2.3.1",
+  "_last_updated": "2026-05-21",
+  "_tuning": "v2.3.1: wider trail base (1.5x), lower spread_atr_frac (0.15), tighter equity_threshold (5.0), softer compress (0.8), fixed spread conversion to price units, added peak_r historical tracking, corrected SELL peak-SL direction, added symbol-aware config selector",
   "borsellino_rules": {
     "circuit_breaker": {
       "enabled": true,
@@ -586,65 +587,44 @@
     "notes": "Move SL to breakeven after TP1 hit. Always leave runner (20%) for extended moves. Close runner if opposing BOS prints on H1."
   },
   "smart_trail": {
-    "_comment": "Phase 2 reactive trailing stop \u2014 6mo XAUUSD backtest hardened. Enabled \u2014 see python/smart_trailing_stop.py.",
+    "_comment": "V2 Adaptive Multi-Layer Trailing Stop — crypto-style profit protection",
     "enabled": true,
-    "atr_period": 10,
-    "atr_mult_min": 1.8,
-    "atr_mult_runner": 3.0,
-    "exhaustion_tighten_atr_mult": 1.2,
+    "atr_period": 14,
+    "atr_mult_min": 1.5,
+    "atr_mult_runner": 2.5,
+    "exhaustion_tighten_atr_mult": 0.65,
     "displacement_loosen_atr_mult": 2.5,
-    "structure_buffer_pips": 2.5,
-    "liquidity_avoid_pips": 5.0,
+    "structure_buffer_pips": 3.0,
+    "liquidity_avoid_pips": 3.0,
     "avoid_equal_levels": true,
     "profit_lock_ladder": [
-      [
-        0.5,
-        0.0
-      ],
-      [
-        1.0,
-        0.0
-      ],
-      [
-        1.5,
-        0.3
-      ],
-      [
-        2.0,
-        1.0
-      ],
-      [
-        3.0,
-        1.8
-      ],
-      [
-        4.0,
-        2.5
-      ],
-      [
-        5.0,
-        3.5
-      ],
-      [
-        6.0,
-        4.5
-      ]
+      [1.0, 0.0],
+      [1.5, 0.25],
+      [2.0, 0.50],
+      [3.0, 0.60],
+      [5.0, 0.75]
     ],
     "close_on_opposing_choch_once_profitable": true,
-    "min_modify_pips": 5.0,
-    "min_modify_atr_frac": 0.18,
+    "min_modify_pips": 3.0,
+    "min_modify_atr_frac": 0.15,
+    "max_entry_drift_pct": 0.30,
     "early_protection": {
       "at_0.5R": "move SL to entry + 1 pip (guarantee non-loss)",
       "at_1.0R": "lock +0.3R minimum",
-      "at_1.5R": "lock +1.0R minimum \u2014 never give back more than 50% of gains"
+      "at_1.5R": "lock +1.0R minimum — never give back more than 50% of gains"
     },
     "xauusd_adjustments": {
       "atr_period": 8,
       "atr_mult_min": 2.0,
       "atr_mult_runner": 3.5,
-      "notes": "Gold needs wider SL due to volatility. 2-3x ATR minimum. Profit lock ladder shifted +0.5R earlier."
+      "notes": "Gold wider trails, same profit lock logic"
     },
-    "notes": "Phase 2 smart trailing \u2014 6mo backtest hardened. All 145 unit tests pass. ATR-based with opposing swing protection."
+    "notes": "V2.1 TUNED: wider base trail (1.5x), reduced spread_atr_frac (0.15), tight_equity_threshold 5.0, tighter compress 0.8, fixed spread=price via tick_size, added peak_r historical tracking, corrected SELL peak-SL direction, symbol-aware config selector",
+    "atr_mult_compress": 0.6,
+    "atr_mult_expand": 2.5,
+    "tight_equity_threshold": 5.0,
+    "tight_mult_compress": 0.8,
+    "spread_atr_frac": 0.15
   },
   "risk_rules": {
     "max_risk_per_trade_pct": 1.0,
@@ -665,6 +645,24 @@
       "streak_5_wins": "+0.50pct_risk",
       "cap": "max_risk_pct",
       "notes": "Risk increases 0.25% after 3 wins, another 0.25% after 5 wins. Resets on any loss."
+    },
+    "execution_gate": {
+      "equity_margin_threshold_pct": 50.0,
+      "max_entry_drift_pct": 0.08,
+      "min_rr_spread_pct": 25.0,
+      "small_account_conf_min": 0.6,
+      "small_account_equity_max": 500.0
+    },
+    "limit_orders": {
+      "enabled": true,
+      "order_type": "LIMIT",
+      "entry_method": "ote_50_percent_of_ob_or_fvg",
+      "max_pending_per_symbol": 2,
+      "max_pending_total": 5,
+      "time_to_live_minutes": 360,
+      "stale_cancel_pips": 10,
+      "fallback_to_market": true,
+      "notes": "Bot places LIMIT orders at OTE entry points. If price blows past limit by 10 pips, cancel. If price already past entry on signal, fallback to MARKET."
     }
   },
   "filter_rules": {
@@ -686,7 +684,9 @@
     "high_confidence": 70,
     "very_high_confidence": 80,
     "scale_in_threshold": 70,
-    "notes": "Adaptive memory engine adjusts these per setup type based on live win rate data"
+    "notes": "Adaptive memory engine adjusts these per setup type based on live win rate data",
+    "small_equity_max": 500.0,
+    "small_equity_conf_boost": "(equity/100)^0.5 multiplier applied upstream in signal_agent"
   },
   "sweep_gate_rules": {
     "_comment": "v2.1: FVG/CHoCH entries now require prior sweep confirmation",
@@ -751,11 +751,7 @@
     "XAUUSD": {
       "max_spread_pips": 30,
       "min_atr_pips": 8,
-      "preferred_sessions": [
-        "LONDON",
-        "NEW_YORK",
-        "ASIA"
-      ],
+      "preferred_sessions": ["LONDON", "NEW_YORK", "ASIA"],
       "asia_min_confidence": 60,
       "round_number_step": 50,
       "profit_lock_ladder_shift": "+0.5R",
@@ -765,7 +761,12 @@
       "target_tp1": "opposing_H4_OB_or_equal_highs",
       "target_tp2": "daily_high_or_low",
       "target_tp3": "weekly_structure_extreme_or_6R",
-      "notes": "Gold \u2014 primary instrument. Asia valid with clear OB. 6mo backtest: +2045%, 37% WR, 48% max DD. Key: TP to opposing liquidity, trail at 2-3.5x ATR, lock profits at +0.5R."
+      "notes": "Gold -- primary instrument. Asia valid with clear OB. 6mo backtest: +2045%, 37% WR, 48% max DD. Key: TP to opposing liquidity, trail at 2-3.5x ATR, lock profits at +0.5R.",
+      "equity_gate": {
+        "min_equity_usd": 500,
+        "message": "Gold locked until account reaches $500 equity. Build the base with forex first.",
+        "override_confidence": 85
+      }
     },
     "NAS100": {
       "preferred_sessions": [
@@ -781,7 +782,12 @@
     },
     "XAGUSD": {
       "min_confidence": 75,
-      "notes": "Backtest: 30.4% WR \u2014 silver is thin and prone to false sweeps; require highest bar"
+      "notes": "Silver -- thin and prone to false sweeps; require highest bar",
+      "equity_gate": {
+        "min_equity_usd": 300,
+        "message": "Silver locked until account reaches $300 equity. Start with EURUSD/GBPUSD first.",
+        "override_confidence": 90
+      }
     },
     "US30": {
       "min_confidence": 70,
@@ -950,5 +956,11 @@
     "US30": 100.0,
     "NAS100": 100.0,
     "default": 0.0
+  },
+  "signal_agent": {
+    "adx_min": 20,
+    "adx_exception_conf": 0.85,
+    "macro_veto_low_equity": true,
+    "macro_veto_equity_threshold": 500.0
   }
 }

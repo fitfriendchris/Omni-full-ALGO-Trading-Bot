@@ -74,6 +74,10 @@ class Signal:
     source:        str = "omni-ict"
     expires_at:    str = ""       # ISO UTC; empty = no expiry override
     re_emit_count: int = 0        # incremented when same (symbol, direction, entry_type) re-emitted
+    ema20:         float = 0.0     # EMA 20 on entry timeframe
+    ema200:        float = 0.0     # EMA 200 on entry timeframe
+    ema800:        float = 0.0     # EMA 800 on entry timeframe
+    tf_emas:       dict = field(default_factory=dict)  # {TF: {ema20, ema200, ema800}} for ALL TFs
     # Free-form bag for context that downstream consumers (auto_trader,
     # dashboard, telegram) may want — e.g. {"regime": {...}, "pivot": {...}}.
     metadata:      dict = field(default_factory=dict)
@@ -98,6 +102,8 @@ def build_signal(symbol: str, timeframe: str,
         scale_mult=(scale.size_multiplier if scale else 1.0),
         htf_bias=(sel.htf_bias.direction if sel.htf_bias else None),
         expires_at=expires_iso,
+        ema20=sel.ema20, ema200=sel.ema200, ema800=sel.ema800,
+        tf_emas=sel.tf_emas,
     )
 
 

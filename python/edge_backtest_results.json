@@ -1,0 +1,167 @@
+{
+  "XAUUSD_FVG Fill": {
+    "trades": 431,
+    "wins": 90,
+    "losses": 341,
+    "wr": 20.88167053364269,
+    "pnl": -1427.5228051735742,
+    "equity": -1327.5228051735742,
+    "peak": 100.0,
+    "max_dd": 1427.5228051735742,
+    "return_pct": -1427.5228051735742
+  },
+  "XAUUSD_Big Bar Fade": {
+    "trades": 1785,
+    "wins": 224,
+    "losses": 1561,
+    "wr": 12.549019607843137,
+    "pnl": -8815.56080254341,
+    "equity": -8715.560802543414,
+    "peak": 100.0,
+    "max_dd": 8815.560802543414,
+    "return_pct": -8815.560802543414
+  },
+  "XAUUSD_H4 Bias": {
+    "trades": 217,
+    "wins": 52,
+    "losses": 165,
+    "wr": 23.963133640552993,
+    "pnl": 69214.8115725643,
+    "equity": 69314.81157256429,
+    "peak": 69314.81157256429,
+    "max_dd": 225.86826183426828,
+    "return_pct": 69214.81157256429
+  },
+  "XAGUSD_FVG Fill": {
+    "trades": 12,
+    "wins": 2,
+    "losses": 10,
+    "wr": 16.666666666666664,
+    "pnl": -69.9848285297084,
+    "equity": 30.01517147029159,
+    "peak": 100.0,
+    "max_dd": 69.98482852970841,
+    "return_pct": -69.98482852970841
+  },
+  "XAGUSD_Big Bar Fade": {
+    "trades": 1848,
+    "wins": 0,
+    "losses": 1848,
+    "wr": 0.0,
+    "pnl": -13958.922743910245,
+    "equity": -13858.922743910249,
+    "peak": 100.0,
+    "max_dd": 13958.92274391025,
+    "return_pct": -13958.92274391025
+  },
+  "XAGUSD_H4 Bias": {
+    "trades": 21,
+    "wins": 4,
+    "losses": 17,
+    "wr": 19.047619047619047,
+    "pnl": 326.1139704314426,
+    "equity": 426.1139704314427,
+    "peak": 503.1139704314427,
+    "max_dd": 90.36249014025053,
+    "return_pct": 326.1139704314427
+  },
+  "EURUSD_Big Bar Fade": {
+    "trades": 2022,
+    "wins": 0,
+    "losses": 2022,
+    "wr": 0.0,
+    "pnl": -14929.679684608553,
+    "equity": -14829.679684608549,
+    "peak": 100.0,
+    "max_dd": 14929.679684608549,
+    "return_pct": -14929.679684608549
+  },
+  "EURUSD_H4 Bias": {
+    "trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "wr": 0,
+    "pnl": 0,
+    "equity": 100.0,
+    "peak": 100.0,
+    "max_dd": 0.0,
+    "return_pct": 0.0
+  },
+  "GBPUSD_Big Bar Fade": {
+    "trades": 2042,
+    "wins": 0,
+    "losses": 2042,
+    "wr": 0.0,
+    "pnl": -14737.087541003224,
+    "equity": -14637.08754100322,
+    "peak": 100.0,
+    "max_dd": 14737.08754100322,
+    "return_pct": -14737.08754100322
+  },
+  "GBPUSD_H4 Bias": {
+    "trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "wr": 0,
+    "pnl": 0,
+    "equity": 100.0,
+    "peak": 100.0,
+    "max_dd": 0.0,
+    "return_pct": 0.0
+  },
+  "USDJPY_FVG Fill": {
+    "trades": 1,
+    "wins": 0,
+    "losses": 1,
+    "wr": 0.0,
+    "pnl": -9.0,
+    "equity": 91.0,
+    "peak": 100.0,
+    "max_dd": 9.0,
+    "return_pct": -9.0
+  },
+  "USDJPY_Big Bar Fade": {
+    "trades": 1826,
+    "wins": 0,
+    "losses": 1826,
+    "wr": 0.0,
+    "pnl": -13659.553118241101,
+    "equity": -13559.553118241101,
+    "peak": 100.0,
+    "max_dd": 13659.553118241101,
+    "return_pct": -13659.553118241101
+  },
+  "USDJPY_H4 Bias": {
+    "trades": 5,
+    "wins": 0,
+    "losses": 5,
+    "wr": 0.0,
+    "pnl": -19.553653440206226,
+    "equity": 80.44634655979378,
+    "peak": 100.0,
+    "max_dd": 19.55365344020622,
+    "return_pct": -19.55365344020622
+  },
+  "AUDUSD_Big Bar Fade": {
+    "trades": 1892,
+    "wins": 0,
+    "losses": 1892,
+    "wr": 0.0,
+    "pnl": -13760.289684925636,
+    "equity": -13660.28968492563,
+    "peak": 100.0,
+    "max_dd": 13760.28968492563,
+    "return_pct": -13760.28968492563
+  },
+  "AUDUSD_H4 Bias": {
+    "trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "wr": 0,
+    "pnl": 0,
+    "equity": 100.0,
+    "peak": 100.0,
+    "max_dd": 0.0,
+    "return_pct": 0.0
+  }
+}

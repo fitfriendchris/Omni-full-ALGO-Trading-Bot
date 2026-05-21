@@ -361,7 +361,13 @@ def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
     from smc_engine import atr as _atr
 
     rules = rules or DEFAULT_RULES
-    cfg = (rules.get("dual_tf") or {}) if isinstance(rules, dict) else {}
+    # Handle both: rules=full.json (has "dual_tf" key) and rules=dual_tf section directly
+    if isinstance(rules, dict) and "dual_tf" in rules:
+        cfg = rules.get("dual_tf") or {}
+    elif isinstance(rules, dict):
+        cfg = rules  # already the dual_tf section
+    else:
+        cfg = {}
     enabled = cfg.get("enabled", True)
     entries = cfg.get("entries", ["ob_mitigation", "fvg_fill", "sweep_choch"])
     min_conf = float(cfg.get("min_confidence", 0.50))

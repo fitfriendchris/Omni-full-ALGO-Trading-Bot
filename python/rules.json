@@ -843,21 +843,13 @@
     "min_confidence": 0.5,
     "tp_rr": 2.5,
     "sl_buffer_frac": 0.1,
-    "ob_proximity_atr_frac": 1.0,
-    "fvg_proximity_atr_frac": 1.0,
+    "ob_proximity_atr_frac": 2.5,
+    "fvg_proximity_atr_frac": 2.5,
     "macro_timeframe": "H4",
     "htf_timeframe": "H1",
     "ltf_timeframe": "M5",
     "notes": "H4=macro bias, H1=HTF structure, M5=LTF trigger. OTE 50pct OB body entry. Kill zone +0.10. CISD +0.15. Sweep gate on FVG fills.",
-    "symbol_overrides": {
-      "XAUUSD": {
-        "ob_proximity_atr_frac": 2.5,
-        "fvg_proximity_atr_frac": 2.5,
-        "min_confidence": 0.4,
-        "tp_rr": 2.5,
-        "macro_penalty": -0.05
-      }
-    }
+    "macro_penalty": -0.1
   },
   "scaling": {
     "_comment": "Phase 2 position scaling. See python/scaling_engine.py.",

@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
-//| OmniExport v4.1 — Multi-TF Export + Auto-Trade Execution        |
-//| Exports: D1/H4/H1/M15/M5 bars, key levels, executes commands    |
+//| OmniExport v4.2 — Multi-TF Export + Auto-Trade Execution        |
+//| Exports: D1/H4/H1/M30/M15/M5/M1 bars, key levels               |
 //| Added:   spread/bid/ask per chart symbol, NDOG/NWOG gaps,       |
 //|          full gmt_time with date for Python kill-zone detection  |
 //+------------------------------------------------------------------+
 #property copyright "OMNI ICT Auto-Trader"
-#property version   "4.10"
+#property version   "4.20"
 #property strict
 
 input int    UpdateSeconds   = 5;
@@ -24,75 +24,38 @@ string LeaderFile  = "omni_leader.lock";
 bool   _isLeader   = false;
 datetime _lastLeaderHeartbeat = 0;
 
-// Priority symbols — full multi-TF bar export (D1/H4/H1/M15/M5/M1)
-// Skips automatically if broker doesn't list the symbol
+// Priority symbols — full multi-TF bar export
+// Kept to 7 core symbols so total file stays under Wine's 4MB write limit
 string primarySymbols[] = {
-   // Metals
-   "XAUUSD","XAGUSD","XPTUSD","XPDUSD",
-   // Forex majors
-   "EURUSD","GBPUSD","USDJPY","USDCHF","USDCAD","AUDUSD","NZDUSD",
-   // Key crosses
-   "EURGBP","EURJPY","EURCAD","EURAUD","EURCHF","EURNZD",
-   "GBPJPY","GBPCAD","GBPAUD","GBPCHF","GBPNZD",
-   "AUDJPY","AUDCAD","AUDCHF","AUDNZD",
-   "CADJPY","CHFJPY","NZDJPY","NZDCAD",
-   // Crypto
-   "BTCUSD","ETHUSD","BNBUSD","XRPUSD","SOLUSD","ADAUSD","LTCUSD",
-   "DOTUSD","LNKUSD","DOGEUSD","AVAXUSD","MATICUSD","XLMUSD",
-   // US indices
-   ".US30Cash",".USTECHCash",".US500Cash",
-   // Global indices
-   ".UK100Cash",".GER40Cash",".FRA40Cash",".JPN225Cash",".AUS200Cash",
-   // Energy
-   "USOIL","UKOIL","NATGAS"
+   "XAUUSD","XAGUSD",
+   "EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD"
 };
 
 // All watchlist symbols — price-only scan (bid/ask/RSI/OB/FVG)
-// Any symbol not listed on this broker is skipped automatically
+// Trimmed to keep total file under 4MB (Wine FILE_COMMON write limit)
 string allSymbols[] = {
-   // ── Forex Majors ───────────────────────────────────────────────
+   // ── Core pairs ────────────────────────────────────────────────
+   "XAUUSD","XAGUSD",
    "EURUSD","GBPUSD","USDJPY","USDCHF","USDCAD","AUDUSD","NZDUSD",
-   // ── Forex Minors / Crosses ─────────────────────────────────────
-   "EURGBP","EURJPY","EURCAD","EURAUD","EURCHF","EURNZD",
-   "GBPJPY","GBPCAD","GBPAUD","GBPCHF","GBPNZD",
-   "AUDJPY","AUDCAD","AUDCHF","AUDNZD",
-   "CADJPY","CHFJPY","NZDJPY","NZDCAD","NZDCHF",
-   "EURHUF","EURPLN","EURSEK","EURNOK","EURDKK","EURCZK",
-   "GBPSEK","GBPNOK","GBPPLN",
-   // ── Forex Exotics ──────────────────────────────────────────────
-   "USDSEK","USDNOK","USDDKK","USDMXN","USDZAR","USDTRY",
-   "USDSGD","USDCNH","USDPLN","USDHUF","USDCZK","USDHKD",
-   "USDILS","USDTHB","USDMYR","USDINR","USDRUB","USDRON",
-   "EURSGD","EURTRY","EURRUB","EURZAR","EURMXN",
-   "GBPZAR","GBPTRY","GBPSGD","GBPMXN",
-   "AUDZAR","AUDSGD","NZDSGD",
-   "CHFPLN","CHFSEK","CHFNOK",
-   // ── Precious Metals ────────────────────────────────────────────
-   "XAUUSD","XAGUSD","XPTUSD","XPDUSD",
-   "XAUEUR","XAGEUR","XAUAUD","XAUGBP","XAUJPY","XAUCHF",
-   // ── Energy & Commodities ───────────────────────────────────────
-   "USOIL","UKOIL","NATGAS","XNGUSD",
-   "OIL","BRENT","WTI",
-   // ── US Equity Indices ──────────────────────────────────────────
-   ".US30Cash",".USTECHCash",".US500Cash",".US2000Cash",
-   "US30","USTEC","US500","US2000",
-   // ── Global Equity Indices ──────────────────────────────────────
-   ".UK100Cash",".GER40Cash",".FRA40Cash",".JPN225Cash",
-   ".AUS200Cash",".HKG50Cash",".ESP35Cash",".ITA40Cash",
-   ".SWI20Cash",".NED25Cash",".SIN30Cash",".HK50Cash",
-   "UK100","GER40","FRA40","JPN225","AUS200","HKG50",
-   // ── Cryptocurrency ─────────────────────────────────────────────
-   "BTCUSD","ETHUSD","BNBUSD","XRPUSD","ADAUSD","SOLUSD",
-   "DOTUSD","LNKUSD","DOGEUSD","LTCUSD","AVAXUSD","MATICUSD",
-   "XLMUSD","BCHUSD","EOSUSD","TRXUSD","FTMUSD","ATOMUSD",
-   "UNIUSD","MANAUSD","AXSUSD","SANDUSD","AAVEUSD","SNXUSD",
-   "ALGOUSD","VETHUSD","THETAUSD","XTZUSD","COMPUSD","MKRUSD",
-   "DASHUSD","ZCASHUSD","ETCUSD","BSVUSD","NEOUSD","ICXUSD",
-   "QNTUSD","NEARUSD","APTUSD","ARBUSD","OPUSD","SUIUSD"
+   "EURGBP","EURJPY","GBPJPY","AUDJPY",
+   // ── Crypto top 4 ──────────────────────────────────────────────
+   "BTCUSD","ETHUSD","XRPUSD","SOLUSD",
+   // ── Indices ───────────────────────────────────────────────────
+   ".US30Cash",".USTECHCash",".US500Cash",
+   // ── Energy ────────────────────────────────────────────────────
+   "USOIL","UKOIL"
 };
 
 int  OnInit()
   {
+   // Subscribe all needed symbols so Market Watch feeds them price data.
+   // Without this, SymbolInfoDouble returns 0 for any symbol not already
+   // visible in Market Watch and the EA silently skips it.
+   int nPrim = ArraySize(primarySymbols);
+   int nAll  = ArraySize(allSymbols);
+   for(int i = 0; i < nPrim; i++) SymbolSelect(primarySymbols[i], true);
+   for(int i = 0; i < nAll;  i++) SymbolSelect(allSymbols[i],     true);
+
    EventSetTimer(UpdateSeconds);
    if(LeaderElection)
      {
@@ -158,6 +121,7 @@ string PeriodToString(ENUM_TIMEFRAMES tf)
    if(tf==PERIOD_M1)  return "M1";
    if(tf==PERIOD_M5)  return "M5";
    if(tf==PERIOD_M15) return "M15";
+   if(tf==PERIOD_M30) return "M30";
    if(tf==PERIOD_H1)  return "H1";
    if(tf==PERIOD_H4)  return "H4";
    if(tf==PERIOD_D1)  return "D1";
@@ -309,21 +273,19 @@ void GetKeyLevels(string sym, int digits,
 //+------------------------------------------------------------------+
 void ExportData()
   {
-   // Write to a temp file first, then atomically rename — prevents Python
-   // from reading a half-written file (race condition on 2MB+ JSON)
-   string TempFile = DataFile + ".tmp";
+   // Write directly to the final file — Wine's FileMove/rename is unreliable
+   // on macOS and causes persistent .tmp lock errors (err=5004).
+   // Python handles stale reads via its own retry/last-good-cache logic.
    int fh = INVALID_HANDLE;
-   // Up to 3 attempts with 50ms backoff in case Wine/macOS file system
-   // has a transient lock from a stat()/read by Python at the same instant.
    for(int attempt = 0; attempt < 3; attempt++)
      {
-      fh = FileOpen(TempFile, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
+      fh = FileOpen(DataFile, FILE_WRITE|FILE_REWRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
       if(fh != INVALID_HANDLE) break;
       Sleep(50);
      }
    if(fh==INVALID_HANDLE)
      {
-      Print("Cannot open temp data file after 3 retries (chart=",
+      Print("Cannot open data file after 3 retries (chart=",
             _Symbol, ",", PeriodToString(_Period), ", err=", GetLastError(), ")");
       return;
      }
@@ -341,18 +303,30 @@ void ExportData()
    FileWriteString(fh, "\"auto_trade_enabled\":"+IntegerToString(AutoTradeEnabled?1:0)+",\n");
 
    // ── Account ──────────────────────────────────────────────────────
+   // AccountInfo* returns empty/0 for ~10-30s after broker connect.
+   // We write a "ready" flag so Python knows whether data is valid.
+   string  acc_currency = AccountInfoString(ACCOUNT_CURRENCY);
+   long    acc_leverage = AccountInfoInteger(ACCOUNT_LEVERAGE);
+   double  acc_balance  = AccountInfoDouble(ACCOUNT_BALANCE);
+   // Account is ready when currency is populated AND leverage is non-zero.
+   // Balance CAN legitimately be 0 on a new/empty account, so don't gate on it.
+   bool acc_ready = (StringLen(acc_currency) > 0 && acc_leverage > 0);
+   if(!acc_ready)
+      Print("OmniExport: account data not yet synced (currency='",acc_currency,
+            "' leverage=",acc_leverage,") — writing zeros until broker responds");
    FileWriteString(fh, "\"account\":{\n");
+   FileWriteString(fh, "\"ready\":"    +(acc_ready?"true":"false")                                  +",\n");
    FileWriteString(fh, "\"login\":"    +IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))          +",\n");
    FileWriteString(fh, "\"name\":\""   +AccountInfoString(ACCOUNT_NAME)                             +"\",\n");
    FileWriteString(fh, "\"server\":\"" +AccountInfoString(ACCOUNT_SERVER)                           +"\",\n");
-   FileWriteString(fh, "\"currency\":\""+AccountInfoString(ACCOUNT_CURRENCY)                        +"\",\n");
-   FileWriteString(fh, "\"balance\":"  +DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE),2)        +",\n");
+   FileWriteString(fh, "\"currency\":\""+acc_currency                                               +"\",\n");
+   FileWriteString(fh, "\"balance\":"  +DoubleToString(acc_balance,2)                               +",\n");
    FileWriteString(fh, "\"equity\":"   +DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2)         +",\n");
    FileWriteString(fh, "\"margin\":"   +DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN),2)         +",\n");
    FileWriteString(fh, "\"free_margin\":"+DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE),2)  +",\n");
    FileWriteString(fh, "\"margin_level\":"+DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_LEVEL),2)+",\n");
    FileWriteString(fh, "\"profit\":"   +DoubleToString(AccountInfoDouble(ACCOUNT_PROFIT),2)         +",\n");
-   FileWriteString(fh, "\"leverage\":" +IntegerToString(AccountInfoInteger(ACCOUNT_LEVERAGE))       +"\n");
+   FileWriteString(fh, "\"leverage\":" +IntegerToString(acc_leverage)                               +"\n");
    FileWriteString(fh, "},\n");
 
    // ── Open Positions ────────────────────────────────────────────────
@@ -422,14 +396,17 @@ void ExportData()
       if(!firstSym) FileWriteString(fh, ",\n"); firstSym = false;
       FileWriteString(fh, "\""+sym+"\":{\n");
 
-      // ── 7 timeframes — max bars requested; MT5 caps at what it has ──
-      WriteBarsToFile(fh, sym, PERIOD_W1,  2000, "W1");  FileWriteString(fh, ",\n");
-      WriteBarsToFile(fh, sym, PERIOD_D1,  5000, "D1");  FileWriteString(fh, ",\n");
-      WriteBarsToFile(fh, sym, PERIOD_H4,  5000, "H4");  FileWriteString(fh, ",\n");
-      WriteBarsToFile(fh, sym, PERIOD_H1,  5000, "H1");  FileWriteString(fh, ",\n");
-      WriteBarsToFile(fh, sym, PERIOD_M15, 5000, "M15"); FileWriteString(fh, ",\n");
-      WriteBarsToFile(fh, sym, PERIOD_M5,  2000, "M5");  FileWriteString(fh, ",\n");
-      WriteBarsToFile(fh, sym, PERIOD_M1,  1000, "M1");  FileWriteString(fh, ",\n");
+      // ── 7 timeframes — deep history for EMA800 accuracy on all TFs ──
+      // LIMIT orders = scan speed NOT critical. 5+ trading days per TF:
+      // M1=4000 (~5.5d)  M5=1800 (~6d)  M15=600 (~6d)  M30=400 (~8d)
+      // H1=300 (~12d)   H4=100 (~16d)   D1=60 (~2mo)
+      WriteBarsToFile(fh, sym, PERIOD_D1,   60, "D1");  FileWriteString(fh, ",\n");
+      WriteBarsToFile(fh, sym, PERIOD_H4,  100, "H4");  FileWriteString(fh, ",\n");
+      WriteBarsToFile(fh, sym, PERIOD_H1,  300, "H1");  FileWriteString(fh, ",\n");
+      WriteBarsToFile(fh, sym, PERIOD_M30, 400, "M30"); FileWriteString(fh, ",\n");
+      WriteBarsToFile(fh, sym, PERIOD_M15, 600, "M15"); FileWriteString(fh, ",\n");
+      WriteBarsToFile(fh, sym, PERIOD_M5,  1800, "M5");  FileWriteString(fh, ",\n");
+      WriteBarsToFile(fh, sym, PERIOD_M1,  4000, "M1");  FileWriteString(fh, ",\n");
 
       // Live bid/ask/spread
       double cask = SymbolInfoDouble(sym, SYMBOL_ASK);
@@ -573,9 +550,7 @@ void ExportData()
      }
    FileWriteString(fh, "\n]\n}\n");
    FileClose(fh);
-   // Atomic swap: delete old file, rename temp → final
-   FileDelete(DataFile, FILE_COMMON);
-   FileMove(TempFile, FILE_COMMON, DataFile, FILE_COMMON|FILE_REWRITE);
+   // File already written directly — no rename needed on Wine/macOS.
    Print("OmniExport v4: updated | ",amd," | ",session);
   }
 
@@ -634,7 +609,7 @@ string ProcessCommand(string cmd)
       req.action   =isPending?TRADE_ACTION_PENDING:TRADE_ACTION_DEAL;
       req.symbol   =sym; req.volume=vol; req.type=ot;
       req.price    =isPending?price:SymbolInfoDouble(sym,ot==ORDER_TYPE_BUY?SYMBOL_ASK:SYMBOL_BID);
-      req.sl=sl; req.tp=tp; req.deviation=30;
+      req.sl=sl; req.tp=tp; req.deviation=500;  // XAUUSD: 500 pts = $5.00 (was $0.30)
       req.magic    =MagicNumber; req.comment=comment;
       req.type_filling=ORDER_FILLING_IOC;
       if(OrderSend(req,res))

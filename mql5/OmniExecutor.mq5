@@ -20,7 +20,7 @@
 
 input int    PollMilliseconds = 500;   // How often to check for commands (ms)
 input ulong  MagicNumber      = 20250411; // Must match OUR_MAGIC in auto_trader.py
-input int    SlippagePips     = 3;     // Maximum slippage allowed (pips)
+input int    SlippagePips     = 500;    // Maximum slippage allowed (pips)
 
 string CMD_FILE    = "omni_cmd.txt";
 string RESULT_FILE = "omni_result.txt";

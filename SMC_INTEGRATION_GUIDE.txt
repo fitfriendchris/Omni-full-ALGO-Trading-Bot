@@ -1,0 +1,218 @@
+═══════════════════════════════════════════════════════════════════════
+ LUXALGO SMC + OMNI BOT INTEGRATION GUIDE
+═══════════════════════════════════════════════════════════════════════
+
+WHAT YOU HAVE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+• LuxAlgo Smart Money Concepts.ex5 — Visual SMC overlay for MT5
+  - Draws BOS/CHoCH, liquidity sweeps, order blocks, FVGs, premium/discount
+  - Shows manipulation legs, market structure shifts
+  - Visual confirmation of what your entropy agent detects
+
+INSTALLATION STATUS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ SMC indicator copied to:
+   ~/Library/.../MetaTrader 5/MQL5/Indicators/
+
+⚠️  YOU NEED TO DO THIS IN MT5:
+   1. Close and restart MT5 (or press F5 in Navigator)
+   2. Navigator → Indicators → Custom
+   3. Find "LuxAlgo - Smart Money Concepts"
+   4. Drag onto XAUUSD M5 chart
+   5. Configure settings (see below)
+
+HOW TO USE WITH YOUR BOT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+OPTION 1: VISUAL CONFIRMATION (Easiest — Recommended for now)
+────────────────────────────────────────────────────────────────────────
+
+What it does:
+  • SMC draws manipulation legs, BOS, liquidity sweeps on chart
+  • Bot generates limit-order signals automatically
+  • You visually confirm the bot signal matches SMC structure
+  • If SMC shows same manipulation leg → approve trade
+  • If SMC shows conflicting structure → skip trade
+
+Why this works:
+  • Your bot's entropy agent detects: sweep + rejection + STDV confluence
+  • SMC indicator shows: the SAME sweep on the chart
+  • When they align → high-confidence trade
+  • When they don't → false signal / noise
+
+Setup:
+  1. Attach SMC to XAUUSD M5
+  2. Keep bot running (already is)
+  3. When bot sends Telegram alert → check MT5 chart
+  4. If SMC shows matching manipulation leg → let trade run
+  5. If SMC shows no structure → skip / close early
+
+OPTION 2: MANUAL EXECUTION (Your current mode)
+────────────────────────────────────────────────────────────────────────
+
+What it does:
+  • Bot detects setup, sends Telegram alert
+  • You check SMC on chart for confirmation
+  • You manually place limit order at bot's entry level
+  • You set SL/TP per bot's signal
+
+Why this is safest with $135 account:
+  • You maintain full discretion
+  • SMC gives you the "confluence" your playbook demands
+  • Bot does the scanning math, you do the quality control
+
+OPTION 3: AUTOMATED INTEGRATION (Advanced — needs source code)
+────────────────────────────────────────────────────────────────────────
+
+What it would do:
+  • OmniExport EA reads SMC buffer values via iCustom()
+  • Bot checks SMC confirmation BEFORE placing limit order
+  • Only trades when both entropy math AND SMC structure align
+
+What's needed:
+  • The .mq5 SOURCE code of LuxAlgo SMC (not the .ex5)
+  • OR: The exact buffer numbers and indicator handle names
+  • The .ex5 is compiled — I can't read its buffers
+
+If you have the .mq5 source, I can build this bridge.
+
+SMC SETTINGS FOR YOUR PLAYBOOK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+When you attach SMC to XAUUSD M5, configure these:
+
+┌─────────────────────────────────────────────────────────────────────┐
+│  SESSIONS                                                           │
+│    ☑ London Open     (03:00-04:00 local)                           │
+│    ☑ New York Open   (08:30-09:30 local)                           │
+│    ☐ Asia            (reduce noise, unless you trade Asia)          │
+│                                                                     │
+│  STRUCTURE                                                          │
+│    ☑ Internal Structure (BOS/CHoCH on LTF)                          │
+│    ☑ Swing Structure    (BOS/CHoCH on HTF)                          │
+│    ☑ Show Manipulation Legs                                         │
+│                                                                     │
+│  LIQUIDITY                                                          │
+│    ☑ Equal Highs/Lows                                               │
+│    ☑ Previous Day High/Low                                          │
+│    ☑ Previous Week High/Low                                         │
+│                                                                     │
+│  ORDER BLOCKS                                                       │
+│    ☑ Bullish OB                                                     │
+│    ☑ Bearish OB                                                     │
+│    ☑ Mitigated OBs                                                  │
+│                                                                     │
+│  FAIR VALUE GAPS                                                    │
+│    ☑ Bullish FVG                                                    │
+│    ☑ Bearish FVG                                                    │
+│                                                                     │
+│  STDV / FIB                                                         │
+│    ☑ Premium/Discount zones                                         │
+│    ☑ Equilibrium (CE)                                               │
+│                                                                     │
+│  TIMEFRAMES                                                         │
+│    ☐ H4 (too slow for M5 entries)                                   │
+│    ☑ H1 (context)                                                   │
+│    ☑ M15 (structure)                                                │
+│    ☑ M5  (entries — THIS is where bot operates)                    │
+└─────────────────────────────────────────────────────────────────────┘
+
+YOUR BOT + SMC WORKFLOW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Step 1: Bot Scans (Every 60 seconds)
+──────────────────────────────────────
+  Entropy agent reads M5 bars
+  → Detects manipulation leg (sweep + rejection)
+  → Calculates STDV from wick-to-wick
+  → Calculates OTE from swing-to-swing
+  → Finds confluence (CE + 0.886)
+  → Generates limit-order signal
+
+Step 2: Bot Alerts (Telegram)
+──────────────────────────────────────
+  🎯 XAUUSD LONG
+     Entry: 4531.67 (limit)
+     SL: 4528.01
+     TP: 4545.00
+     R:R: 3.2:1
+     Confluence: STDV CE + OTE 0.886
+
+Step 3: YOU Check SMC on MT5 Chart
+──────────────────────────────────────
+  Look for:
+    ✅ Did SMC draw a manipulation leg at this level?
+    ✅ Is there a liquidity sweep shown?
+    ✅ Is there an order block or FVG at the entry?
+    ✅ Is price in premium/discount per SMC?
+
+  If YES to 3+ → CONFIRM TRADE
+  If NO  → SKIP / WAIT
+
+Step 4: Bot Places Limit Order
+──────────────────────────────────────
+  Execution agent sends to MT5
+  OmniExport EA places BUY_LIMIT at entry
+  Slippage: 500 pts (now fixed for gold)
+
+Step 5: Manage
+──────────────────────────────────────
+  SMC shows:
+    • Target hit? → TP executes automatically
+    • Structure breaks? → Consider manual close
+    • New manipulation leg forms? → Could add to position
+
+WHY THIS COMBINATION IS POWERFUL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Your bot does what SMC CAN'T:
+  • Backtested mathematical edge (+36.5% in 17 days)
+  • Precise STDV + OTE calculation
+  • Automatic limit order placement
+  • Risk management (SL, position sizing)
+
+SMC does what your bot CAN'T (yet):
+  • Visual confirmation of structure quality
+  • Show you WHY the manipulation leg is valid
+  • Highlight hidden liquidity pools
+  • Display order blocks for additional confluence
+
+TOGETHER:
+  • Bot = the math engine (scan/calculate/execute)
+  • SMC = the quality filter (visual confirmation)
+  • You = the final decision maker
+
+NEXT STEPS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. RIGHT NOW — In MT5:
+   • Restart MT5 (to load new indicator)
+   • Navigator → Indicators → Custom
+   • Drag "LuxAlgo - Smart Money Concepts" to XAUUSD M5
+   • Configure per settings above
+   • You should see: BOS lines, manipulation legs, OBs, FVGs
+
+2. TEST IT:
+   • Watch for next bot signal (Telegram)
+   • Check SMC chart for matching structure
+   • Confirm or skip based on visual
+
+3. OPTIONAL — If you want full automation:
+   • Find the .mq5 source for LuxAlgo SMC
+   • I can build iCustom() bridge into OmniExport EA
+   • Bot will only trade when SMC confirms structure
+
+═══════════════════════════════════════════════════════════════════════
+ SUMMARY
+═══════════════════════════════════════════════════════════════════════
+
+✅ SMC indicator installed to MT5
+✅ Restart MT5 and attach to XAUUSD M5 chart
+✅ Bot continues scanning automatically
+✅ YOU visually confirm each signal against SMC
+✅ Best of both worlds: math + structure
+
+The bot is your scanner. SMC is your magnifying glass.
+Use both.

@@ -1,0 +1,25 @@
+{
+  "score": 365.0136999999678,
+  "trades": 64,
+  "wins": 23,
+  "losses": 41,
+  "wr": 35.9375,
+  "pnl": 365.0136999999678,
+  "return_pct": 36.5013699999965,
+  "max_dd": 33.39569680485745,
+  "params": {
+    "lookback": 10,
+    "sl_buffer": 0.0,
+    "min_rr": 1.5,
+    "stdv_levels": [
+      "ce_0.5"
+    ],
+    "ote_levels": [
+      "ote_0.886"
+    ],
+    "confluence_tol": 0.1,
+    "cooldown": 3,
+    "hold_bars": 20,
+    "entry_mode": "deep"
+  }
+}

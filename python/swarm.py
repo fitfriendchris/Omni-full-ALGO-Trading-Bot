@@ -65,6 +65,7 @@ def _import_agents() -> list:
         ("journal_agent",   "agents.journal_agent",   "JournalAgent"),
         ("analyst_agent",   "agents.analyst_agent",   "AnalystAgent"),
         ("trail_manager",   "agents.position_trailing_manager", "TrailingManager"),
+        ("entropy_signal",  "agents.entropy_signal_agent", "EntropySignalAgent"),
     ]
     for name, module, cls_name in registry:
         try:

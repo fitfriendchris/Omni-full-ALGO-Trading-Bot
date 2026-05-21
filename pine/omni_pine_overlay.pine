@@ -10,16 +10,13 @@ tpCol   = input.color(color.new(color.green,   0),  "TP color")
 lineW   = input.int(2, "Line width", minval=1, maxval=5)
 
 // ── Signals ───────────────────────────────
-// [0] EURUSD-M5-1779358129213857-BEAR
+// [0] skipped: XAUUSD BULL none
+// [1] skipped: XAGUSD BULL none
+// [2] skipped: EURUSD BEAR none
+// [3] skipped: GBPUSD BEAR none
+// [4] USDCAD-M5-1779388949692214-BULL
 if barstate.islast
-    line.new(bar_index - 50, 1.16251, bar_index, 1.16251, color=bearCol, width=lineW)
-    line.new(bar_index - 50, 1.16296, bar_index, 1.16296, color=slCol, style=line.style_dashed, width=1)
-    line.new(bar_index - 50, 1.16161, bar_index, 1.16161, color=tpCol, style=line.style_dashed, width=1)
-    label.new(bar_index, 1.16251, "EURUSD BEAR sweep_choch (1.00)", color=bearCol, textcolor=color.white, style=label.style_label_left, size=size.small)
-// [1] skipped: GBPUSD BEAR none
-// [2] USDCAD-M5-1779358129213857-BULL
-if barstate.islast
-    line.new(bar_index - 50, 1.37653, bar_index, 1.37653, color=bullCol, width=lineW)
-    line.new(bar_index - 50, 1.37647, bar_index, 1.37647, color=slCol, style=line.style_dashed, width=1)
-    line.new(bar_index - 50, 1.37665, bar_index, 1.37665, color=tpCol, style=line.style_dashed, width=1)
-    label.new(bar_index, 1.37653, "USDCAD BULL fvg_fill (0.75)", color=bullCol, textcolor=color.white, style=label.style_label_left, size=size.small)
+    line.new(bar_index - 50, 1.37731, bar_index, 1.37731, color=bullCol, width=lineW)
+    line.new(bar_index - 50, 1.37705, bar_index, 1.37705, color=slCol, style=line.style_dashed, width=1)
+    line.new(bar_index - 50, 1.37784, bar_index, 1.37784, color=tpCol, style=line.style_dashed, width=1)
+    label.new(bar_index, 1.37731, "USDCAD BULL fvg_fill (1.00)", color=bullCol, textcolor=color.white, style=label.style_label_left, size=size.small)

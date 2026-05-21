@@ -367,8 +367,9 @@ def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
     min_conf = float(cfg.get("min_confidence", 0.50))
     tp_rr = float(cfg.get("tp_rr", 2.0))
     sl_buf = float(cfg.get("sl_buffer_frac", 0.10))
-    ob_prox = float(cfg.get("ob_proximity_atr_frac", 1.0))    # widened: 0.5→1.0 ATR
+    ob_prox = float(cfg.get("ob_proximity_atr_frac", 1.0))  # widened: 0.5→1.0 ATR    # widened: 0.5→1.0 ATR
     fvg_prox = float(cfg.get("fvg_proximity_atr_frac", 1.0))  # widened: 0.5→1.0 ATR
+    fallback_entries = cfg.get("fallback_entries", True)       # NEW: emit at OTE even if not proximate
 
     if not enabled or not htf_bars or not ltf_bars:
         return TradeSelection(direction="NEUTRAL", entry_type="none",
@@ -396,15 +397,16 @@ def select_trade(htf_bars: list[Bar], ltf_bars: list[Bar],
     else:
         ema_dev = 0.0
 
-    # Optional macro bias confirmation (H4 or D1 bars)
-    macro_penalty = 0.0   # applied to EVERY trigger confidence when TFs disagree
+    # ── Reduce macro penalty for micro accounts ──
+    macro_penalty = 0.0
     macro_note = ""
     if macro_bars and len(macro_bars) >= 20:
         macro_snap = analyze(macro_bars)
         macro_bias = detect_htf_bias(macro_snap)
+        # Only penalize OPPOSITE direction, not same
         if macro_bias.direction not in ("NEUTRAL", bias.direction):
-            macro_penalty = -0.30   # enough to block marginal setups, not veto strong ones
-            macro_note = f"macro={macro_bias.direction} disagrees with HTF={bias.direction}"
+            macro_penalty = -0.10   # reduced from -0.30
+            macro_note = f"macro={macro_bias.direction} vs HTF={bias.direction} (-0.10)"
 
     base = TradeSelection(
         direction=bias.direction, entry_type="none",

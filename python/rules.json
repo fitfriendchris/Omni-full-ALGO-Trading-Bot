@@ -1,5 +1,5 @@
 {
-  "_comment": "OMNI ICT Strategy Rules — v2.2 | HTF/LTF confluence, opposing liquidity, smart trailing v2",
+  "_comment": "OMNI ICT Strategy Rules \u2014 v2.2 | HTF/LTF confluence, opposing liquidity, smart trailing v2",
   "_version": "2.3.1",
   "_last_updated": "2026-05-21",
   "_tuning": "v2.3.1: wider trail base (1.5x), lower spread_atr_frac (0.15), tighter equity_threshold (5.0), softer compress (0.8), fixed spread conversion to price units, added peak_r historical tracking, corrected SELL peak-SL direction, added symbol-aware config selector",
@@ -587,7 +587,7 @@
     "notes": "Move SL to breakeven after TP1 hit. Always leave runner (20%) for extended moves. Close runner if opposing BOS prints on H1."
   },
   "smart_trail": {
-    "_comment": "V2 Adaptive Multi-Layer Trailing Stop — crypto-style profit protection",
+    "_comment": "V2 Adaptive Multi-Layer Trailing Stop \u2014 crypto-style profit protection",
     "enabled": true,
     "atr_period": 14,
     "atr_mult_min": 1.5,
@@ -598,20 +598,35 @@
     "liquidity_avoid_pips": 3.0,
     "avoid_equal_levels": true,
     "profit_lock_ladder": [
-      [1.0, 0.0],
-      [1.5, 0.25],
-      [2.0, 0.50],
-      [3.0, 0.60],
-      [5.0, 0.75]
+      [
+        1.0,
+        0.0
+      ],
+      [
+        1.5,
+        0.25
+      ],
+      [
+        2.0,
+        0.5
+      ],
+      [
+        3.0,
+        0.6
+      ],
+      [
+        5.0,
+        0.75
+      ]
     ],
     "close_on_opposing_choch_once_profitable": true,
     "min_modify_pips": 3.0,
     "min_modify_atr_frac": 0.15,
-    "max_entry_drift_pct": 0.30,
+    "max_entry_drift_pct": 0.3,
     "early_protection": {
       "at_0.5R": "move SL to entry + 1 pip (guarantee non-loss)",
       "at_1.0R": "lock +0.3R minimum",
-      "at_1.5R": "lock +1.0R minimum — never give back more than 50% of gains"
+      "at_1.5R": "lock +1.0R minimum \u2014 never give back more than 50% of gains"
     },
     "xauusd_adjustments": {
       "atr_period": 8,
@@ -751,7 +766,11 @@
     "XAUUSD": {
       "max_spread_pips": 30,
       "min_atr_pips": 8,
-      "preferred_sessions": ["LONDON", "NEW_YORK", "ASIA"],
+      "preferred_sessions": [
+        "LONDON",
+        "NEW_YORK",
+        "ASIA"
+      ],
       "asia_min_confidence": 60,
       "round_number_step": 50,
       "profit_lock_ladder_shift": "+0.5R",
@@ -829,7 +848,16 @@
     "macro_timeframe": "H4",
     "htf_timeframe": "H1",
     "ltf_timeframe": "M5",
-    "notes": "H4=macro bias, H1=HTF structure, M5=LTF trigger. OTE 50pct OB body entry. Kill zone +0.10. CISD +0.15. Sweep gate on FVG fills."
+    "notes": "H4=macro bias, H1=HTF structure, M5=LTF trigger. OTE 50pct OB body entry. Kill zone +0.10. CISD +0.15. Sweep gate on FVG fills.",
+    "symbol_overrides": {
+      "XAUUSD": {
+        "ob_proximity_atr_frac": 2.5,
+        "fvg_proximity_atr_frac": 2.5,
+        "min_confidence": 0.4,
+        "tp_rr": 2.5,
+        "macro_penalty": -0.05
+      }
+    }
   },
   "scaling": {
     "_comment": "Phase 2 position scaling. See python/scaling_engine.py.",

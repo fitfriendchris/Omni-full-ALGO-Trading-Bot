@@ -213,29 +213,31 @@ class ExecutionAgent(BaseAgent):
                 atr = _calc_atr(bars, 14)
         sl_dist = abs(entry - sl)
         if atr > 0:
-            # ATR gate: only block if SL is extremely tight AND actual dollar risk is meaningful
             atr_threshold = atr * 0.5
             if sl_dist < atr_threshold:
-                # Compute dollar risk at minimum lot
                 ts = float(chart.get("tick_size", 0.0001))
                 tv = float(chart.get("tick_value", 1.0))
                 ml = float(chart.get("min_lot", 0.01))
                 risk_dollars = (sl_dist / ts) * tv * ml
-                if risk_dollars > 1.0:
-                    self._log.info("SKIP %s: SL %.5f < 0.5xATR (%.5f), risk $%.2f too high for tight stop",
-                                   symbol, sl_dist, atr_threshold, risk_dollars)
+                # NEW: small-account bypass — if dollar risk is within 2% of equity, allow tight SL
+                max_risk = max(equity * 0.02, 0.50)
+                if risk_dollars <= max_risk:
+                    self._log.info("PASS %s: SL %.5f < 0.5xATR (%.5f) BUT risk $%.2f <= %.0f%% (%.2f) — allowing trade",
+                                   symbol, sl_dist, atr_threshold, risk_dollars, (max_risk/equity)*100 if equity > 0 else 0, max_risk)
+                else:
+                    self._log.info("SKIP %s: SL %.5f < 0.5xATR (%.5f), risk $%.2f > %.2f limit",
+                                   symbol, sl_dist, atr_threshold, risk_dollars, max_risk)
                     return {"status": "rejected", "reason": "sl_too_tight_for_atr",
                             "sl_dist": sl_dist, "atr_threshold": atr_threshold, "risk_dollars": risk_dollars}
-                else:
-                    self._log.info("PASS %s: SL tight but risk only $%.2f < $1.00 — allowing micro-lot trade",
-                                   symbol, risk_dollars)
+            else:
+                self._log.debug("PASS %s: SL %.5f >= 0.5xATR (%.5f)", symbol, sl_dist, atr_threshold)
 
         # ── 7. Spread-aware RR check ──
         spread_price = _symbol_spread_price(symbol)  # PRICE units (spread_pts × tick_size)
         rr_distance = abs(sl - entry)
         spread_cost_ratio = spread_price / rr_distance if rr_distance > 1e-9 else 1.0
-        # Use dynamic threshold from rules.json (default: 0.35 i.e. 35%)
-        rr_threshold = float(rules.get("smart_trail", {}).get("spread_atr_frac", 0.35))
+        # Use dynamic threshold from rules.json (default: 0.30 i.e. 30%)
+        rr_threshold = float(rules.get("smart_trail", {}).get("spread_atr_frac", 0.30))
         if spread_cost_ratio > rr_threshold:
             self._log.info("SKIP %s: spread_price=%.5f / RR_dist=%.5f = %.1f%% > threshold=%.1f%%",
                            symbol, spread_price, rr_distance, spread_cost_ratio*100, rr_threshold*100)
@@ -254,6 +256,14 @@ class ExecutionAgent(BaseAgent):
                         "effective_conf": effective_conf}
 
         lot = payload.get("lot_size", 0.01)
+        # Hard cap: never exceed 0.01 lot on sub-$250 accounts
+        rules = _load_rules()
+        max_eq = float(rules.get("risk_rules", {}).get("small_account_equity_max", 500))
+        if max_eq >= 250:
+            small_cap = float(rules.get("risk_rules", {}).get("small_account_lot_cap", 0.01))
+            if lot > small_cap:
+                lot = small_cap
+                self._log.info("LOT_CAP: forced lot %.3f for small account", lot)
 
         # ── 9. Execute ──
         if self._paper_mode:

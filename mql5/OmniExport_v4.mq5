@@ -13,7 +13,7 @@ input string DataFile        = "omni_data.json";
 input string CmdFile         = "omni_cmd.txt";
 input string ResultFile      = "omni_result.txt";
 input int    MagicNumber     = 20250411;
-input bool   AutoTradeEnabled = false;   // MUST set true to enable live trading
+input bool   AutoTradeEnabled = true;   // MUST set true to enable live trading
 // Leader-election: when the EA is attached to multiple charts only one
 // instance does the export — others stand down and just refresh their
 // claim if the leader dies. Set to false to disable (not recommended).

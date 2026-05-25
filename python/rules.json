@@ -62,8 +62,7 @@
     }
   },
   "watchlist": [
-    "XAUUSD",
-    "XAGUSD"
+    "XAUUSD"
   ],
   "timeframes": [
     "D1",
@@ -607,26 +606,11 @@
     "liquidity_avoid_pips": 3.0,
     "avoid_equal_levels": true,
     "profit_lock_ladder": [
-      [
-        1.0,
-        0.0
-      ],
-      [
-        1.5,
-        0.25
-      ],
-      [
-        2.0,
-        0.5
-      ],
-      [
-        3.0,
-        0.6
-      ],
-      [
-        5.0,
-        0.75
-      ]
+      [1.0, 0.0],
+      [1.5, 0.25],
+      [2.0, 0.5],
+      [3.0, 0.6],
+      [5.0, 0.75]
     ],
     "close_on_opposing_choch_once_profitable": true,
     "min_modify_pips": 3.0,
@@ -643,12 +627,12 @@
       "atr_mult_runner": 3.5,
       "notes": "Gold wider trails, same profit lock logic"
     },
-    "notes": "V2.1 TUNED: wider base trail (1.5x), reduced spread_atr_frac (0.15), tight_equity_threshold 5.0, tighter compress 0.8, fixed spread=price via tick_size, added peak_r historical tracking, corrected SELL peak-SL direction, symbol-aware config selector",
+    "notes": "V2.1 TUNED: wider base trail (1.5x), spread_atr_frac (0.35), tight_equity_threshold 5.0, tighter compress 0.8, fixed spread=price via tick_size, added peak_r historical tracking, corrected SELL peak-SL direction, symbol-aware config selector",
     "atr_mult_compress": 0.6,
     "atr_mult_expand": 2.5,
     "tight_equity_threshold": 5.0,
     "tight_mult_compress": 0.8,
-    "spread_atr_frac": 0.15
+    "spread_atr_frac": 0.35
   },
   "risk_rules": {
     "max_risk_per_trade_pct": 1.0,
@@ -675,7 +659,8 @@
       "max_entry_drift_pct": 0.08,
       "min_rr_spread_pct": 25.0,
       "small_account_conf_min": 0.6,
-      "small_account_equity_max": 500.0
+      "small_account_equity_max": 500.0,
+      "small_account_lot_cap": 0.01
     },
     "limit_orders": {
       "enabled": true,
@@ -790,11 +775,11 @@
       "target_tp2": "daily_high_or_low",
       "target_tp3": "weekly_structure_extreme_or_6R",
       "notes": "Gold -- primary instrument. Asia valid with clear OB. 6mo backtest: +2045%, 37% WR, 48% max DD. Key: TP to opposing liquidity, trail at 2-3.5x ATR, lock profits at +0.5R.",
-      "equity_gate": {
-        "min_equity_usd": 500,
-        "message": "Gold locked until account reaches $500 equity. Build the base with forex first.",
-        "override_confidence": 85
-      }
+    "equity_gate": {
+      "min_equity_usd": 100,
+      "message": "Gold requires $100 min equity (current: available).",
+      "override_confidence": 50
+    }
     },
     "NAS100": {
       "preferred_sessions": [
@@ -811,11 +796,11 @@
     "XAGUSD": {
       "min_confidence": 75,
       "notes": "Silver -- thin and prone to false sweeps; require highest bar",
-      "equity_gate": {
-        "min_equity_usd": 300,
-        "message": "Silver locked until account reaches $300 equity. Start with EURUSD/GBPUSD first.",
-        "override_confidence": 90
-      }
+    "equity_gate": {
+      "min_equity_usd": 75,
+      "message": "Silver requires $75 min equity (current: available).",
+      "override_confidence": 75
+    }
     },
     "US30": {
       "min_confidence": 70,

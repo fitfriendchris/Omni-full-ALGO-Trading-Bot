@@ -183,16 +183,33 @@ def _back_kb() -> dict:
 def _trades_kb(acc_id: str = "") -> dict:
     """Build trades keyboard with one Close button per open trade."""
     state  = _json(_state_path(acc_id)) or {}
-    trades = state.get("active_trades", {})
-    rows   = []
-    for tid, t in list(trades.items())[:6]:
-        sym  = t.get("symbol", "?")
-        dir_ = t.get("direction", "?")
-        icon = "🟢" if dir_ == "BUY" else "🔴"
-        rows.append([{
-            "text":          f"❌ Close {icon}{sym} #{tid[:6]}",
-            "callback_data": f"cb:close:{tid}",
-        }])
+    at = state.get("active_trades", {})
+    if isinstance(at, dict):
+        trades = at
+        rows   = []
+        for tid, t in list(trades.items())[:6]:
+            sym  = t.get("symbol", "?")
+            dir_ = t.get("direction", "?")
+            icon = "🟢" if dir_ == "BUY" else "🔴"
+            rows.append([{
+                "text":          f"❌ Close {icon}{sym} #{tid[:6]}",
+                "callback_data": f"cb:close:{tid}",
+            }])
+    elif isinstance(at, list):
+        rows = []
+        for t in at[:6]:
+            if not isinstance(t, dict):
+                continue
+            sym  = t.get("symbol", "?")
+            dir_ = t.get("direction", "?")
+            icon = "🟢" if dir_ == "BUY" else "🔴"
+            tid  = str(t.get("ticket", "?"))
+            rows.append([{
+                "text":          f"❌ Close {icon}{sym} #{tid[:6]}",
+                "callback_data": f"cb:close:{tid}",
+            }])
+    else:
+        rows = []
     rows.append([
         {"text": "⬅️ Main Menu", "callback_data": "cb:dashboard"},
         {"text": "🔄 Refresh",   "callback_data": "cb:trades"},
@@ -497,14 +514,24 @@ def cmd_dashboard(acc_id: str = "") -> str:
     trading_disabled = TRADING_DISABLED_PATH.exists()
 
     # Active trades
-    trades  = state.get("active_trades", {})
+    at = state.get("active_trades", {})
     trades_lines = []
-    for t in list(trades.values())[:4]:
-        sym  = t.get("symbol", "?")
-        dir_ = t.get("direction", "?")
-        ep   = t.get("entry_price", t.get("entry", 0))
-        icon = "🟢" if dir_ == "BUY" else "🔴"
-        trades_lines.append(f"  {icon} {sym} {dir_} @{ep:.5f}")
+    if isinstance(at, dict):
+        for t in list(at.values())[:4]:
+            sym  = t.get("symbol", "?")
+            dir_ = t.get("direction", "?")
+            ep   = t.get("entry_price", t.get("entry", 0))
+            icon = "🟢" if dir_ == "BUY" else "🔴"
+            trades_lines.append(f"  {icon} {sym} {dir_} @{ep:.5f}")
+    elif isinstance(at, list):
+        for t in at[:4]:
+            if not isinstance(t, dict):
+                continue
+            sym  = t.get("symbol", "?")
+            dir_ = t.get("direction", "?")
+            ep   = t.get("entry_price", t.get("entry", 0))
+            icon = "🟢" if dir_ == "BUY" else "🔴"
+            trades_lines.append(f"  {icon} {sym} {dir_} @{ep:.5f}")
 
     # Latest signals
     signals_path = PROJECT_ROOT / "shared" / "signals.json"
@@ -639,17 +666,35 @@ def cmd_trades(acc_id: str = "") -> str:
     trades = state.get("active_trades", {})
     if not trades:
         return "📊 No active trades right now."
-    lines = [f"<b>📊 Open Trades ({len(trades)})</b>\n"]
-    for tid, t in list(trades.items()):
-        sym  = t.get("symbol", "?")
-        dir_ = t.get("direction", "?")
-        ep   = t.get("entry_price", t.get("entry", 0))
-        sl   = t.get("current_sl", t.get("sl", 0))
-        tp   = t.get("tp1", t.get("tp", 0))
-        tp1  = "✓" if t.get("tp1_taken") else ""
-        icon = "🟢" if dir_ == "BUY" else "🔴"
-        lines.append(f"{icon} <b>{sym}</b> {dir_}  entry={ep:.5f}")
-        lines.append(f"   SL={sl:.5f}  TP1={tp:.5f}{tp1}  ticket={tid}")
+    if isinstance(trades, dict):
+        lines = [f"<b>📊 Open Trades ({len(trades)})</b>\n"]
+        for tid, t in list(trades.items()):
+            sym  = t.get("symbol", "?")
+            dir_ = t.get("direction", "?")
+            ep   = t.get("entry_price", t.get("entry", 0))
+            sl   = t.get("current_sl", t.get("sl", 0))
+            tp   = t.get("tp1", t.get("tp", 0))
+            tp1  = "✓" if t.get("tp1_taken") else ""
+            icon = "🟢" if dir_ == "BUY" else "🔴"
+            lines.append(f"{icon} <b>{sym}</b> {dir_}  entry={ep:.5f}")
+            lines.append(f"   SL={sl:.5f}  TP1={tp:.5f}{tp1}  ticket={tid}")
+    elif isinstance(trades, list):
+        lines = [f"<b>📊 Open Trades ({len(trades)})</b>\n"]
+        for t in trades:
+            if not isinstance(t, dict):
+                continue
+            tid  = str(t.get("ticket", "?"))
+            sym  = t.get("symbol", "?")
+            dir_ = t.get("direction", "?")
+            ep   = t.get("entry_price", t.get("entry", 0))
+            sl   = t.get("current_sl", t.get("sl", 0))
+            tp   = t.get("tp1", t.get("tp", 0))
+            tp1  = "✓" if t.get("tp1_taken") else ""
+            icon = "🟢" if dir_ == "BUY" else "🔴"
+            lines.append(f"{icon} <b>{sym}</b> {dir_}  entry={ep:.5f}")
+            lines.append(f"   SL={sl:.5f}  TP1={tp:.5f}{tp1}  ticket={tid}")
+    else:
+        return "📊 Bad active_trades format."
     return "\n".join(lines)
 
 
@@ -1342,10 +1387,17 @@ class AlertMonitor:
         acc_id = _load_active_account()
         state  = _json(_state_path(acc_id))
         if isinstance(state, dict):
-            self._trades = set(state.get("active_trades", {}).keys())
-            for tid, t in state.get("active_trades", {}).items():
-                if t.get("order_type", "") in ("BUY_LIMIT", "SELL_LIMIT"):
-                    self._limit_orders.add(tid)
+            at = state.get("active_trades", {})
+            if isinstance(at, dict):
+                self._trades = set(at.keys())
+                for tid, t in at.items():
+                    if t.get("order_type", "") in ("BUY_LIMIT", "SELL_LIMIT"):
+                        self._limit_orders.add(tid)
+            elif isinstance(at, list):
+                self._trades = {t.get("ticket") for t in at if isinstance(t, dict)}
+                for t in at:
+                    if isinstance(t, dict) and t.get("order_type", "") in ("BUY_LIMIT", "SELL_LIMIT"):
+                        self._limit_orders.add(t.get("ticket"))
         self._last_equity = 0.0
         _, self._last_equity, _, _, _ = _live_equity(acc_id)
 
@@ -1362,9 +1414,19 @@ class AlertMonitor:
         state = _json(_state_path(acc_id))
         if not isinstance(state, dict):
             return
-        trades = state.get("active_trades", {})
-        current_limit = {tid for tid, t in trades.items()
-                         if t.get("order_type", "").upper() in ("BUY_LIMIT", "SELL_LIMIT")}
+        at = state.get("active_trades", {})
+        if isinstance(at, dict):
+            trades = at
+            current_limit = {tid for tid, t in trades.items()
+                             if t.get("order_type", "").upper() in ("BUY_LIMIT", "SELL_LIMIT")}
+        elif isinstance(at, list):
+            trades = {str(t.get("ticket")): t for t in at if isinstance(t, dict)}
+            current_limit = set()
+            for t in at:
+                if isinstance(t, dict) and t.get("order_type", "").upper() in ("BUY_LIMIT", "SELL_LIMIT"):
+                    current_limit.add(str(t.get("ticket")))
+        else:
+            return
         
         # New limit order placed
         for tid in current_limit - self._limit_orders:
@@ -1441,13 +1503,21 @@ class AlertMonitor:
         state   = _json(_state_path(acc_id))
         if not isinstance(state, dict):
             return
-        current = set(state.get("active_trades", {}).keys())
+        at = state.get("active_trades", [])
+        if isinstance(at, dict):
+            current = set(at.keys())
+            tr_lookup = at
+        elif isinstance(at, list):
+            current = {str(t.get("ticket")) for t in at if isinstance(t, dict)}
+            tr_lookup = {str(t.get("ticket")): t for t in at if isinstance(t, dict)}
+        else:
+            return
         # Build lookup for recent closes by ticket
         recent_closes = state.get("recent_closes", []) or []
         closes_by_ticket = {str(c.get("ticket")): c for c in recent_closes if isinstance(c, dict)}
 
         for tid in current - self._trades:
-            t    = state["active_trades"].get(tid, {})
+            t    = tr_lookup.get(tid, {})
             sym  = t.get("symbol") or "?"
             dir_ = t.get("direction") or "?"
             if sym == "?" or dir_ == "?":

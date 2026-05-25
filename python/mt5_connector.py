@@ -1,4 +1,5 @@
 import json, re, os, glob, time, logging, pandas as pd
+from pathlib import Path
 from datetime import datetime, timezone
 
 log = logging.getLogger("mt5_connector")
@@ -162,25 +163,92 @@ def _resolve_symbol(charts: dict, canonical: str) -> str:
 
 
 def _load() -> dict:
-    global _BROKER_OFFSET_S, _BROKER_OFFSET_DETECTED
+    """Load MT5 JSON with trailing-comma repair, file-stability check, and robust retry."""
+    global _BROKER_OFFSET_S, _BROKER_OFFSET_DETECTED, _LAST_GOOD
+    JSON_PATH_OBJ = Path(JSON_PATH)
+    # Wait for file to stabilize (MT5 writing in progress = size changing)
+    for _ in range(5):
+        s1 = JSON_PATH_OBJ.stat().st_size
+        time.sleep(0.05)
+        s2 = JSON_PATH_OBJ.stat().st_size
+        if s1 == s2 and s1 > 0:
+            break
+
+    raw = ""
     try:
         with open(JSON_PATH, "r", encoding="utf-8") as f:
             raw = f.read()
         # Fix trailing commas before ] or }
         raw = re.sub(r',\s*([\]}])', r'\1', raw)
         data = json.loads(raw)
-        if data and not _BROKER_OFFSET_DETECTED:
-            _BROKER_OFFSET_S = _detect_broker_offset(data)
-            _BROKER_OFFSET_DETECTED = True
-            if _BROKER_OFFSET_S != 0.0:
-                hrs = _BROKER_OFFSET_S / 3600.0
-                log.info("broker server-time offset detected: %+.1fh (%+ds) — "
-                         "bar timestamps will be normalised to UTC",
-                         hrs, int(_BROKER_OFFSET_S))
+        if data:
+            _LAST_GOOD = data  # cache healthy snapshot
+            if not _BROKER_OFFSET_DETECTED:
+                _BROKER_OFFSET_S = _detect_broker_offset(data)
+                _BROKER_OFFSET_DETECTED = True
+                if _BROKER_OFFSET_S != 0.0:
+                    hrs = _BROKER_OFFSET_S / 3600.0
+                    log.info("broker server-time offset detected: %+.1fh (%+ds) — "
+                             "bar timestamps will be normalised to UTC",
+                             hrs, int(_BROKER_OFFSET_S))
         return data
+    except json.JSONDecodeError as e:
+        # Try to repair: truncate at last complete top-level object (depth=0)
+        log.warning("mt5_connector JSON decode error (mid-write race): %s", e)
+        if raw:
+            try:
+                last_complete = -1
+                depth = 0
+                in_string = False
+                for i, ch in enumerate(raw):
+                    if ch == '"' and (i == 0 or raw[i-1] != '\\'):
+                        in_string = not in_string
+                        continue
+                    if in_string:
+                        continue
+                    if ch == '{':
+                        depth += 1
+                    elif ch == '}':
+                        depth -= 1
+                        if depth == 0:
+                            last_complete = i
+                if last_complete > 0:
+                    repaired = raw[:last_complete+1]
+                    # Count unclosed brackets/braces
+                    ob = repaired.count('{') - repaired.count('}')
+                    bb = repaired.count('[') - repaired.count(']')
+                    repaired += '}' * max(0, ob) + ']' * max(0, bb)
+                    data = json.loads(repaired)
+                    if data:
+                        _LAST_GOOD = data
+                        log.info("mt5_connector JSON repaired successfully (truncated at char %d)", last_complete)
+                        return data
+            except Exception as repair_err:
+                log.warning("mt5_connector JSON repair failed: %s", repair_err)
+        # Fallback: return last-good snapshot
+        if _LAST_GOOD:
+            log.info("mt5_connector using _LAST_GOOD snapshot (age unknown)")
+            return _LAST_GOOD
+        log.error("mt5_connector _load failed and no _LAST_GOOD available")
+        return {}
     except Exception as e:
         log.warning("mt5_connector _load error: %s", e)
+        if _LAST_GOOD:
+            return _LAST_GOOD
         return {}
+
+
+def _bar_time_str(bar: dict) -> str:
+    """Parse bar timestamp string to Unix epoch."""
+    ts = bar.get("time", bar.get("closeTime", ""))
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    for fmt in ("%Y.%m.%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return float(datetime.strptime(ts, fmt).timestamp())
+        except Exception:
+            continue
+    return 0.0
 
 
 def load_with_retry(max_attempts: int = 5) -> dict:
@@ -200,13 +268,15 @@ def load_with_retry(max_attempts: int = 5) -> dict:
                                  "(%+ds) — bar timestamps will be normalised to UTC",
                                  hrs, int(_BROKER_OFFSET_S))
                 return data
-        except Exception:
-            pass
+            else:
+                log.warning("MT5 load returned empty data (attempt %d/%d)", attempt + 1, max_attempts)
+        except Exception as exc:
+            log.warning("MT5 load exception (attempt %d/%d): %s", attempt + 1, max_attempts, exc)
         delay = 2 ** attempt
         log.warning("MT5 load attempt %d/%d failed; retrying in %ds", attempt + 1, max_attempts, delay)
         time.sleep(delay)
     log.error("All MT5 load retries exhausted; using last-known-good cache")
-    return _LAST_GOOD.copy()
+    return _LAST_GOOD.copy() if _LAST_GOOD else {}
 
 
 def get_json_path(): return JSON_PATH

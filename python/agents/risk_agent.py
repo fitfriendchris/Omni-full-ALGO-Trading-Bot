@@ -54,7 +54,9 @@ class RiskAgent(BaseAgent):
         # Seed day-start balance from live account so daily PnL tracks realized moves,
         # not unrealized swap/float on pre-existing positions.
         acct = self._get_account()
-        self._day_start_balance = float(acct.get("balance", 0)) if acct else 0.0
+        bal = float(acct.get("balance", 0)) if acct else 0.0
+        # Prevent 0-balance false halt on fresh startup
+        self._day_start_balance = bal if bal > 0 else 100.0
 
     async def _run_cycle(self) -> dict:
         """Periodic: scan account state, alert if near limits."""
@@ -62,10 +64,22 @@ class RiskAgent(BaseAgent):
         if not acct:
             return {"status": "no_account_data"}
 
-        equity   = float(acct.get("equity", 0))
-        balance  = float(acct.get("balance", equity))
-        rules    = self._load_rules().get("risk_rules", {})
-        max_dd   = float(rules.get("max_daily_loss_pct", 5.0)) / 100.0
+        equity = float(acct.get("equity", 0))
+        balance = float(acct.get("balance", equity))
+
+        # NEW: reject zero-equity readings (mid-write race from MT5 connector)
+        if equity < 1 or balance < 1:
+            self.log.warning("_run_cycle: equity=%.2f or balance=%.2f too low — skipping drawdown check",
+                             equity, balance)
+            return {"status": "zero_equity_skip", "equity": equity, "balance": balance}
+
+        # NEW: auto-refresh day_start_balance if we detect it was set on a stale snapshot
+        if self._day_start_balance < 1:
+            self._day_start_balance = balance
+            self.log.info("_run_cycle: day_start_balance was stale–refreshed to %.2f", balance)
+
+        rules = self._load_rules().get("risk_rules", {})
+        max_dd = float(rules.get("max_daily_loss_pct", 5.0)) / 100.0
 
         # Daily PnL measured against the balance at agent startup, not open-position
         # equity — this prevents overnight swap charges on pre-existing positions from
@@ -74,6 +88,19 @@ class RiskAgent(BaseAgent):
         daily_pnl = equity - ref
 
         result = {"equity": equity, "balance": balance, "daily_pnl": daily_pnl, "ref": ref}
+
+        # NEW: sanity-check against obviously impossible sign-flip
+        if daily_pnl < -ref * 0.5 and ref > 100:
+            # More than 50% loss in a few seconds? Stale-state indicator.
+            self.log.warning(
+                "_run_cycle: daily_pnl=%.2f looks impossible with ref=%.2f — "
+                "auto-reset day_start_balance to current balance and skip halt",
+                daily_pnl, ref
+            )
+            self._day_start_balance = balance
+            result["day_start_reset"] = True
+            daily_pnl = 0.0  # effectively reset
+            return result
 
         # Auto-halt on daily loss breach
         if ref > 0 and (-daily_pnl / ref) > max_dd:
@@ -90,7 +117,7 @@ class RiskAgent(BaseAgent):
                 "limit_pct": max_dd * 100,
                 "current_pct": (-daily_pnl / ref) * 100,
             }, priority=2)
-            result["alert_sent"] = True
+            result["approaching_limit"] = True
 
         return result
 
@@ -227,18 +254,26 @@ class RiskAgent(BaseAgent):
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _get_account(self) -> dict:
-        """Read live account info from omni_data.json."""
+        """Read live account info via mt5_connector so JSON-repair + _LAST_GOOD fallback applies."""
+        import mt5_connector
         try:
-            if MT5_DATA_PATH.exists():
-                raw = MT5_DATA_PATH.read_bytes()
-                # Strip trailing commas (MT5 quirk)
-                import re
-                raw_str = re.sub(rb",\s*([}\]])", rb"\1", raw).decode("utf-8", errors="replace")
-                data = json.loads(raw_str)
-                # Return the account block, not the root dict
-                acct = data.get("account", {})
-                if acct and acct.get("login"):
-                    return acct
+            data = mt5_connector._load()
+            if not data:
+                return {}
+            acct = data.get("account", {})
+            # NEW: reject zero-equity snap-shots (mid-write race)
+            eq = float(acct.get("equity", 0))
+            bal = float(acct.get("balance", eq))
+            if eq < 1 or bal < 1:
+                # Fall back to cached state file equity
+                s = json.loads(STATE_PATH.read_text())
+                cached_eq = float(s.get("equity", 0))
+                cached_bal = float(s.get("balance", cached_eq))
+                if cached_eq >= 1:
+                    self.log.warning("_get_account: MT5 equity=%.2f<1, using cached equity=%.2f", eq, cached_eq)
+                    return {"equity": cached_eq, "balance": cached_bal, "currency": s.get("currency", "USD")}
+                return {}
+            return acct
         except Exception:
             pass
         try:

@@ -3,7 +3,21 @@
   "_version": "2.3.1",
   "_last_updated": "2026-05-21",
   "_tuning": "v2.3.1: wider trail base (1.5x), lower spread_atr_frac (0.15), tighter equity_threshold (5.0), softer compress (0.8), fixed spread conversion to price units, added peak_r historical tracking, corrected SELL peak-SL direction, added symbol-aware config selector",
+  "dual_tf": {
+    "enabled": true,
+    "htf_timeframe": "H4",
+    "ltf_timeframe": "M15",
+    "min_confidence": 0.65,
+    "sl_buffer_frac": 0.15
+  },
   "borsellino_rules": {
+    "dual_tf": {
+      "enabled": true,
+      "htf_timeframe": "H4",
+      "ltf_timeframe": "M15",
+      "min_confidence": 0.65,
+      "sl_buffer_frac": 0.15
+    },
     "circuit_breaker": {
       "enabled": true,
       "consecutive_losses_to_halt": 3,
@@ -29,10 +43,10 @@
     },
     "scaling": {
       "enabled": true,
-      "increment_pct": 50,
-      "require_consecutive_wins_to_scale": 2,
+      "increment_pct": 100,
+      "require_consecutive_wins_to_scale": 1,
       "reset_to_base_on_loss": true,
-      "note": "Rule: go from 1-lot to 2-lot, not 1 to 10"
+      "note": "Aggressive: double position after every win, reset to base on loss (compounding mode)"
     },
     "loss_review": {
       "enabled": true,
@@ -49,12 +63,7 @@
   },
   "watchlist": [
     "XAUUSD",
-    "XAGUSD",
-    "EURUSD",
-    "GBPUSD",
-    "GBPJPY",
-    "AUDUSD",
-    "USDCAD"
+    "XAGUSD"
   ],
   "timeframes": [
     "D1",
@@ -832,24 +841,52 @@
     "alert_on_high_confidence": true,
     "min_confidence_for_alert": 65
   },
-  "dual_tf": {
-    "_comment": "Phase 2 dual-timeframe selector. See python/dual_tf_selector.py.",
+  "confluence_engine": {
+    "_comment": "Phase 4 Confluence Engine v3. See python/dual_tf_selector.py, python/manipulation_leg_detector.py, python/stdv_ote_engine.py.",
     "enabled": true,
-    "entries": [
-      "ob_mitigation",
-      "fvg_fill",
-      "sweep_choch"
-    ],
-    "min_confidence": 0.5,
-    "tp_rr": 2.5,
-    "sl_buffer_frac": 0.1,
-    "ob_proximity_atr_frac": 2.5,
-    "fvg_proximity_atr_frac": 2.5,
-    "macro_timeframe": "H4",
     "htf_timeframe": "H1",
     "ltf_timeframe": "M5",
-    "notes": "H4=macro bias, H1=HTF structure, M5=LTF trigger. OTE 50pct OB body entry. Kill zone +0.10. CISD +0.15. Sweep gate on FVG fills.",
-    "macro_penalty": -0.1
+    "macro_timeframe": "H4",
+    "min_confluence_to_consider": 3,
+    "min_confluence_to_trade": 4,
+    "max_confluence": 6,
+    "min_confidence": 0.50,
+    "min_confidence_outside_killzone": 0.85,
+    "min_rr": 2.0,
+    "tp_rr": 3.0,
+    "entry_pricing": "limit_at_ote_stdv",
+    "sl_placement": "beyond_manipulation_leg_wick",
+    "tp_placement": "opposing_liquidity_or_stdv_maxexp",
+    "kill_zones_utc": [
+      {"name": "LONDON_OPEN", "start": 7, "end": 10, "weight": 1.0},
+      {"name": "NY_OPEN", "start": 12, "end": 15, "weight": 0.85},
+      {"name": "SILVER_BULLET", "start": 13, "end": 17, "weight": 0.80},
+      {"name": "EUROPEAN", "start": 7, "end": 12, "weight": 1.0}
+    ],
+    "stdv_config": {
+      "divisor": 4.0,
+      "levels": ["CE", "OTE", "OTE_0.63", "OTE_0.65", "OTE_0.79", "OTE_0.886", "Reaccum", "Reversal", "MaxExp3", "MaxExp4", "MaxExp5"],
+      "fib_ratios": [0.0, 0.50, 0.63, 0.65, 0.705, 0.79, 0.886, 1.0]
+    },
+    "confluence_weights": {
+      "C1_OTE_LEVEL": 0.10,
+      "C2_OB_PRESENT": 0.10,
+      "C3_FVG_PRESENT": 0.10,
+      "C4_SWEEP_CONFIRMED": 0.10,
+      "C5_STRUCTURE_ALIGNED": 0.10,
+      "C6_KILLZONE_AMD": 0.10
+    },
+    "confidence_formula": {
+      "base": 0.45,
+      "per_confluence": 0.10,
+      "high_quality_leg_bonus": 0.05,
+      "ote_zone_bonus": 0.05,
+      "amd_distribution_bonus": 0.05,
+      "triple_alignment_bonus": 0.05,
+      "outside_kz_penalty": -0.10,
+      "no_leg_penalty": -0.15
+    },
+    "notes": "Single-path engine: manipulation leg -> STDV/OTE -> confluence count (min 3 of 6) -> kill zone gate -> AMD alignment -> limit order entry. Proven engine is advisory only (+0.10 max boost). No separate signals from old deterministic engine."
   },
   "scaling": {
     "_comment": "Phase 2 position scaling. See python/scaling_engine.py.",

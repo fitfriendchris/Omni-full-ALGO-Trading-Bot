@@ -1,0 +1,42 @@
+[
+  {
+    "risk_pct": 0.01,
+    "trades": 58,
+    "wr": 82.8,
+    "pnl_pct": 87.9,
+    "dd": 10.7,
+    "pf": 2.89,
+    "kelly": 0.54,
+    "avg_lot": 0.07
+  },
+  {
+    "risk_pct": 0.02,
+    "trades": 58,
+    "wr": 82.8,
+    "pnl_pct": 233.7,
+    "dd": 21.2,
+    "pf": 2.93,
+    "kelly": 0.54,
+    "avg_lot": 0.17
+  },
+  {
+    "risk_pct": 0.03,
+    "trades": 58,
+    "wr": 82.8,
+    "pnl_pct": 445.7,
+    "dd": 32.0,
+    "pf": 2.79,
+    "kelly": 0.53,
+    "avg_lot": 0.313
+  },
+  {
+    "risk_pct": 0.05,
+    "trades": 58,
+    "wr": 82.8,
+    "pnl_pct": 1177.1,
+    "dd": 52.4,
+    "pf": 2.39,
+    "kelly": 0.48,
+    "avg_lot": 0.85
+  }
+]

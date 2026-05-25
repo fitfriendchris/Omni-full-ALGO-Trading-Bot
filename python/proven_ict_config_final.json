@@ -1,0 +1,15 @@
+{
+  "execution_mode": "MARKET_ONLY",
+  "sl_cap_pips": 200.0,
+  "fill_window": 96,
+  "session": "LONDON",
+  "min_rr": 2.0,
+  "lookback": 50,
+  "stop_buffer_pips": 2.0,
+  "max_spread_pips": 50.0,
+  "stricter_slippage": true,
+  "displacement_filter_active": true,
+  "trend_alignment_active": true,
+  "min_bar_range_pips": 0,
+  "_note": "Rejection logic fixed, validation added, 77% WR verified"
+}

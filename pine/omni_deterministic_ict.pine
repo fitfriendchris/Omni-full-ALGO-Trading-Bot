@@ -1,0 +1,273 @@
+// @version=5
+// ═══════════════════════════════════════════════════════════════════════════════
+// OMNI_Deterministic_ICT.pine — Institutional Trap + Displacement Engine
+// ═══════════════════════════════════════════════════════════════════════════════
+indicator("OMNI Deterministic ICT", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 1. INPUTS & STRUCTURAL DICTIONARY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+htfInput       = input.timeframe("H4", "Higher Timeframe (HTF)")
+ltfInput       = input.timeframe("M5",  "Lower Timeframe (LTF)")
+sessionInput   = input.string("LONDON", "Session Window", options=["LONDON", "NY", "ASIA", "SILVER_BULLET"])
+maxSpreadPips  = input.float(30.0, "Max Allowed Spread (price units)", minval=0.1)
+minRR          = input.float(2.0,  "Minimum R:R", minval=1.0)
+minConf        = input.float(0.55, "Minimum Confidence", minval=0.0, maxval=1.0, step=0.01)
+lookbackBars   = input.int(30, "Trap Lookback", minval=10, maxval=200)
+atrPeriod      = input.int(14, "ATR Period", minval=5, maxval=50)
+slBufferPips   = input.float(2.0, "SL Buffer (pips)", minval=0.5)
+
+// ── Colors ──
+longCol  = input.color(color.new(color.teal,  0), "Long signal color")
+shortCol = input.color(color.new(color.red,   0), "Short signal color")
+liqCol   = input.color(color.new(color.gray, 70), "Liquidity zone color")
+obCol    = input.color(color.new(color.blue, 50), "Order Block zone color")
+fvgCol   = input.color(color.new(color.orange,50), "FVG zone color")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2. DAILY CYCLE PHASE STATE-MACHINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Accumulation: ATR contracting, range contained
+// Manipulation: spike beyond accumulation bounds, snap back
+// Distribution: sustained trend after manipulation
+
+var string phase = "UNKNOWN"
+var float accumHigh = 0.0
+var float accumLow  = 0.0
+var int   accumStartBar = 0
+
+atrNow = ta.atr(atrPeriod)
+atrPrior = ta.atr(atrPeriod)[atrPeriod]
+recentRange = ta.highest(high, atrPeriod) - ta.lowest(low, atrPeriod)
+
+if atrNow < atrPrior * 0.95 and recentRange < atrNow * 1.2
+    phase := "ACCUMULATION"
+    accumHigh := ta.highest(high, atrPeriod)
+    accumLow  := ta.lowest(low, atrPeriod)
+    accumStartBar := bar_index - atrPeriod
+else if phase == "ACCUMULATION"
+    if high > accumHigh and close < accumHigh and close > accumLow
+        phase := "MANIPULATION"
+    if low < accumLow and close > accumLow and close < accumHigh
+        phase := "MANIPULATION"
+else if phase == "MANIPULATION" or phase == "ACCUMULATION"
+    bool bull3 = close > open and close[1] > open[1] and close[2] > open[2]
+    bool bear3 = close < open and close[1] < open[1] and close[2] < open[2]
+    if bull3 and close > accumHigh
+        phase := "DISTRIBUTION"
+    else if bear3 and close < accumLow
+        phase := "DISTRIBUTION"
+else if phase == "DISTRIBUTION" and atrNow < atrPrior * 0.90
+    phase := "ACCUMULATION"
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 3. TRAP & SWEEP LOCATOR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Swing pivots
+swingHigh(len) =
+    float sh = 0.0
+    for i = len to len * 2
+        if high[i] >= ta.highest(high, len * 2 + 1)[len]
+            sh := high[i]
+            break
+    sh
+
+swingLow(len) =
+    float sl = 0.0
+    for i = len to len * 2
+        if low[i] <= ta.lowest(low, len * 2 + 1)[len]
+            sl := low[i]
+            break
+    sl
+
+// Sweep detection: price pushes past a recent swing low/high and reverses
+sweepLowIdx   = -1
+sweepHighIdx  = -1
+sweepDir      = ""
+
+for i = lookbackBars to 1
+    // Long sweep: low breaks below recent swing low, close back above
+    if low[i] < ta.lowest(low, 5)[i + 2] and close[i] > ta.lowest(low, 5)[i + 2]
+        // Check prior induced pivot (higher low)
+        bool induced = false
+        for j = i + 1 to min(i + 5, lookbackBars)
+            if low[j] > ta.lowest(low, 5)[i + 2]
+                induced := true
+                break
+        if induced
+            sweepLowIdx := i
+            sweepDir := "BULL"
+            break
+
+for i = lookbackBars to 1
+    if sweepDir != ""
+        break
+    // Short sweep: high breaks above recent swing high, close back below
+    if high[i] > ta.highest(high, 5)[i + 2] and close[i] < ta.highest(high, 5)[i + 2]
+        bool induced = false
+        for j = i + 1 to min(i + 5, lookbackBars)
+            if high[j] < ta.highest(high, 5)[i + 2]
+                induced := true
+                break
+        if induced
+            sweepHighIdx := i
+            sweepDir := "BEAR"
+            break
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 4. MULTI-CANDLE DISPLACEMENT ENGINE (MSS / OB / FVG)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── BOS / CHoCH detection ──
+// CHoCH (long): first close above prior swing high after lower structure
+chochLong  = close > ta.highest(high, 5)[1] and close[1] <= ta.highest(high, 5)[1]
+chochShort = close < ta.lowest(low, 5)[1]   and close[1] >= ta.lowest(low, 5)[1]
+
+// ── Order Block (OB) ──
+// Bullish OB: final bearish candle immediately before displacement
+bool bullOB = false
+float bullOB_top = 0.0, bullOB_bottom = 0.0
+int   bullOB_idx = -1
+
+if chochLong
+    for i = 1 to 5
+        if close[i] < open[i]  // bearish candle
+            float top = math.max(open[i], close[i])
+            float bot = math.min(open[i], close[i])
+            if close > top + (high[i] - low[i]) * 0.1
+                bullOB := true
+                bullOB_top := top
+                bullOB_bottom := bot
+                bullOB_idx := bar_index - i
+                break
+
+bool bearOB = false
+float bearOB_top = 0.0, bearOB_bottom = 0.0
+int   bearOB_idx = -1
+
+if chochShort
+    for i = 1 to 5
+        if close[i] > open[i]  // bullish candle
+            float top = math.max(open[i], close[i])
+            float bot = math.min(open[i], close[i])
+            if close < bot - (high[i] - low[i]) * 0.1
+                bearOB := true
+                bearOB_top := top
+                bearOB_bottom := bot
+                bearOB_idx := bar_index - i
+                break
+
+// ── Fair Value Gap (FVG) ──
+// Bullish FVG: candle.high[2] < candle.low[0] (3-candle gap up)
+bool fvgBull = false
+float fvgBullTop = 0.0
+float fvgBullBot = 0.0
+
+if close > open and close[1] > open[1]
+    if high[2] < low
+        fvgBull := true
+        fvgBullTop := low
+        fvgBullBot := high[2]
+
+bool fvgBear = false
+float fvgBearTop = 0.0
+float fvgBearBot = 0.0
+
+if close < open and close[1] < open[1]
+    if low[2] > high
+        fvgBear := true
+        fvgBearTop := low[2]
+        fvgBearBot := high
+
+// Premium / Discount check relative to displacement leg
+float dispLegLow  = ta.lowest(low, 5)
+float dispLegHigh = ta.highest(high, 5)
+float fib50 = dispLegLow + (dispLegHigh - dispLegLow) * 0.50
+float fib79 = dispLegLow + (dispLegHigh - dispLegLow) * 0.79
+
+bool inDiscountLong = fib50 <= close and close <= fib79
+bool inPremiumShort = fib50 >= close and close >= fib79
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 5. ORDER ROUTING & SMART RISK CONTROLLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Spread filter ──
+spread = high - low
+spreadOK = spread <= maxSpreadPips
+
+// ── Session filter ──
+bool inSession = true
+hourUTC = hour(time_close, "UTC")
+if sessionInput == "LONDON"
+    inSession := hourUTC >= 7 and hourUTC < 10
+else if sessionInput == "NY"
+    inSession := hourUTC >= 12 and hourUTC < 15
+else if sessionInput == "ASIA"
+    inSession := hourUTC >= 22 or hourUTC < 7
+else if sessionInput == "SILVER_BULLET"
+    inSession := hourUTC >= 13 and hourUTC < 17
+
+// ── Long entry conditions ──
+validLong = sweepDir == "BULL" and chochLong and bullOB and fvgBull and inDiscountLong and spreadOK and inSession
+entryPriceLong = fvgBullTop  // buy limit at top of bullish FVG
+slPriceLong    = low[sweepLowIdx] - slBufferPips * syminfo.mintick
+riskLong       = entryPriceLong - slPriceLong
+tp1Long        = riskLong > 0 ? entryPriceLong + riskLong * 2.0 : na
+
+// ── Short entry conditions ──
+validShort = sweepDir == "BEAR" and chochShort and bearOB and fvgBear and inPremiumShort and spreadOK and inSession
+entryPriceShort = fvgBearBot  // sell limit at bottom of bearish FVG
+slPriceShort    = high[sweepHighIdx] + slBufferPips * syminfo.mintick
+riskShort       = slPriceShort - entryPriceShort
+tp1Short        = riskShort > 0 ? entryPriceShort - riskShort * 2.0 : na
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VISUAL OUTPUT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Liquidity sweep markers
+plotshape(sweepDir == "BULL", "Sweep Low", shape.triangleup,   location.belowbar, longCol,  size=size.small)
+plotshape(sweepDir == "BEAR", "Sweep High", shape.triangledown, location.abovebar, shortCol, size=size.small)
+
+// OB boxes
+if bullOB
+    box.new(bullOB_idx, bullOB_top, bar_index, bullOB_bottom, bgcolor=color.new(obCol, 80), border_color=obCol, border_width=1)
+if bearOB
+    box.new(bearOB_idx, bearOB_top, bar_index, bearOB_bottom, bgcolor=color.new(obCol, 80), border_color=obCol, border_width=1)
+
+// FVG boxes
+if fvgBull
+    box.new(bar_index - 2, fvgBullTop, bar_index, fvgBullBot, bgcolor=color.new(fvgCol, 70), border_color=fvgCol, border_width=1)
+if fvgBear
+    box.new(bar_index - 2, fvgBearTop, bar_index, fvgBearBot, bgcolor=color.new(fvgCol, 70), border_color=fvgCol, border_width=1)
+
+// Entry labels
+if validLong
+    label.new(bar_index, entryPriceLong, "LIMIT BUY @ " + str.tostring(entryPriceLong, "#.#####") + "\nSL=" + str.tostring(slPriceLong, "#.#####") + " TP=" + str.tostring(tp1Long, "#.#####") + "\nPhase=" + phase, color=longCol, textcolor=color.white, style=label.style_label_up, size=size.small)
+    // Horizontal line at entry
+    line.new(bar_index - 10, entryPriceLong, bar_index, entryPriceLong, color=longCol, width=2)
+    line.new(bar_index - 10, slPriceLong,    bar_index, slPriceLong,    color=color.orange, style=line.style_dashed, width=1)
+    line.new(bar_index - 10, tp1Long,          bar_index, tp1Long,          color=color.green,  style=line.style_dashed, width=1)
+
+if validShort
+    label.new(bar_index, entryPriceShort, "LIMIT SELL @ " + str.tostring(entryPriceShort, "#.#####") + "\nSL=" + str.tostring(slPriceShort, "#.#####") + " TP=" + str.tostring(tp1Short, "#.#####") + "\nPhase=" + phase, color=shortCol, textcolor=color.white, style=label.style_label_down, size=size.small)
+    line.new(bar_index - 10, entryPriceShort, bar_index, entryPriceShort, color=shortCol, width=2)
+    line.new(bar_index - 10, slPriceShort,    bar_index, slPriceShort,    color=color.orange, style=line.style_dashed, width=1)
+    line.new(bar_index - 10, tp1Short,        bar_index, tp1Short,        color=color.green,  style=line.style_dashed, width=1)
+
+// Background tint for phases
+bgcolor(phase == "ACCUMULATION"     ? color.new(color.gray, 90) :
+        phase == "MANIPULATION"      ? color.new(color.purple, 90) :
+        phase == "DISTRIBUTION"      ? color.new(color.green, 92) :
+        na)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(validLong,  "OMNI Long Trap",  "Deterministic LONG trap sequence confirmed")
+alertcondition(validShort, "OMNI Short Trap", "Deterministic SHORT trap sequence confirmed")

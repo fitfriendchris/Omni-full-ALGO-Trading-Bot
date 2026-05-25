@@ -1,0 +1,40 @@
+{
+  "timestamp": "2026-05-21 20:09:58.683435",
+  "results": [
+    {
+      "mode": "risk",
+      "arg": 0.01,
+      "label": "1% Account Risk"
+    },
+    {
+      "mode": "risk",
+      "arg": 0.02,
+      "label": "2% Account Risk"
+    },
+    {
+      "mode": "margin",
+      "arg": 0.05,
+      "label": "5% Margin"
+    },
+    {
+      "mode": "margin",
+      "arg": 0.1,
+      "label": "10% Margin"
+    },
+    {
+      "mode": "margin",
+      "arg": 0.2,
+      "label": "20% Margin"
+    },
+    {
+      "mode": "kelly",
+      "arg": 0.1,
+      "label": "1/4 Kelly"
+    },
+    {
+      "mode": "kelly",
+      "arg": 0.25,
+      "label": "1/2 Kelly"
+    }
+  ]
+}

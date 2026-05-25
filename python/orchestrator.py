@@ -69,6 +69,32 @@ DEFAULT_RULES_PATH = HERE / "rules.json"
 DEFAULT_SIGNALS_DIR = PROJECT_ROOT / "shared"
 DEFAULT_PINE_PATH = PROJECT_ROOT / "pine" / "omni_pine_overlay.pine"
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 4 Confluence Engine — SINGLE signal path (no parallel confusion)
+#
+# The dual_tf_selector v3 is the ONLY signal source. It implements:
+#   - Manipulation leg detection → STDV/OTE anchoring
+#   - True confluence counting (min 3 of 6)
+#   - Hard kill-zone gate + AMD alignment
+#   - Limit-order entry pricing at true OTE/STDV levels
+#
+# Proven deterministic engine (proven_ict_signals.py) may still be loaded
+# as an advisory layer for confidence boost, but it does NOT emit
+# separate signals. All downstream consumers see one unified stream.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Advisory proven engine — optional confidence overlay
+try:
+    from proven_ict_signals import (
+        generate_signals_for_symbol as _proven_generate,
+        Signal as _ProvenSig,
+    )
+    _HAVE_PROVEN = True
+except Exception:
+    _HAVE_PROVEN = False
+    _proven_generate = None  # type: ignore
+    _ProvenSig = None        # type: ignore
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Pluggable bar fetcher
@@ -90,15 +116,23 @@ def _fetch_with_timeout(fetcher: BarFetcher, symbol: str, tf: str, n: int,
 _Y2000_TS = 946684800.0  # Unix timestamp for 2000-01-01; bars before this are fixtures
 
 
-def _bars_are_fresh(bars: list[Bar], max_age_s: int = 3600) -> bool:
-    """Return False if the newest bar is older than max_age_s seconds.
-    Bars with timestamps near the Unix epoch (e.g. fixture data) are always considered fresh."""
+TF_AGE_S: dict[str, int] = {
+    "M1": 120, "M5": 300, "M15": 600, "H1": 3600, "H4": 18000, "D1": 87000,
+}
+
+def bars_are_fresh_for_tf(bars: list[Bar], tf: str) -> bool:
+    """Timeframe-aware freshness check."""
     if not bars:
         return False
+    max_age = TF_AGE_S.get(tf, 3600)
     newest = max((b.time for b in bars if b.time), default=0.0)
     if newest < _Y2000_TS:
         return True  # fixture / synthetic data — skip staleness check
-    return (time.time() - newest) < max_age_s
+    return (time.time() - newest) < max_age
+
+
+# Backward compat: alias without timeframe
+_bars_are_fresh = lambda bars: bars_are_fresh_for_tf(bars, "H1")
 
 
 class FixtureBarFetcher:
@@ -124,6 +158,14 @@ class MT5BarFetcher:
             except Exception as e:  # pragma: no cover
                 raise RuntimeError(f"mt5_connector not available: {e}") from e
         return self._mod
+
+    def _raw_data(self) -> dict:
+        """Return latest full MT5 data dict (includes amd_phase, timestamp, etc)."""
+        mod = self._lazy()
+        try:
+            return mod.load_with_retry(max_attempts=3)
+        except Exception:
+            return {}
 
     def fetch(self, symbol: str, timeframe: str, n: int) -> list[Bar]:
         mod = self._lazy()
@@ -265,11 +307,23 @@ def run_cycle(
     # Optional regime detector — runs once per HTF series, attached to signal
     # metadata so consumers (auto_trader, dashboard) can adapt.
     try:
-        from regime_detector import detect_regime
+        from regime_detector import detect_regime as _detect_regime
         _have_regime = True
     except Exception:
         _have_regime = False
         detect_regime = None  # type: ignore
+
+    # Pull MT5-wide metadata (amd_phase) once per cycle if using MT5BarFetcher
+    mt5_amd_phase = ""
+    try:
+        if hasattr(fetcher, "_raw_data"):
+            _raw = fetcher._raw_data()  # type: ignore
+            if _raw:
+                mt5_amd_phase = _raw.get("amd_phase", "")
+                if mt5_amd_phase:
+                    log.info("MT5 EA amd_phase for cycle: %s", mt5_amd_phase)
+    except Exception:
+        pass
 
     for symbol in watchlist:
         try:
@@ -283,7 +337,7 @@ def run_cycle(
                 pass
 
             # Freshness check — skip if bars haven't been updated recently
-            if not _bars_are_fresh(htf_bars):
+            if not bars_are_fresh_for_tf(htf_bars, htf_tf):
                 # Diagnostic: when staleness fires, log enough info to
                 # pinpoint why. (Cheap — only on the failure path.)
                 if htf_bars:
@@ -307,27 +361,101 @@ def run_cycle(
                 log.warning("stale HTF bars for %s — skipping cycle", symbol)
                 continue
 
-            # select_trade runs analyze() internally on the raw bars, so pass
-            # bars in directly. We also compute snapshots for the scaling engine.
-            htf_snap = analyze(htf_bars)
-            ltf_snap = analyze(ltf_bars)
+            # AMD scan — use MT5-wide EA phase first, then per-symbol fallback
+            amd_phase = mt5_amd_phase
+            if not amd_phase:
+                try:
+                    amd_cfg = rules.get("amd", {})
+                    if amd_cfg.get("enabled", True):
+                        m15_bars = _fetch_with_timeout(fetcher, symbol, "M15", 200)
+                        if bars_are_fresh_for_tf(m15_bars, "M15"):
+                            ps = pip_size_for(symbol)
+                            from amd_engine import detect_amd
+                            amd = detect_amd(
+                                m15_bars,
+                                pip_size=ps,
+                                asian_start_h=amd_cfg.get("asian_start_h", 0),
+                                asian_end_h=amd_cfg.get("asian_end_h", 7),
+                                min_confidence=amd_cfg.get("min_confidence", 0.50),
+                            )
+                            if amd is not None:
+                                amd_phase = amd.phase.value
+                                log.info(
+                                    "AMD %s: phase=%s dir=%s conf=%.2f",
+                                    symbol, amd.phase.value, amd.direction, amd.confidence,
+                                )
+                except Exception as _amd_err:
+                    log.debug("amd scan skipped for %s: %s", symbol, _amd_err)
 
-            sel: TradeSelection = select_trade(htf_bars, ltf_bars,
-                                               rules=dt_cfg or None,
-                                               macro_bars=macro_bars)
+            # ═══════════════════════════════════════════════════════════════
+            # Phase 4: Single-path confluence engine
+            # ═══════════════════════════════════════════════════════════════
+            sel: TradeSelection = select_trade(
+                htf_bars, ltf_bars,
+                rules=dt_cfg or None,
+                macro_bars=macro_bars,
+                amd_phase=amd_phase,
+                pip_size=pip_size_for(symbol),
+            )
+
+            # Optional proven engine advisory (does NOT emit separate signals)
+            proven_boost = 0.0
+            proven_meta = {}
+            if _HAVE_PROVEN and _proven_generate is not None:
+                try:
+                    def _bars_to_raw(bb):
+                        return [
+                            {"time": str(b.time), "o": b.open, "h": b.high,
+                             "l": b.low, "c": b.close, "v": getattr(b, "volume", 0),
+                             "broker_ts": float(b.time) if isinstance(b.time, (int, float)) else 0.0}
+                            for b in bb
+                        ]
+                    charts = {
+                        symbol: {
+                            htf_tf: _bars_to_raw(htf_bars),
+                            ltf_tf: _bars_to_raw(ltf_bars),
+                            macro_tf: _bars_to_raw(macro_bars) if macro_bars else [],
+                        }
+                    }
+                    det_results = _proven_generate(
+                        symbol, charts,
+                        broker_ts=float(ts_now.timestamp()),
+                        session_window="EUROPEAN",
+                        max_spread_pips=50.0,
+                        min_rr=2.0,
+                        lookback=50,
+                        sl_cap_pips=200.0,
+                        stop_buffer_pips=2.0,
+                        fill_window=96,
+                    )
+                    if det_results:
+                        d = det_results[0]
+                        if d.direction == sel.direction:
+                            proven_boost = min(0.10, d.confidence * 0.15)
+                            proven_meta = {
+                                "proven_aligned": True,
+                                "proven_confidence": round(d.confidence, 3),
+                                "proven_grade": getattr(d, "grade", ""),
+                                "proven_boost": round(proven_boost, 3),
+                            }
+                        else:
+                            proven_meta = {
+                                "proven_aligned": False,
+                                "proven_direction": d.direction,
+                                "sel_direction": sel.direction,
+                            }
+                except Exception as _det_err:
+                    log.debug("proven advisory skipped for %s: %s", symbol, _det_err)
+
+            if proven_boost > 0 and sel.is_actionable:
+                sel.confidence = min(1.0, sel.confidence + proven_boost)
+                sel.reasons.append(f"Proven engine alignment boost +{proven_boost:.3f}")
 
             # ── Compute EMA20/200/800 on ALL available timeframes ────────
-            # LIMIT orders = scan speed is NOT critical. Fetch max history
-            # MT5 EA now exports: M5=1800 M15=600 M30=400 H1=300 H4=100 D1=60
             tf_emas = {}
             for tf_name, tf_n in [
-                ("M5",  1800),   # ~6 days of M5 → EMA800 valid
-                ("M15",  600),   # ~6 days of M15 → EMA800 valid
-                ("M30",  400),   # ~8 days of M30 → EMA800 valid
-                ("H1",   300),   # ~12 days of H1 → EMA800 valid
-                ("H4",   100),   # ~16 days of H4
-                ("D1",    60),   # ~2 months of D1
-                ("W1",    20),   # ~5 months of W1 (may be 0 for some symbols)
+                ("M5",  1800), ("M15", 600), ("M30", 400),
+                ("H1",   300), ("H4",  100), ("D1",    60), ("W1",  20),
             ]:
                 try:
                     tf_bars = _fetch_with_timeout(fetcher, symbol, tf_name, tf_n)
@@ -341,137 +469,52 @@ def run_cycle(
                             emas_tf["ema800"] = round(_calc_ema(closes, 800)[-1], 5)
                         tf_emas[tf_name] = emas_tf
                 except Exception:
-                    pass  # TF not available — skip silently
+                    pass
             sel.tf_emas = tf_emas
 
             scale_act: Optional[ScaleAction] = None
             pos = open_positions.get(symbol)
             if pos is not None:
+                htf_snap = analyze(htf_bars)
+                ltf_snap = analyze(ltf_bars)
                 scale_act = scale_evaluate(pos, htf_snap, ltf_snap,
                                            rules=rules.get("scaling"))
 
-            sig = build_signal(symbol, ltf_tf, sel, scale=scale_act, ts=ts_now)
+            # ── Emit signal (single path) ─────────────────────────────────
+            if sel.is_actionable:
+                sig = build_signal(symbol, ltf_tf, sel, scale=scale_act, ts=ts_now)
 
-            # AMD scan — runs on M15 bars; result merged into signal metadata.
-            try:
-                amd_cfg = rules.get("amd", {})
-                if amd_cfg.get("enabled", True):
-                    m15_bars = _fetch_with_timeout(fetcher, symbol, "M15", 200)
-                    if _bars_are_fresh(m15_bars):
-                        ps = pip_size_for(symbol)
-                        amd = detect_amd(
-                            m15_bars,
-                            pip_size=ps,
-                            asian_start_h=amd_cfg.get("asian_start_h", 0),
-                            asian_end_h=amd_cfg.get("asian_end_h", 7),
-                            min_confidence=amd_cfg.get("min_confidence", 0.50),
-                        )
-                        if amd is not None:
-                            amd_meta = {
-                                "phase":      amd.phase.value,
-                                "direction":  amd.direction,
-                                "confidence": round(amd.confidence, 3),
-                                "reasons":    amd.reasons,
-                            }
-                            if amd.asian_range:
-                                amd_meta["asian_high"] = amd.asian_range.high
-                                amd_meta["asian_low"]  = amd.asian_range.low
-                            if amd.phase == AMDPhase.DISTRIBUTION and amd.entry:
-                                amd_meta.update({
-                                    "entry":  amd.entry,
-                                    "sl":     amd.sl,
-                                    "tp1":    amd.tp1,
-                                    "tp2":    amd.tp2,
-                                    "tp3":    amd.tp3,
-                                    "rr_tp1": amd.rr_tp1,
-                                    "rr_tp2": amd.rr_tp2,
-                                    "rr_tp3": amd.rr_tp3,
-                                })
-                                # Elevate signal confidence when AMD aligns with
-                                # the dual-TF direction.
-                                if (amd.direction == "BULL" and sel.direction == "BULL") or \
-                                   (amd.direction == "BEAR" and sel.direction == "BEAR"):
-                                    bonus = min(0.15, amd.confidence * 0.20)
-                                    if hasattr(sig, "confidence"):
-                                        sig = sig.__class__(
-                                            **{**sig.__dict__,
-                                               "confidence": min(1.0, sig.confidence + bonus)}
-                                        )
-                                    amd_meta["dual_tf_aligned"] = True
-                                    amd_meta["confidence_bonus"] = round(bonus, 3)
-                                else:
-                                    amd_meta["dual_tf_aligned"] = False
-
-                            # HTF liquidity pools (always surfaced)
-                            if amd.htf_liquidity:
-                                amd_meta["htf_liquidity"] = [
-                                    {"price": lv.price, "kind": lv.kind,
-                                     "distance": round(lv.distance, 6)}
-                                    for lv in amd.htf_liquidity
-                                ]
-
-                            # Continuation (Stage 2) — re-accumulation → re-manip → D2
-                            if amd.continuation is not None:
-                                c = amd.continuation
-                                amd_meta["continuation"] = {
-                                    "direction":   c.direction,
-                                    "confidence":  round(c.confidence, 3),
-                                    "re_accum_high": c.re_accum.high,
-                                    "re_accum_low":  c.re_accum.low,
-                                    "re_accum_bars": c.re_accum.bar_count,
-                                    "re_manip_extreme": c.re_manip.extreme,
-                                    "entry":  c.entry,
-                                    "sl":     c.sl,
-                                    "tp1":    c.tp1,
-                                    "tp2":    c.tp2,
-                                    "tp3":    c.tp3,
-                                    "rr_tp1": c.rr_tp1,
-                                    "rr_tp2": c.rr_tp2,
-                                    "rr_tp3": c.rr_tp3,
-                                    "targets": [
-                                        {"price": t.price, "kind": t.kind}
-                                        for t in c.targets
-                                    ],
-                                    "reasons": c.reasons,
-                                }
-
-                            if hasattr(sig, "metadata") and isinstance(sig.metadata, dict):
-                                sig.metadata["amd"] = amd_meta
-                            log.info(
-                                "AMD %s: phase=%s dir=%s conf=%.2f%s",
-                                symbol, amd.phase.value, amd.direction, amd.confidence,
-                                f" +continuation@{amd.continuation.confidence:.2f}"
-                                if amd.continuation else "",
-                            )
-            except Exception as _amd_err:
-                log.debug("amd scan skipped for %s: %s", symbol, _amd_err)
-
-            # Attach regime metadata if detector is available
-            if _have_regime and detect_regime:
-                try:
-                    bars_as_dict = [
-                        {"high": b.high, "low": b.low, "close": b.close}
-                        for b in htf_bars
-                    ]
-                    rr = detect_regime(bars_as_dict)
-                    if hasattr(sig, "metadata") and isinstance(sig.metadata, dict):
-                        sig.metadata.setdefault("regime", {}).update({
-                            "label":      rr.regime,
-                            "confidence": round(rr.confidence, 3),
-                            "reason":     rr.reason,
-                        })
-                except Exception as _e:
-                    log.debug("regime detection skipped for %s: %s", symbol, _e)
-
-            # ── AMD phase veto — only trade during MANIPULATION or DISTRIBUTION ──
-            # ACCUMULATION = ranging chop — NO trades. This is the single biggest
-            # filter for trade quality.
-            amd_phase_value = amd_meta.get("phase", "") if amd_meta else ""
-            if amd_cfg.get("veto_accumulation", True) and amd_phase_value == "ACCUMULATION":
-                log.info("AMD VETO %s: accumulation phase — skipping signal", symbol)
-                continue  # Skip this symbol entirely
-
-            produced.append(sig)
+                if hasattr(sig, "metadata") and isinstance(sig.metadata, dict):
+                    sig.metadata["confluence"] = {
+                        "count": sel.confluence_count,
+                        "details": sel.confluence_details,
+                        "manipulation_leg": {
+                            "type": sel.manipulation_leg.leg_type if sel.manipulation_leg else "none",
+                            "direction": sel.manipulation_leg.direction if sel.manipulation_leg else "none",
+                            "wick_high": sel.manipulation_leg.wick_high if sel.manipulation_leg else 0,
+                            "wick_low": sel.manipulation_leg.wick_low if sel.manipulation_leg else 0,
+                            "quality": sel.manipulation_leg.is_high_quality if sel.manipulation_leg else False,
+                        },
+                        "stdv": {
+                            "ce": sel.stdv_profile.ce if sel.stdv_profile else 0,
+                            "stdv_unit": sel.stdv_profile.stdv if sel.stdv_profile else 0,
+                            "ote_zone": [sel.stdv_profile.ote_zone_bottom, sel.stdv_profile.ote_zone_top]
+                                     if sel.stdv_profile else [0, 0],
+                        },
+                        "proven": proven_meta,
+                    }
+                produced.append(sig)
+                log.info(
+                    "SIGNAL %s %s confluence=%d conf=%.3f entry=%s SL=%s TP=%s",
+                    symbol, sel.direction, sel.confluence_count,
+                    sel.confidence, sel.entry_price, sel.sl, sel.tp,
+                )
+            else:
+                log.info(
+                    "NO-SIGNAL %s: confluence=%d conf=%.3f — %s",
+                    symbol, sel.confluence_count, sel.confidence,
+                    sel.reasons[-1] if sel.reasons else "no confluence",
+                )
         except Exception as e:
             errors.append(f"{symbol}: {type(e).__name__}: {e}")
             log.exception("cycle error for %s", symbol)

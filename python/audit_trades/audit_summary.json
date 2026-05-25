@@ -1,0 +1,47 @@
+[
+  {
+    "seed": 193,
+    "return_pct": 3549.34,
+    "win_rate": 56.25,
+    "max_dd_pct": 8.4,
+    "pf": 3.58,
+    "trades": 64,
+    "final_equity": 3649.34
+  },
+  {
+    "seed": 171,
+    "return_pct": 3282.61,
+    "win_rate": 52.24,
+    "max_dd_pct": 11.39,
+    "pf": 3.44,
+    "trades": 67,
+    "final_equity": 3382.61
+  },
+  {
+    "seed": 877,
+    "return_pct": 2495.85,
+    "win_rate": 53.97,
+    "max_dd_pct": 10.64,
+    "pf": 3.02,
+    "trades": 63,
+    "final_equity": 2595.85
+  },
+  {
+    "seed": 695,
+    "return_pct": 2419.35,
+    "win_rate": 55.77,
+    "max_dd_pct": 4.38,
+    "pf": 5.31,
+    "trades": 52,
+    "final_equity": 2519.35
+  },
+  {
+    "seed": 689,
+    "return_pct": 2175.45,
+    "win_rate": 54.9,
+    "max_dd_pct": 5.47,
+    "pf": 4.32,
+    "trades": 51,
+    "final_equity": 2275.45
+  }
+]

@@ -656,5 +656,21 @@ string ProcessCommand(string cmd)
       else return "ERROR|"+IntegerToString(res.retcode)+"|"+res.comment;
      }
 
+   if(action=="RESTART_EXPORT")
+     {
+      ExportData();
+      return "OK|restart_export triggered|"+MyChartId();
+     }
+
+   if(action=="RELOAD_CHARTS")
+     {
+      int nPrim = ArraySize(primarySymbols);
+      int nAll  = ArraySize(allSymbols);
+      for(int i = 0; i < nPrim; i++) SymbolSelect(primarySymbols[i], true);
+      for(int i = 0; i < nAll;  i++) SymbolSelect(allSymbols[i],     true);
+      ExportData();
+      return "OK|reload_charts done|"+MyChartId();
+     }
+
    return "ERROR|unknown action: "+action;
   }

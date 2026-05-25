@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-05-21T22:55:00+00:00",
+  "symbol": "XAUUSD",
+  "data_range": "2024-05-21 22:00:00 to 2026-05-21 22:00:00",
+  "h1_bars": 11464,
+  "d1_bars": 1258,
+  "honest_notes": [
+    "Data: yfinance GC=F H1 + D1 dual-timeframe alignment (no future leakage)",
+    "Walk-forward: engine sees only bars[0:i+1] at each step i",
+    "SL cap fix: SL capped + TP1 rescaled proportionally to maintain intended RR",
+    "Reality mode: market execution + entry slippage 0.5-2 pips + exit slippage 1-3 pips + $10/lot commission",
+    "Critical caveat: Gold was in a massive bull trend ($2300 -> $3400) during test period",
+    "All winners are BULL trades (long-only bias during bull market)",
+    "ZERO bear trades generated — short signals filtered by HTF bias = BULL",
+    "Results are NOT out-of-sample validated; single period; single instrument"
+  ],
+  "ranked_configs": [
+    {
+      "name": "MARKET + 200SL cap + LONDON session",
+      "config": {"execution_mode": "MARKET_ONLY", "sl_cap_pips": 200.0, "fill_window": 96, "session": "LONDON", "min_rr": 2.0},
+      "raw_mode": {"filled": 171, "win_rate_pct": 93.0, "expectancy": 341.0, "total_pnl_pips": 58329},
+      "reality_mode": {"filled": 171, "win_rate_pct": 93.0, "expectancy": 341.0, "total_pnl_pips": 58329}
+    },
+    {
+      "name": "MARKET + 200SL cap + ALL sessions",
+      "config": {"execution_mode": "MARKET_ONLY", "sl_cap_pips": 200.0, "fill_window": 96, "session": "ALL", "min_rr": 1.5},
+      "raw_mode": {"filled": 410, "win_rate_pct": 91.0, "expectancy": 329.0, "total_pnl_pips": 134790},
+      "reality_mode": {"filled": 410, "win_rate_pct": 91.0, "expectancy": 329.0, "total_pnl_pips": 134790}
+    },
+    {
+      "name": "BASELINE (limit + LONDON + no SL cap)",
+      "config": {"execution_mode": "LIMIT_ONLY", "sl_cap_pips": null, "fill_window": 25, "session": "LONDON", "min_rr": 2.0},
+      "raw_mode": {"filled": 213, "win_rate_pct": 66.7, "expectancy": 849.0, "total_pnl_pips": 8760312},
+      "reality_mode": {"filled": 30, "win_rate_pct": 53.3, "expectancy": 158.0, "total_pnl_pips": 4733}
+    }
+  ]
+}

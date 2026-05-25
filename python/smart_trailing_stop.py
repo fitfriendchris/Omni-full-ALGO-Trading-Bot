@@ -1,12 +1,11 @@
 """
-smart_trailing_stop.py — Adaptive V2.1 Multi-Layer Trailing Stop Engine (TUNED)
+smart_trailing_stop.py — Adaptive V2.2 with Discrete Structural OB-Step Trail Engine
 
-TUNING CHANGES (v2.1):
-  1. Added highest_r_seen to Position (fixes peak-protection floor bug)
-  2. spread now in PRICE units (via adapter tick_size multiplication)
-  3. profit_lock logic uses historical peak, not current profit
-  4. Symbol-aware config builder reads xauusd_adjustments from rules.json
-  5. Tuned defaults: wider base trail, reduced spread_atr_frac, equity threshold lowered
+v2.2 ADDITIONS:
+  1. Discrete OB-step trailing: after breakeven, on confirmed BOS in trade direction,
+     steps SL to 2 pips behind the newly formed OB. No continuous smoothing.
+  2. OrderBlock dataclass for structural pillar tracking.
+  3. _detect_bos() and _find_bullish_ob() / _find_bearish_ob() for BOS-OB coupling.
 """
 
 from __future__ import annotations
@@ -17,6 +16,17 @@ from dataclasses import dataclass, field
 from typing import Optional, Sequence, List, Tuple
 
 log = logging.getLogger("smart_trail")
+
+
+# ── New V2.2 structural types ───────────────────────────────────────────────
+
+@dataclass
+class OrderBlock:
+    """Minimal structural Order Block for trailing-stop stepping."""
+    top: float
+    bottom: float
+    direction: str        # "BULL" or "BEAR"
+    pivot_idx: int        # index of the OB root candle in the bar sequence
 
 
 @dataclass(frozen=True)
@@ -39,7 +49,7 @@ class Bar:
 
 @dataclass
 class Position:
-    direction: str
+    direction: str          # "BUY" or "SELL"
     entry: float
     current_sl: float
     current_price: float
@@ -52,7 +62,7 @@ class Position:
     pip_size: float = 0.0001
     spread: float = 0.0002
     symbol: str = ""
-    highest_r_seen: float = 0.0   # HISTORICAL peak R achieved (tracked externally)
+    highest_r_seen: float = 0.0
 
     @property
     def risk_distance(self) -> float:
@@ -69,7 +79,6 @@ class Position:
 
     @property
     def peak_r(self) -> float:
-        """Highest R achieved including current."""
         return max(self.highest_r_seen, self.profit_in_r)
 
 
@@ -102,11 +111,12 @@ class TrailConfig:
     atr_mult_runner:   float = 2.5
     structure_buffer_pips: float = 3.0
     profit_lock_ladder: Tuple[Tuple[float, float], ...] = (
-        (1.0, 0.0),
-        (1.5, 0.25),
-        (2.0, 0.50),
-        (3.0, 0.60),
-        (5.0, 0.75),
+        (0.5, 0.0),   # breakeven early
+        (1.0, 0.25),  # lock 1/4 at 1R
+        (2.0, 0.50),  # lock half at 2R
+        (3.0, 0.70),  # lock 70% at 3R
+        (5.0, 0.85),  # lock 85% at 5R
+        (7.0, 0.95),  # lock 95% at 7R
     )
     tight_equity_threshold: float = 5.0
     tight_mult_compress:    float = 0.8
@@ -117,6 +127,11 @@ class TrailConfig:
     min_modify_pips:     float = 3.0
     min_modify_atr_frac: float = 0.15
 
+    # V2.2 — discrete OB-step trail parameters
+    ob_step_enabled:     bool  = True
+    ob_step_buffer_pips: float = 2.0   # pip buffer behind OB body for new SL
+    ob_step_min_r:       float = 1.0   # only step once in profit
+
 
 @dataclass
 class TrailProposal:
@@ -126,7 +141,97 @@ class TrailProposal:
     layers_fired: List[str] = field(default_factory=list)
 
 
-# ── Core helpers ──────────────────────────────────────────────────────────────
+# ── Discrete structural helpers (V2.2) ─────────────────────────────────────
+
+def _detect_bos(bars: Sequence[Bar], direction: str, lookback: int = 20) -> tuple[bool, int]:
+    """Return (BOS_found, pivot_index_in_recent_window)."""
+    if len(bars) < lookback + 2:
+        return False, -1
+    recent = bars[-lookback:]
+    if direction == "BUY":
+        for i in range(len(recent) - 2, 0, -1):
+            if recent[i - 1].high < recent[i].high and recent[i + 1].high <= recent[i].high:
+                pivot_high = recent[i].high
+                for j in range(i + 1, len(recent)):
+                    if recent[j].close > pivot_high:
+                        return True, j
+                return False, -1
+    else:
+        for i in range(len(recent) - 2, 0, -1):
+            if recent[i - 1].low > recent[i].low and recent[i + 1].low >= recent[i].low:
+                pivot_low = recent[i].low
+                for j in range(i + 1, len(recent)):
+                    if recent[j].close < pivot_low:
+                        return True, j
+                return False, -1
+    return False, -1
+
+
+def _find_bullish_ob(bars: Sequence[Bar]) -> Optional[OrderBlock]:
+    """Last bearish candle (down-close) immediately before a displacement that breaks above it."""
+    if len(bars) < 3:
+        return None
+    for i in range(len(bars) - 1, 0, -1):
+        c0 = bars[i - 1]
+        if c0.close < c0.open:
+            if bars[i].close > c0.open:
+                return OrderBlock(top=c0.open, bottom=c0.close, direction="BULL", pivot_idx=i - 1)
+    return None
+
+
+def _find_bearish_ob(bars: Sequence[Bar]) -> Optional[OrderBlock]:
+    """Last bullish candle (up-close) immediately before a displacement that breaks below it."""
+    if len(bars) < 3:
+        return None
+    for i in range(len(bars) - 1, 0, -1):
+        c0 = bars[i - 1]
+        if c0.close > c0.open:
+            if bars[i].close < c0.open:
+                return OrderBlock(top=c0.close, bottom=c0.open, direction="BEAR", pivot_idx=i - 1)
+    return None
+
+
+def _discrete_ob_step_trail(
+    pos: Position, ctx: MarketContext, cfg: TrailConfig
+) -> tuple[Optional[float], str]:
+    """
+    Step-trailing: only after breakeven/profitable (>=1R).
+    On confirmed BOS in trade direction → scan for newly formed OB →
+    move SL to 2 pips behind that OB's body.
+    """
+    if not cfg.ob_step_enabled:
+        return None, "ob_step:disabled"
+    if pos.profit_in_r < cfg.ob_step_min_r:
+        return None, "ob_step:below_min_r"
+
+    bars = ctx.bars_m15 if ctx.bars_m15 else ctx.bars_h1
+    if len(bars) < 5:
+        return None, "ob_step:insufficient_bars"
+
+    bos_ok, _ = _detect_bos(bars, pos.direction)
+    if not bos_ok:
+        return None, "ob_step:no_bos"
+
+    buf = cfg.ob_step_buffer_pips * pos.pip_size
+    if pos.direction == "BUY":
+        ob = _find_bullish_ob(bars)
+        if ob is None:
+            return None, "ob_step:no_bullish_ob"
+        proposed = ob.bottom - buf
+        if proposed <= pos.current_sl:
+            return None, f"ob_step:proposed {proposed:.5f} <= current {pos.current_sl:.5f}"
+        return proposed, f"ob_step:bullish_ob[pivot={ob.pivot_idx}]"
+    else:
+        ob = _find_bearish_ob(bars)
+        if ob is None:
+            return None, "ob_step:no_bearish_ob"
+        proposed = ob.top + buf
+        if proposed >= pos.current_sl:
+            return None, f"ob_step:proposed {proposed:.5f} >= current {pos.current_sl:.5f}"
+        return proposed, f"ob_step:bearish_ob[pivot={ob.pivot_idx}]"
+
+
+# ── Core helpers (V2.1 preserved) ─────────────────────────────────────────────
 
 def _wilder_atr(bars: Sequence[Bar], period: int = 14) -> float:
     if len(bars) < period + 1:
@@ -153,14 +258,12 @@ def _peak_protection_sl(pos: Position, cfg: TrailConfig) -> Optional[float]:
         else:
             break
     if locked_frac is None:
-        return None  # below +1R — no protection yet
+        return None
 
-    # Minimum R floor = peak_r × (1 - locked fraction)  e.g. peak=3R, lock 60% → floor=1.2R
     floor_r = peak_r * (1.0 - locked_frac)
 
     if pos.direction == "BUY":
         return pos.entry + floor_r * pos.risk_distance
-    # SELL: entry minus floor_r * risk (SL = entry - floor_r * risk_distance)
     return pos.entry - floor_r * pos.risk_distance
 
 
@@ -182,14 +285,11 @@ def _adaptive_atr_sl(pos: Position, ctx: MarketContext, cfg: TrailConfig) -> Opt
     if ctx.displacement_with and pos.profit_in_r > 1.0:
         mult = max(mult, cfg.atr_mult_expand)
 
-    # Small-account compression (less aggressive now: tight_mult_compress=0.8)
     if pos.equity > 0 and pos.equity < cfg.tight_equity_threshold:
         mult *= cfg.tight_mult_compress
 
-    # For metals: compute in PRICE units directly
     raw_sl = pos.current_price - atr_ref * mult if pos.direction == "BUY" else pos.current_price + atr_ref * mult
 
-    # Spread padding: SL must be at least spread × spread_atr_frac beyond price
     spread_pad = pos.spread * cfg.spread_atr_frac
     if pos.direction == "BUY":
         raw_sl = min(raw_sl, pos.current_price - spread_pad)
@@ -241,6 +341,8 @@ def _monotonic(pos: Position, proposed: float) -> float:
     return min(pos.current_sl, proposed)
 
 
+# ── Main trailing engine (V2.2) ───────────────────────────────────────────────
+
 def compute_trailing_sl(
     pos: Position,
     ctx: MarketContext,
@@ -268,6 +370,11 @@ def compute_trailing_sl(
                 layers_fired=["guard:zero_risk"],
             )
 
+        # V2.2 — discrete OB-step takes priority over continuous ATR when triggered
+        ob_sl, ob_reason = _discrete_ob_step_trail(pos, ctx, cfg)
+        if ob_sl is not None:
+            layers.append(ob_reason)
+
         atr_sl = _adaptive_atr_sl(pos, ctx, cfg)
         if atr_sl is not None:
             layers.append("volatility:adaptive")
@@ -280,7 +387,7 @@ def compute_trailing_sl(
         if peak_sl is not None:
             layers.append(f"profit_lock:{'+' if pos.profit_in_r > 0 else ''}{pos.profit_in_r:.1f}R")
 
-        candidates = [c for c in (atr_sl, struct_sl, peak_sl) if c is not None]
+        candidates = [c for c in (ob_sl, atr_sl, struct_sl, peak_sl) if c is not None]
         if not candidates:
             return TrailProposal(
                 new_sl=pos.current_sl,
@@ -327,3 +434,24 @@ def compute_trailing_sl(
             reason=f"error ({e.__class__.__name__}) — hold",
             layers_fired=["error"],
         )
+
+
+# ── Backward-compatible aliases (pre-existing tests rely on these) ────────────
+
+def atr(bars: Sequence[Bar], period: int = 14) -> float:
+    """Backward-compatible alias for _wilder_atr."""
+    return _wilder_atr(bars, period)
+
+
+def _profit_lock_floor(r: float, ladder: Sequence[Tuple[float, float]]) -> Optional[float]:
+    """Backward-compatible profit-lock helper.
+    Returns the locked fraction for a given R, or None if below first rung."""
+    locked_frac = None
+    for threshold, frac in ladder:
+        if r >= threshold:
+            locked_frac = frac
+        else:
+            break
+    if locked_frac is None:
+        return None
+    return r * (1.0 - locked_frac)

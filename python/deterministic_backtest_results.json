@@ -1,0 +1,31 @@
+{
+  "generated_at": "2026-05-21T21:22:20.089021+00:00",
+  "symbol": "XAUUSD",
+  "total_bars": 406,
+  "raw_mode": {
+    "total_signals": 0,
+    "filled_trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate_pct": 0.0,
+    "avg_win_pips": 0.0,
+    "avg_loss_pips": 0.0,
+    "avg_rr": 0.0,
+    "expectancy_pips": 0.0,
+    "total_profit_pips": 0.0,
+    "trades": []
+  },
+  "reality_mode": {
+    "total_signals": 0,
+    "filled_trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate_pct": 0.0,
+    "avg_win_pips": 0.0,
+    "avg_loss_pips": 0.0,
+    "avg_rr": 0.0,
+    "expectancy_pips": 0.0,
+    "total_profit_pips": 0.0,
+    "trades": []
+  }
+}

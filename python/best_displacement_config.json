@@ -1,0 +1,8 @@
+{
+  "symbol": "XAUUSD",
+  "displacement_threshold_pips": 40,
+  "session": "LONDON",
+  "sl_cap_pips": 200,
+  "min_rr": 2.0,
+  "execution_mode": "MARKET_ONLY"
+}

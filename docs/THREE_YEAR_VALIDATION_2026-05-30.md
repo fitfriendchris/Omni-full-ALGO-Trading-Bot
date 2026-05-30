@@ -18,15 +18,17 @@ This replaces the 60-day yfinance screen that yielded only N=3 trades.
 | TP ladder + partials, tp1=1.5R       | 27 | 25.9 | −0.43 | 0.45 |  6 | −42.2% |
 | …+ regime filter (HTF trend align)   |  9 | 11.1 | −0.69 | 0.24 |  4 | −37.1% |
 | TP ladder + partials, tp1=1.0R       | 29 | 37.9 | −0.33 | 0.50 |  6 | −32.8% |
-| …+ Kronos veto (min_prob 0.45)       | — immaterial to verdict (see note) ||||||
+| Baseline + Kronos veto (min_prob .45)|  2 | 50.0 | +0.42 | 1.80 |  1 |  −0.3% |
 
-**Kronos note:** The 60-day A/B already characterized the overlay — it vetoed a
-losing setup and cut drawdown (−39.2% → −25.6%) but produced no wins where the
-base had none. On the 3yr run the overlay is the same: it can only *remove* trades
-from a negative-edge set, never add edge. (The 3yr Kronos pass is extremely slow on
-this x86 CPU — a transformer forecast per setup — and is not needed to reach the
-conclusion: PF cannot exceed 1.0 by filtering a PF-0.50 base whose surviving trades
-are still ~coin-flips.) Kronos earns its place only *after* an entry shows raw edge.
+**Kronos note:** On the 3yr run the overlay vetoed **24 of 26** baseline setups,
+keeping only 2 (1W/1L, ~flat). PF 1.80 on N=2 is statistical noise, not edge — what
+actually happened is Kronos found almost nothing it would confirm and so mostly
+*abstained*, which "avoids" the −35% baseline loss by not trading. Abstention is not
+a money-maker. This is the overlay behaving exactly as designed: it can only *remove*
+trades from a negative-edge set, never add edge. (Consistent with the 60-day A/B,
+where it vetoed a loser and cut DD −39.2% → −25.6%.) Kronos earns its place only
+*after* an entry shows positive raw edge — then its veto sharpens a winner instead of
+emptying a loser.
 
 ## What the matrix proves
 

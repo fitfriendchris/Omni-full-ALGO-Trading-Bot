@@ -60,3 +60,6 @@ shared/*.json
 shared/*.tmp
 logs/
 .claw/
+
+# Downloaded historical data (regenerate via fetch_dukascopy_history.py)
+python/data/

@@ -108,15 +108,62 @@ class Trade:
     pnl_usd: float = 0.0
 
 
+def _manage_partials(ltf: List[Bar], filled_at: int, direction: str, entry: float,
+                     sl: float, tp1: float, tp2: float, frac: float):
+    """Two-phase management. Phase 1: run the full position to tp1 or SL. On tp1,
+    bank `frac` of the position and move the stop to break-even (entry). Phase 2:
+    run the remaining (1-frac) to tp2 (runner) or BE. Pessimistic intrabar (a bar
+    spanning both levels resolves to the adverse one first).
+    Returns (legs, outcome, exit_bar_idx); legs = [(fraction, exit_price), ...]."""
+    n = len(ltf)
+    # Phase 1 → tp1 or SL.
+    k = filled_at
+    while k < n:
+        b = ltf[k]
+        if direction == "BULL":
+            hit_sl, hit_tp1 = b.low <= sl, b.high >= tp1
+        else:
+            hit_sl, hit_tp1 = b.high >= sl, b.low <= tp1
+        if hit_sl:                                   # adverse first
+            return [(1.0, sl)], "LOSS", k
+        if hit_tp1:
+            break
+        k += 1
+    else:
+        return [(1.0, ltf[-1].close)], "OPEN_END", n - 1   # never reached tp1
+
+    legs = [(frac, tp1)]                              # banked partial
+    rem = 1.0 - frac
+    be = entry                                       # stop now at break-even
+    for k2 in range(k + 1, n):
+        b = ltf[k2]
+        if direction == "BULL":
+            hit_be, hit_tp2 = b.low <= be, b.high >= tp2
+        else:
+            hit_be, hit_tp2 = b.high >= be, b.low <= tp2
+        if hit_be:                                   # adverse first (BE scratch)
+            legs.append((rem, be)); return legs, "WIN_BE", k2
+        if hit_tp2:
+            legs.append((rem, tp2)); return legs, "WIN_RUN", k2
+    legs.append((rem, ltf[-1].close))
+    return legs, "WIN_OPEN", n - 1
+
+
 def run(htf: List[Bar], ltf: List[Bar], symbol: str,
         cfg: SequentialConfig, risk_cfg: RiskConfig,
         start_equity: float, spread: float, slippage: float,
         commission_per_lot: float, fill_window: int,
-        cooldown_bars: int, evaluator=None) -> dict:
+        cooldown_bars: int, evaluator=None,
+        ltf_window: int = 800, htf_window: int = 300, stride: int = 1,
+        partials: bool = False, partial_frac: float = 0.5) -> dict:
     # `evaluator(htf, ltf, cfg, now_ts) -> Setup`. Defaults to the pure ICT engine;
     # pass kronos_filter.evaluate_with_kronos to A/B the confirmation overlay.
     if evaluator is None:
         evaluator = lambda h, l, now_ts: evaluate(h, l, cfg=cfg, now_ts=now_ts)
+    # Rolling lookback: the engine only needs recent structure (sweeps≤25 bars,
+    # CHoCH≤15, recent swings/OB/FVG). Re-analyzing the full growing history every
+    # bar is O(n^2) — intractable on multi-year data — AND wrong (ancient structure
+    # leaks in). Pass only a trailing window. 0 disables (use full history).
 
     # Pre-index HTF by time for fast slicing.
     htf_times = [b.time for b in htf]
@@ -138,19 +185,27 @@ def run(htf: List[Bar], ltf: List[Bar], symbol: str,
     equity = start_equity
     cooldown_until = 0
     half_cost = (spread + slippage) / 2.0
+    # When flat, advance `stride` bars between evaluations. An ICT setup (sweep
+    # within 25 bars, CHoCH within 15) persists across several bars, so striding
+    # 2-3 barely changes which setups are caught but multiplies throughput on
+    # multi-year data. After a fill we still advance exactly past the exit.
+    step = max(1, stride)
 
     while i < len(ltf):
         if i < cooldown_until:
-            i += 1
+            i += step
             continue
         htf_slice = htf_upto(ltf[i].time)
         if len(htf_slice) < warm_htf_min:
-            i += 1
+            i += step
             continue
+        if htf_window > 0:
+            htf_slice = htf_slice[-htf_window:]
+        ltf_slice = ltf[max(0, i + 1 - ltf_window):i + 1] if ltf_window > 0 else ltf[:i + 1]
 
-        s = evaluator(htf_slice, ltf[:i + 1], ltf[i].time)
+        s = evaluator(htf_slice, ltf_slice, ltf[i].time)
         if not s.actionable:
-            i += 1
+            i += step
             continue
 
         # ── Limit-fill model: wait for price to trade to the entry ──
@@ -168,68 +223,70 @@ def run(htf: List[Bar], ltf: List[Bar], symbol: str,
             if s.direction == "BEAR" and b.high >= s.sl:
                 break
         if filled_at is None:
-            i += 1
+            i += step
             continue
 
         # Apply adverse entry cost.
         entry_px = s.entry + half_cost if s.direction == "BULL" else s.entry - half_cost
         risk_dist = abs(entry_px - s.sl)
         if risk_dist <= 0:
-            i += 1
+            i += step
             continue
 
         lots, risk_usd, _why = size_position(equity, entry_px, s.sl, symbol,
                                               open_risk_usd=0.0, cfg=risk_cfg)
         if lots <= 0:
-            i += 1
+            i += step
             continue
 
         tr = Trade(direction=s.direction, entry=round(entry_px, 2), sl=s.sl, tp=s.tp,
                    rr_planned=s.rr, fill_time=ltf[filled_at].time, lots=lots)
 
-        # ── Manage to SL/TP, bar by bar, after fill ──
-        exit_px = None
-        outcome = None
-        for k in range(filled_at, len(ltf)):
-            b = ltf[k]
-            if s.direction == "BULL":
-                hit_sl = b.low <= s.sl
-                hit_tp = b.high >= s.tp
-                if hit_sl and hit_tp:        # pessimistic: SL first
-                    exit_px, outcome = s.sl, "LOSS"; break
-                if hit_sl:
-                    exit_px, outcome = s.sl, "LOSS"; break
-                if hit_tp:
-                    exit_px, outcome = s.tp, "WIN"; break
-            else:
-                hit_sl = b.high >= s.sl
-                hit_tp = b.low <= s.tp
-                if hit_sl and hit_tp:
-                    exit_px, outcome = s.sl, "LOSS"; break
-                if hit_sl:
-                    exit_px, outcome = s.sl, "LOSS"; break
-                if hit_tp:
-                    exit_px, outcome = s.tp, "WIN"; break
-        if exit_px is None:                  # ran out of data -> mark to last close
-            exit_px = ltf[-1].close
-            outcome = "OPEN_END"
-
-        # Apply adverse exit cost + commission.
-        exit_adj = exit_px - half_cost if s.direction == "BULL" else exit_px + half_cost
-        gross = (exit_adj - entry_px) if s.direction == "BULL" else (entry_px - exit_adj)
         from risk_sizing import _value_per_unit
-        pnl = gross * _value_per_unit(symbol) * lots - commission_per_lot * lots
-        r = gross / risk_dist if risk_dist else 0.0
 
-        tr.exit = round(exit_adj, 2)
-        tr.outcome = outcome
+        def leg_gross(exit_px: float) -> float:
+            adj = exit_px - half_cost if s.direction == "BULL" else exit_px + half_cost
+            return (adj - entry_px) if s.direction == "BULL" else (entry_px - adj)
+
+        use_partials = partials and s.tp1 is not None and s.tp2 is not None
+        if use_partials:
+            # Phase 1 → tp1 or SL; Phase 2 (remainder) with SL at BE → tp2 or BE.
+            legs, outcome, exit_bar = _manage_partials(
+                ltf, filled_at, s.direction, entry_px, s.sl, s.tp1, s.tp2, partial_frac)
+            blended = sum(frac * leg_gross(px) for frac, px in legs)
+            commission = commission_per_lot * lots * 1.5        # entry + 2 partial exits
+            tr.exit = round(legs[-1][1], 2)
+        else:
+            exit_px = None; outcome = None; exit_bar = len(ltf) - 1
+            for k in range(filled_at, len(ltf)):
+                b = ltf[k]
+                if s.direction == "BULL":
+                    hit_sl, hit_tp = b.low <= s.sl, b.high >= s.tp
+                else:
+                    hit_sl, hit_tp = b.high >= s.sl, b.low <= s.tp
+                if hit_sl:                       # pessimistic: SL before TP on a spanning bar
+                    exit_px, outcome, exit_bar = s.sl, "LOSS", k; break
+                if hit_tp:
+                    exit_px, outcome, exit_bar = s.tp, "WIN", k; break
+            if exit_px is None:
+                exit_px, outcome = ltf[-1].close, "OPEN_END"
+            blended = leg_gross(exit_px)
+            commission = commission_per_lot * lots
+            tr.exit = round(exit_px - half_cost if s.direction == "BULL"
+                            else exit_px + half_cost, 2)
+
+        pnl = blended * _value_per_unit(symbol) * lots - commission
+        r = blended / risk_dist if risk_dist else 0.0
+        # Normalize outcome to WIN/LOSS by realized sign (partials bank a profit at
+        # tp1 even if the runner scratches at BE).
+        tr.outcome = "WIN" if r > 0 else ("LOSS" if outcome != "OPEN_END" else "OPEN_END")
         tr.r_realized = round(r, 2)
         tr.pnl_usd = round(pnl, 2)
         equity = round(equity + pnl, 2)
         trades.append(tr)
 
         # advance past the exit bar + cooldown
-        i = (filled_at + 1) + cooldown_bars
+        i = exit_bar + 1 + cooldown_bars
         cooldown_until = i
 
     return _report(trades, start_equity, equity)
@@ -286,6 +343,21 @@ def main():
                     help="veto setups below this modeled P(TP before SL)")
     ap.add_argument("--kronos-paths", type=int, default=12,
                     help="Monte-Carlo forecast paths per setup")
+    ap.add_argument("--ltf-window", type=int, default=800,
+                    help="trailing LTF bars fed to the engine each step (0=full history)")
+    ap.add_argument("--htf-window", type=int, default=300,
+                    help="trailing HTF bars fed to the engine each step (0=full history)")
+    ap.add_argument("--stride", type=int, default=1,
+                    help="evaluate every Nth LTF bar when flat (speed on multi-year data)")
+    ap.add_argument("--tp-mode", default="draw", choices=["draw", "ladder"],
+                    help="draw=legacy single far TP; ladder=reachable tp1 + runner to draw")
+    ap.add_argument("--tp1-rr", type=float, default=1.5, help="ladder tp1 distance in R")
+    ap.add_argument("--partials", action="store_true",
+                    help="partial exit at tp1 + move stop to break-even (needs --tp-mode ladder)")
+    ap.add_argument("--partial-frac", type=float, default=0.5,
+                    help="fraction banked at tp1 (rest runs to tp2)")
+    ap.add_argument("--regime", action="store_true",
+                    help="P3 regime filter: only trade with the HTF macro trend; skip chop")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -304,8 +376,14 @@ def main():
         span = "(no LTF bars)"
     print(f"  HTF bars={len(htf)}  LTF bars={len(ltf)}  span {span}")
 
-    cfg = SequentialConfig(symbol="XAUUSD")
+    cfg = SequentialConfig(symbol="XAUUSD", tp_mode=args.tp_mode, tp1_rr=args.tp1_rr,
+                           regime_filter=args.regime)
     risk_cfg = RiskConfig()
+    if args.tp_mode == "ladder" or args.partials:
+        print(f"  [TP ladder] tp1={args.tp1_rr}R runner→draw"
+              + (f"; partials {args.partial_frac:.0%}@tp1 + BE" if args.partials else ""))
+    if args.regime:
+        print("  [Regime filter ON] HTF-trend aligned, chop skipped")
 
     evaluator = None
     if args.kronos:
@@ -318,7 +396,9 @@ def main():
 
     rep = run(htf, ltf, "XAUUSD", cfg, risk_cfg, args.equity,
               args.spread, args.slippage, args.commission * 100,  # per-lot from per-0.01
-              args.fill_window, args.cooldown, evaluator=evaluator)
+              args.fill_window, args.cooldown, evaluator=evaluator,
+              ltf_window=args.ltf_window, htf_window=args.htf_window, stride=args.stride,
+              partials=args.partials, partial_frac=args.partial_frac)
 
     print("\n" + "=" * 60)
     print("  SEQUENTIAL ICT — HONEST 60-DAY GOLD BACKTEST")

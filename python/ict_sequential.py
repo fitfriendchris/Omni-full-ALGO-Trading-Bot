@@ -82,6 +82,20 @@ class SequentialConfig:
     pd_block: float = 0.25
     min_rr: float = MIN_RR
     kill_zones: Tuple[Tuple[int, int], ...] = tuple(KILL_ZONES_UTC)
+    # TP shape. "draw" = legacy single far target at the draw (demands huge moves
+    # → ~12% realized hit rate on the 3yr test). "ladder" = a reachable tp1 partial
+    # at `tp1_rr`*risk plus a runner (tp2) toward the draw. tp1_rr is clamped not to
+    # exceed the draw distance.
+    tp_mode: str = "draw"
+    tp1_rr: float = 1.5
+    # Regime filter (P3). The 3yr test showed entries hit even a reachable 1.5R only
+    # ~26% of the time — worse than random → the engine fades the dominant trend.
+    # When on, require the trade direction to align with the HTF macro trend (EMA
+    # fast vs slow on the HTF closes) and stand aside in chop (EMAs too close).
+    regime_filter: bool = False
+    regime_ema_fast: int = 20
+    regime_ema_slow: int = 50
+    regime_chop_atr_frac: float = 0.25   # |emaF-emaS| < this*ATR → chop → no trade
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -105,6 +119,10 @@ class Setup:
     rr: float = 0.0
     entry_type: str = "none"             # fvg | ob | ote_limit
     draw_target: Optional[float] = None
+    # TP ladder (tp_mode="ladder"): tp1 = reachable partial target, tp2 = runner
+    # toward the draw. In legacy "draw" mode both are None and `tp` is the far draw.
+    tp1: Optional[float] = None
+    tp2: Optional[float] = None
     gates: List[Gate] = field(default_factory=list)
     # diagnostics
     htf_bias: str = "NEUTRAL"
@@ -144,6 +162,32 @@ def _hour_utc(ts: float) -> int:
 
 def _in_kill_zone(hour: int, zones) -> bool:
     return any(lo <= hour < hi for lo, hi in zones)
+
+
+def _ema(values: List[float], period: int) -> Optional[float]:
+    if len(values) < period:
+        return None
+    k = 2.0 / (period + 1)
+    e = values[0]
+    for v in values[1:]:
+        e = v * k + e * (1 - k)
+    return e
+
+
+def _htf_regime(htf_bars: List[Bar], cfg: SequentialConfig) -> Tuple[str, str]:
+    """Classify the HTF macro trend as BULL / BEAR / CHOP from EMA separation on
+    HTF closes. CHOP = the EMAs are within `regime_chop_atr_frac` * HTF-ATR."""
+    closes = [b.close for b in htf_bars]
+    ef = _ema(closes, cfg.regime_ema_fast)
+    es = _ema(closes, cfg.regime_ema_slow)
+    if ef is None or es is None:
+        return "CHOP", "insufficient HTF bars for regime EMAs"
+    a = atr(htf_bars, 14)
+    sep = ef - es
+    if a > 0 and abs(sep) < cfg.regime_chop_atr_frac * a:
+        return "CHOP", f"emaF-emaS={sep:.2f} < {cfg.regime_chop_atr_frac:.2f}*ATR({a:.2f}) — chop"
+    return ("BULL" if sep > 0 else "BEAR",
+            f"emaF{'>' if sep > 0 else '<'}emaS by {abs(sep):.2f} (ATR {a:.2f})")
 
 
 def _dealing_range(swings: List[Swing]) -> Optional[Tuple[float, float, float]]:
@@ -369,6 +413,18 @@ def evaluate(htf_bars: List[Bar], ltf_bars: List[Bar],
         return s
     s.direction = direction
 
+    # G1b — regime alignment (P3): don't fade the HTF macro trend; skip chop.
+    if cfg.regime_filter:
+        regime, rdetail = _htf_regime(htf_bars, cfg)
+        if regime == "CHOP":
+            s.gates.append(Gate("G1b_REGIME", False, f"CHOP regime — stand aside ({rdetail})"))
+            return s
+        if regime != direction:
+            s.gates.append(Gate("G1b_REGIME", False,
+                                f"{direction} setup vs {regime} HTF trend — counter-trend, skip ({rdetail})"))
+            return s
+        s.gates.append(Gate("G1b_REGIME", True, f"{direction} aligned with {regime} HTF trend ({rdetail})"))
+
     # G2 — HTF POI + premium/discount
     g2 = _g2_htf_poi(htf, price, direction, rng, htf_atr, cfg)
     s.gates.append(g2)
@@ -418,11 +474,26 @@ def evaluate(htf_bars: List[Bar], ltf_bars: List[Bar],
 
     s.entry = round(entry, 2)
     s.sl = round(sl, 2)
-    s.tp = round(tp, 2)
-    s.rr = round(rr, 2)
     s.entry_type = etype
     s.actionable = True
-    s.gates.append(Gate("TP_RR", True, f"TP {tp:.2f} at draw liquidity, {rr:.2f}R"))
+
+    if cfg.tp_mode == "ladder":
+        # tp1 = reachable partial at tp1_rr*risk, never beyond the draw (tp2).
+        if direction == "BULL":
+            tp1 = min(entry + cfg.tp1_rr * risk, draw)
+        else:
+            tp1 = max(entry - cfg.tp1_rr * risk, draw)
+        rr1 = abs(tp1 - entry) / risk
+        s.tp1 = round(tp1, 2)
+        s.tp2 = round(draw, 2)
+        s.tp = round(tp1, 2)            # primary target = the reachable partial
+        s.rr = round(rr1, 2)
+        s.gates.append(Gate("TP_RR", True,
+                            f"ladder: tp1 {tp1:.2f} ({rr1:.2f}R) -> runner tp2 {draw:.2f} ({rr:.2f}R)"))
+    else:
+        s.tp = round(tp, 2)
+        s.rr = round(rr, 2)
+        s.gates.append(Gate("TP_RR", True, f"TP {tp:.2f} at draw liquidity, {rr:.2f}R"))
     return s
 
 

@@ -111,6 +111,10 @@ class Setup:
     equilibrium: Optional[float] = None
     sweep_idx: Optional[int] = None
     choch_idx: Optional[int] = None
+    # Optional Kronos confirmation overlay (set by kronos_filter, not the core
+    # engine — kept here as plain data so ict_sequential stays torch-free).
+    # None = overlay not run / unavailable; 0..1 = modeled P(TP before SL).
+    kronos_confidence: Optional[float] = None
 
     @property
     def failed_at(self) -> str:

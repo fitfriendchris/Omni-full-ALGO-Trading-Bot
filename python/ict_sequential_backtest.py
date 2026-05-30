@@ -112,7 +112,11 @@ def run(htf: List[Bar], ltf: List[Bar], symbol: str,
         cfg: SequentialConfig, risk_cfg: RiskConfig,
         start_equity: float, spread: float, slippage: float,
         commission_per_lot: float, fill_window: int,
-        cooldown_bars: int) -> dict:
+        cooldown_bars: int, evaluator=None) -> dict:
+    # `evaluator(htf, ltf, cfg, now_ts) -> Setup`. Defaults to the pure ICT engine;
+    # pass kronos_filter.evaluate_with_kronos to A/B the confirmation overlay.
+    if evaluator is None:
+        evaluator = lambda h, l, now_ts: evaluate(h, l, cfg=cfg, now_ts=now_ts)
 
     # Pre-index HTF by time for fast slicing.
     htf_times = [b.time for b in htf]
@@ -144,7 +148,7 @@ def run(htf: List[Bar], ltf: List[Bar], symbol: str,
             i += 1
             continue
 
-        s = evaluate(htf_slice, ltf[:i + 1], cfg=cfg, now_ts=ltf[i].time)
+        s = evaluator(htf_slice, ltf[:i + 1], ltf[i].time)
         if not s.actionable:
             i += 1
             continue
@@ -276,6 +280,12 @@ def main():
     ap.add_argument("--commission", type=float, default=0.07, help="$ per 0.01 lot round turn")
     ap.add_argument("--fill-window", type=int, default=6)
     ap.add_argument("--cooldown", type=int, default=4)
+    ap.add_argument("--kronos", action="store_true",
+                    help="apply the Kronos confirmation overlay (G7) on top of pure ICT")
+    ap.add_argument("--kronos-min-prob", type=float, default=0.45,
+                    help="veto setups below this modeled P(TP before SL)")
+    ap.add_argument("--kronos-paths", type=int, default=12,
+                    help="Monte-Carlo forecast paths per setup")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -296,9 +306,19 @@ def main():
 
     cfg = SequentialConfig(symbol="XAUUSD")
     risk_cfg = RiskConfig()
+
+    evaluator = None
+    if args.kronos:
+        from kronos_filter import evaluate_with_kronos, KronosConfig
+        kcfg = KronosConfig(min_win_prob=args.kronos_min_prob, mc_paths=args.kronos_paths)
+        evaluator = lambda h, l, now_ts: evaluate_with_kronos(
+            h, l, cfg=cfg, kronos_cfg=kcfg, now_ts=now_ts)
+        print(f"  [Kronos overlay ON] min_prob={kcfg.min_win_prob} paths={kcfg.mc_paths} "
+              f"model={kcfg.model_repo}")
+
     rep = run(htf, ltf, "XAUUSD", cfg, risk_cfg, args.equity,
               args.spread, args.slippage, args.commission * 100,  # per-lot from per-0.01
-              args.fill_window, args.cooldown)
+              args.fill_window, args.cooldown, evaluator=evaluator)
 
     print("\n" + "=" * 60)
     print("  SEQUENTIAL ICT — HONEST 60-DAY GOLD BACKTEST")

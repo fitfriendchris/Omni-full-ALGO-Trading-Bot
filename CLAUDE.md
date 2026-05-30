@@ -35,6 +35,8 @@ Python stack (all supervised by watchdog.py via launchd):
 | `python/config.py` | All config. Priority: env var > config.json > auto-detect > default. |
 | `python/mt5_connector.py` | Reads `omni_data.json`. Handles Wine 4MB truncation via brace-recovery. |
 | `python/smc_engine.py` | Pure ICT/SMC analysis functions (order blocks, FVGs, sweeps). |
+| `python/ict_sequential.py` | Strict gated ICT state machine (G1→G6+TP). The real edge; replaces the checklist `dual_tf_selector`. Pure, torch-free. |
+| `python/kronos_filter.py` | **Kronos** confirmation overlay (G7) — probabilistic TP-before-SL veto + confidence on top of `ict_sequential`. Optional, lazy, fails open. See `docs/KRONOS_INTEGRATION.md`. |
 | `python/ict_precision.py` | High-confidence entry scanner (4500 lines). |
 | `python/scaling_engine.py` | Pyramid scaling decisions. |
 | `python/rules.json` | Trade rule config (sessions, symbols, risk, scaling). |

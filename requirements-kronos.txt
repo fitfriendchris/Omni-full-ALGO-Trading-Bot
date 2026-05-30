@@ -1,0 +1,15 @@
+# Optional deps for the Kronos confirmation overlay (python/kronos_filter.py).
+# The bot runs fine WITHOUT these — the overlay fails open to pure ICT.
+# Install only when you want Kronos confirmation:
+#   pip install -r requirements-kronos.txt
+#   git clone https://github.com/shiyu-coder/Kronos ~/Kronos
+#   export KRONOS_HOME=~/Kronos
+#
+# Apple-silicon note: torch wheels ship with MPS support; kronos_filter
+# auto-selects mps > cuda > cpu.
+
+torch>=2.1.0
+einops>=0.7.0
+huggingface_hub>=0.23.0
+tqdm>=4.66.0
+safetensors>=0.4.0

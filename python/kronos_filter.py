@@ -210,7 +210,7 @@ def _kronos_forecast(bars: List[Bar], cfg: KronosConfig, n_paths: int) -> List[L
         for _ in range(max(1, n_paths)):
             out = pred.predict(
                 df=df, x_timestamp=x_ts, y_timestamp=y_ts, pred_len=cfg.pred_len,
-                T=cfg.temperature, top_p=cfg.top_p, sample_count=1,
+                T=cfg.temperature, top_p=cfg.top_p, sample_count=1, verbose=False,
             )
             path = [Bar(time=float((last + step * (k + 1))),
                         open=float(out["open"].iloc[k]), high=float(out["high"].iloc[k]),

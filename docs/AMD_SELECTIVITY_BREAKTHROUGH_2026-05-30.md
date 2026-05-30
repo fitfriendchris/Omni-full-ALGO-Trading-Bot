@@ -44,3 +44,47 @@ looked regime-sensitive (fewer clean AMD ranges in the last-year strong trend).
    manage → risk → session → journal → discipline) around this validated core.
 
 Only after the edge holds OOS on 100+ trades does it earn paper-mode, then live.
+
+---
+
+## UPDATE — 11-year validation: the 3yr result did NOT hold
+
+Pulled 11yr gold (H1 65k / M15 260k bars, 2015→2026) and re-ran the strict configs
+walk-forward (IS 2015–22, OOS 2022–26), partials, stride 4:
+
+| Config | Set | T | WR% | PF | avgR | ret% |
+|--------|-----|--:|----:|---:|-----:|-----:|
+| V2 OB+tightAccum | IS  | 43 | 37.2 | 0.68 | −0.22 | −32.8 |
+| V2 OB+tightAccum | OOS | 27 | 33.3 | 0.81 | −0.14 |  −2.5 |
+| V3 +realSweep    | IS  | 37 | 40.5 | 0.83 | −0.11 | −23.9 |
+| V3 +realSweep    | OOS | 20 | 35.0 | 1.03 | +0.02 |  +0.1 |
+
+**Verdict: break-even at best, not a deployable autonomous edge.** The 3yr PF 1.41 /
+1.37 was small-sample + the recent gold-bull regime, not a durable edge. Selectivity
+genuinely lifted PF (0.54 → ~1.0) — the structure has *signal* — but mechanical
+rules alone top out at break-even across 11 years. Win-rate ~35% means the reversal
+entries reach the opposite-extreme target only a third of the time.
+
+### What this means (honest)
+
+The live discretionary edge is real but is **not fully reducible to these mechanical
+rules** — it lives in judgment (which ~1 of 3 mechanical setups is actually A+),
+entry execution/RR, and dynamic management. That is the norm for skilled discretionary
+traders, not a flaw. Chasing a green 11yr backtest by tweaking further would be
+overfitting.
+
+### The realistic, valuable build
+
+1. **Setup scanner + decision-support** (not full autonomy): the bot runs the whole
+   process — bias, levels, OBs, news, session — detects AMD setups live, grades/ranks
+   them, shows context + RR + target, and ALERTS Chris. He applies the final
+   discretionary filter and manages. Automates the tedious 90%; keeps the edge in the
+   loop.
+2. **Automated risk + discipline engine** (fully automatable, high value): sizing
+   under the 23% cap, daily-loss halt, max-trades, profit lock.
+3. **Journal every setup + outcome** → measure which setups/contexts actually pay for
+   Chris, and tighten the scanner's grading from his real results over time.
+
+Capturable mechanical refinements worth ONE validated test each (not guaranteed):
+closer reachable tp1 (raise WR), runner/trail to capture big distributions, a
+displacement-strength filter on the reversal, news/session gating.

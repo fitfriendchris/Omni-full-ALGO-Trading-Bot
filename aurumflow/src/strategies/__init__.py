@@ -1,0 +1,1 @@
+"""Strategy adapter layer — bridges quant research strategies with live execution."""

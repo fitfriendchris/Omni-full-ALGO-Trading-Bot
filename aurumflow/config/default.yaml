@@ -1,0 +1,74 @@
+# AurumFlow Default Configuration
+# Cross-platform via ZeroMQ (no Windows-only MetaTrader5 package needed)
+
+# ZeroMQ connection settings
+zmq:
+  enabled: true                      # Use ZMQ connector (cross-platform). false = legacy MT5 connector
+  pull_addr: "tcp://localhost:5555"  # Receive data from EA (PULL socket)
+  push_addr: "tcp://localhost:5556"  # Send commands to EA (PUSH socket)
+  timeout_ms: 1000                   # Socket receive timeout
+  reconnect_delay: 2.0               # Seconds between reconnection attempts
+
+# MetaTrader 5 settings (only used when zmq.enabled: false)
+mt5:
+  server: "ICMarkets-Demo"          # Broker server
+  login: 0                          # Set via env or override: AURUM_MT5_LOGIN
+  password: ""                      # Set via env or override: AURUM_MT5_PASSWORD
+  symbol: "XAUUSD"
+  timeout_seconds: 30
+  max_retry_attempts: 3
+
+# Trading parameters
+trading:
+  enabled: false                    # Master kill switch — false means shadow-only mode
+  magic_number: 202405              # Unique EA ID for order identification
+  comment: "AurumFlow v1.0"
+  max_spread: 50                   # Max spread in points
+  max_slippage: 30                 # Max slippage in points
+  min_volume: 0.01
+  max_volume: 100.0
+  cent_account: false              # If true, treat balance as cents (100 units = $1)
+  account_currency: "USD"          # Account currency for display
+  shadow_initial_balance: 10000    # Starting virtual balance for shadow mode
+
+# Bar/Candle Builder
+bars:
+  buffer_size: 100                 # Max completed candles to retain
+  timeframes:                      # Supported timeframes
+    - "1m"                         # 1-minute candles (60s)
+    - "5m"                         # 5-minute candles (300s)
+
+# Risk management
+risk:
+  risk_per_trade: 0.01            # 1% risk per trade
+  max_daily_loss: 0.05            # 5% max daily loss
+  max_positions: 5                # Max concurrent positions
+  max_drawdown_limit: 0.15        # 15% max drawdown
+  pyramiding_max: 4               # Max pyramiding entries
+  pyramiding_step_atr: 0.7        # ATR multiplier for pyramid steps
+  trailing_atr_mult: 1.8          # ATR multiplier for trailing stop
+  min_margin_level: 100.0         # Minimum margin level % to allow new trades
+  skip_below_min_lot: true        # Skip trades where risk-based size is below min lot
+  min_position_size: 0.01         # Minimum allowed position lot size
+
+# Strategy parameters
+strategy:
+  type: "compounder"               # "baseline" or "compounder"
+  ema_fast: 20
+  ema_slow: 50
+  rsi_period: 14
+  atr_period: 14
+
+# Logging
+logging:
+  level: "INFO"                    # DEBUG, INFO, WARNING, ERROR
+  file: "logs/aurumflow.log"
+  max_bytes: 10485760              # 10 MB
+  backup_count: 5
+  format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+
+# Monitoring
+monitoring:
+  check_interval_seconds: 60       # Main loop interval
+  heartbeat_interval: 300          # Heartbeat log every 5 min
+  account_refresh_seconds: 5       # Account info refresh

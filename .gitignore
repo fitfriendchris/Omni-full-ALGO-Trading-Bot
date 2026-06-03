@@ -63,3 +63,7 @@ logs/
 
 # Downloaded historical data (regenerate via fetch_dukascopy_history.py)
 python/data/
+
+# never track any env variant
+.env.*
+!.env.example

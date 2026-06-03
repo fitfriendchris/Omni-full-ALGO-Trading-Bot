@@ -67,3 +67,6 @@ python/data/
 # never track any env variant
 .env.*
 !.env.example
+
+# launchd plists contain tokens — never track
+*.plist

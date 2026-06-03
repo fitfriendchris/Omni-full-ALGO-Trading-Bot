@@ -1,0 +1,35 @@
+================================================================================================================
+ENHANCE NY-ORB — walk-forward (IS≤2021 tune / OOS 2022+ judge), real costs, $160 start, 2% risk
+================================================================================================================
+
+[REFERENCE] base NY-ORB fixed-4R, OOS:
+  base                               ret   +344.6%  CAGR  +40.3%  DD  -23.1%  WR 33.3%  PF 2.05  n  126  maxLossStreak 11  final $711
+
+── A) SCALING (pyramid + trail) — tune on IS, then OOS ──
+  top-3 by IS, with OOS:
+   IS  pyr3 step1.5 trail3.0 tgt6.0       ret     -8.7%  CAGR   -1.4%  DD  -50.4%  WR 20.0%  PF 0.97  n  250  maxLossStreak 19  final $146
+   OOS pyr3 step1.5 trail3.0 tgt6.0       ret    -19.8%  CAGR   -4.9%  DD  -51.8%  WR 22.5%  PF 0.85  n  169  maxLossStreak 15  final $128
+
+   IS  pyr4 step1.5 trail3.0 tgt6.0       ret    -11.3%  CAGR   -1.8%  DD  -53.6%  WR 19.6%  PF 0.96  n  250  maxLossStreak 19  final $142
+   OOS pyr4 step1.5 trail3.0 tgt6.0       ret    -23.2%  CAGR   -5.8%  DD  -54.8%  WR 21.3%  PF 0.82  n  169  maxLossStreak 19  final $123
+
+   IS  pyr3 step1.5 trail3.0 tgtNone      ret    -14.0%  CAGR   -2.3%  DD  -53.5%  WR 20.1%  PF 0.95  n  249  maxLossStreak 19  final $138
+   OOS pyr3 step1.5 trail3.0 tgtNone      ret    -19.1%  CAGR   -4.7%  DD  -51.8%  WR 22.6%  PF 0.85  n  168  maxLossStreak 15  final $130
+
+  → SCALING pick (IS-selected) OOS: pyr3 step1.5 trail3.0 tgt6.0       ret    -19.8%  CAGR   -4.9%  DD  -51.8%  WR 22.5%  PF 0.85  n  169  maxLossStreak 15  final $128
+    base OOS for comparison:        base                               ret   +344.6%  CAGR  +40.3%  DD  -23.1%  WR 33.3%  PF 2.05  n  126  maxLossStreak 11  final $711
+
+── B) MORE SETUPS — add London session + M15, long-only (does frequency help?) ──
+  NY only (base)                     ret   +344.6%  CAGR  +40.3%  DD  -23.1%  WR 33.3%  PF 2.05  n  126  maxLossStreak 11  final $711
+  London only (07h)                  ret   +432.6%  CAGR  +46.1%  DD  -56.9%  WR 26.8%  PF 1.64  n  317  maxLossStreak 31  final $852
+  NY rb2 (more triggers)             ret   +426.0%  CAGR  +45.7%  DD  -26.9%  WR 29.8%  PF 1.69  n  198  maxLossStreak 12  final $842
+  NY on M15                          ret   +377.7%  CAGR  +42.6%  DD  -43.5%  WR 25.3%  PF 1.27  n  423  maxLossStreak 17  final $764
+  London on M15                      ret    -94.0%  CAGR  -47.2%  DD  -94.9%  WR 17.7%  PF 0.72  n  671  maxLossStreak 40  final $10 💀RUIN
+
+── C) HIGH-FREQUENCY SCALP test on M5 (the '40 setups/day' idea) ──
+  M5 all-session rr1.0: ret    -98.1%  CAGR  -73.4%  DD  -98.7%  WR 45.8%  PF 0.22  n  600  maxLossStreak  9  final $3 💀RUIN
+  M5 all-session rr1.5: ret    -97.3%  CAGR  -70.2%  DD  -98.4%  WR 38.0%  PF 0.34  n  600  maxLossStreak 14  final $4 💀RUIN
+  M5 all-session rr2.0: ret    -97.3%  CAGR  -70.1%  DD  -98.5%  WR 31.8%  PF 0.39  n  600  maxLossStreak 14  final $4 💀RUIN
+
+── benchmark ──
+  BUY&HOLD OOS                       ret   +149.8%  CAGR  +23.1%  DD  -24.4%  WR  0.0%  PF 0.00  n    0  maxLossStreak  0  final $400

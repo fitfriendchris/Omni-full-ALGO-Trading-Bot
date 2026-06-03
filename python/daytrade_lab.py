@@ -236,6 +236,58 @@ def execute(df, sig, risk_pct=0.03, cooldown=2, breakeven_r=None):
         eq_curve[i] = eq + mtm
     return pd.Series(eq_curve, index=df.index), trades
 
+def execute_scaled(df, sig, risk_pct=0.02, cooldown=2, pyr_max=3, pyr_step_atr=1.0,
+                   trail_atr=2.5, atr_n=14, target_rr=None):
+    """LONG pyramiding + ATR trail. Enter on signal; ADD a unit each +pyr_step_atr*ATR
+    in favour (up to pyr_max total); trail the whole book by trail_atr*ATR; optional fixed
+    target_rr cap on the initial risk. Honest: next-open fills, intrabar stops, costs."""
+    long_sig, short_sig, stop_dist, _tr, exit_long, exit_short = sig
+    O,H,L,C = df["Open"].values, df["High"].values, df["Low"].values, df["Close"].values
+    A = atr(df, atr_n).values
+    n=len(df); eq=START_EQ; eq_curve=np.empty(n); eq_curve[:]=START_EQ; trades=[]
+    book=[]; stop=None; init_risk=None; last_add=None; hw=None; target=None
+    pending=None; pend_sd=None; cool=0
+    for i in range(n):
+        # 1) fills at this open
+        if pending=="entry" and not book:
+            sd=pend_sd; entry=O[i]+ENTRY_COST
+            units=eq*risk_pct/sd if sd>0 else 0.0
+            if units*entry/LEVERAGE>eq: units=eq*LEVERAGE/entry
+            book=[dict(entry=entry,units=units)]
+            init_risk=sd; stop=entry-sd; last_add=entry; hw=entry
+            target=entry+sd*target_rr if target_rr else None
+            pending=None
+        elif pending=="add" and book and len(book)<pyr_max:
+            entry=O[i]+ENTRY_COST
+            held=sum(p["units"] for p in book)
+            units=eq*risk_pct/init_risk if init_risk and init_risk>0 else 0.0
+            if (held+units)*entry/LEVERAGE>eq: units=max(0.0, eq*LEVERAGE/entry-held)
+            if units>0: book.append(dict(entry=entry,units=units)); last_add=entry
+            pending=None
+        # 2) manage book
+        if book:
+            hw=max(hw,H[i]); trail=hw-trail_atr*A[i]
+            if trail>stop: stop=trail
+            xprice=None
+            if L[i]<=stop: xprice=min(O[i],stop)
+            elif target and H[i]>=target: xprice=target
+            if xprice is not None:
+                fill=xprice-EXIT_COST; held=sum(p["units"] for p in book)
+                pnl=sum((fill-p["entry"])*p["units"] for p in book)-COMMISSION_PER_LOT*held/100.0
+                eq+=pnl
+                trades.append(dict(pnl=pnl, r=(pnl/(eq*risk_pct) if eq>0 else 0), units=len(book)))
+                book=[]; stop=None; target=None; init_risk=None; cool=cooldown
+            elif pending is None and len(book)<pyr_max and C[i]>=last_add+pyr_step_atr*A[i]:
+                pending="add"
+        # 3) new entry if flat
+        if not book and pending is None and cool<=0 and i+1<n:
+            if long_sig[i] and stop_dist[i]==stop_dist[i] and stop_dist[i]>0:
+                pending="entry"; pend_sd=stop_dist[i]
+        if cool>0: cool-=1
+        eq_curve[i]=eq+(sum((C[i]-p["entry"])*p["units"] for p in book) if book else 0.0)
+    return pd.Series(eq_curve,index=df.index), trades
+
+
 # ── metrics ──────────────────────────────────────────────────────────
 def metrics(eq, trades, years):
     if len(eq) < 2 or eq.iloc[0] <= 0:

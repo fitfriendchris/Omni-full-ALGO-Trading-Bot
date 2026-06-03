@@ -1,0 +1,39 @@
+
+========================================================================================================================
+DAYTRADE LAB — XAUUSD — IS ≤ 2021-12-31  |  OOS 2022→  |  costs ~$0.40 RT + $7/lot comm  |  start $160
+Tested 96 strategy configs across ['m15', 'h1'].  Verdict = OUT-OF-SAMPLE only.
+========================================================================================================================
+
+── OUT-OF-SAMPLE leaderboard (top 25) ──
+  ORB[h1 r2% open_hour=13,range_bars=2,rr=3.0] ret    +85.3%  CAGR  +15.0%  DD  -34.8%  WR 28.7%  PF 1.17  n  320  maxLossStreak 10  final $296
+  ORB[h1 r2% open_hour=13,range_bars=4,rr=3.0] ret    +67.1%  CAGR  +12.4%  DD  -27.5%  WR 29.3%  PF 1.15  n  208  maxLossStreak 12  final $267
+  VWAPREV[h1 r2% ext=0.015,long_only=True] ret     +3.3%  CAGR   +0.7%  DD  -11.0%  WR 61.2%  PF 1.14  n   49  maxLossStreak  4  final $165
+  ORB[h1 r5% open_hour=13,range_bars=2,rr=3.0] ret   +125.5%  CAGR  +20.3%  DD  -71.6%  WR 28.7%  PF 1.12  n  320  maxLossStreak 10  final $361
+  DONCHIAN[h1 r2% n=40,atr_mult=2.0,rr=nan] ret    +49.8%  CAGR   +9.6%  DD  -68.7%  WR 23.3%  PF 1.12  n  335  maxLossStreak 21  final $240
+  VWAPREV[h1 r5% ext=0.015,long_only=True] ret     +6.9%  CAGR   +1.5%  DD  -25.6%  WR 61.2%  PF 1.11  n   49  maxLossStreak  4  final $171
+  ORB[h1 r2% open_hour=13,range_bars=4,rr=2.0] ret    +54.8%  CAGR  +10.4%  DD  -31.2%  WR 37.5%  PF 1.11  n  267  maxLossStreak  8  final $248
+  BOLLREV[h1 r2% n=20,k=2.5,long_only=True] ret     +5.5%  CAGR   +1.2%  DD  -19.1%  WR 63.4%  PF 1.08  n  112  maxLossStreak  4  final $169
+  ORB[h1 r5% open_hour=13,range_bars=4,rr=3.0] ret   +123.9%  CAGR  +20.1%  DD  -58.4%  WR 29.3%  PF 1.08  n  208  maxLossStreak 12  final $358
+  ORB[h1 r2% open_hour=13,range_bars=2,rr=2.0] ret    +50.6%  CAGR   +9.7%  DD  -52.4%  WR 36.3%  PF 1.06  n  422  maxLossStreak 10  final $241
+  BOLLREV[h1 r5% n=20,k=2.5,long_only=True] ret     +8.4%  CAGR   +1.9%  DD  -43.3%  WR 63.4%  PF 1.05  n  112  maxLossStreak  4  final $173
+  ORB[h1 r5% open_hour=13,range_bars=4,rr=2.0] ret    +97.8%  CAGR  +16.7%  DD  -67.3%  WR 37.5%  PF 1.05  n  267  maxLossStreak  8  final $317
+  VWAPREV[h1 r2% ext=0.008,long_only=True] ret     +3.5%  CAGR   +0.8%  DD  -18.6%  WR 62.9%  PF 1.04  n  202  maxLossStreak  4  final $166
+  VWAPREV[m15 r2% ext=0.015,long_only=True] ret     +1.7%  CAGR   +0.4%  DD  -18.6%  WR 53.7%  PF 1.03  n   82  maxLossStreak  5  final $163
+  VWAPREV[m15 r2% ext=0.008,long_only=True] ret     +7.0%  CAGR   +1.5%  DD  -27.7%  WR 55.2%  PF 1.03  n  326  maxLossStreak  7  final $171
+  ORB[h1 r5% open_hour=13,range_bars=2,rr=2.0] ret    +47.6%  CAGR   +9.2%  DD  -87.5%  WR 36.3%  PF 1.02  n  422  maxLossStreak 10  final $236
+  ORB[m15 r2% open_hour=13,range_bars=4,rr=3.0] ret    +13.3%  CAGR   +2.9%  DD  -69.7%  WR 26.8%  PF 1.02  n  612  maxLossStreak 20  final $181
+  VWAPREV[h1 r5% ext=0.008,long_only=True] ret     +3.7%  CAGR   +0.8%  DD  -40.8%  WR 62.9%  PF 1.01  n  202  maxLossStreak  4  final $166
+  VWAPREV[m15 r5% ext=0.008,long_only=True] ret     +0.5%  CAGR   +0.1%  DD  -57.0%  WR 55.2%  PF 1.00  n  326  maxLossStreak  7  final $161
+  VWAPREV[m15 r5% ext=0.015,long_only=True] ret     -0.5%  CAGR   -0.1%  DD  -41.4%  WR 53.7%  PF 1.00  n   82  maxLossStreak  5  final $159
+  ORB[m15 r2% open_hour=13,range_bars=4,rr=2.0] ret    -11.1%  CAGR   -2.6%  DD  -59.7%  WR 34.8%  PF 0.99  n  733  maxLossStreak 10  final $142
+  DONCHIAN[h1 r2% n=40,atr_mult=2.0,rr=3.0] ret     -8.9%  CAGR   -2.1%  DD  -74.8%  WR 26.5%  PF 0.98  n  559  maxLossStreak 21  final $146
+  BOLLREV[h1 r2% n=20,k=2.0,long_only=True] ret     -3.4%  CAGR   -0.8%  DD  -23.5%  WR 62.4%  PF 0.97  n  197  maxLossStreak  6  final $155
+  ORB[h1 r2% open_hour=7,range_bars=4,rr=3.0] ret    -15.7%  CAGR   -3.8%  DD  -79.7%  WR 26.0%  PF 0.96  n  515  maxLossStreak 17  final $135
+  ORB[m15 r5% open_hour=13,range_bars=4,rr=3.0] ret    -64.0%  CAGR  -20.7%  DD  -96.4%  WR 26.8%  PF 0.95  n  612  maxLossStreak 20  final $58 💀RUIN
+
+── the PASS bar: OOS PF≥1.3, n≥150, maxDD>-35%, ret>0, no ruin ──
+  ❌ NOTHING cleared the OOS bar. No honest edge found in this batch.
+
+── benchmark ──
+  BUY&HOLD[m15]                      ret   +149.9%  CAGR  +23.1%  DD  -26.1%  WR  0.0%  PF 0.00  n    0  maxLossStreak  0  final $400
+  BUY&HOLD[h1]                       ret   +149.8%  CAGR  +23.1%  DD  -24.4%  WR  0.0%  PF 0.00  n    0  maxLossStreak  0  final $400

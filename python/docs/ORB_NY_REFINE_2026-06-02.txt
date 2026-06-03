@@ -1,0 +1,37 @@
+======================================================================================================================
+ORB NY-OPEN (13:00 UTC) H1 — walk-forward refinement
+Grid: 216 configs · 216 with enough IS trades · IS ≤ 2021-12-31 · OOS 2022→ · costs ~$0.40RT+$7/lot
+======================================================================================================================
+
+── Top 5 by IN-SAMPLE, with their OUT-OF-SAMPLE result (does it generalize?) ──
+  IS : rb4 rr4 body0.5 scap2.5 beNone r2% ret    +79.4%  CAGR   +9.3%  DD  -42.7%  WR 23.8%  PF 1.13  n  286  maxLossStreak 16  final $287
+  OOS: rb4 rr4 body0.5 scap2.5 beNone r2% ret    +73.5%  CAGR  +13.3%  DD  -36.5%  WR 24.0%  PF 1.19  n  204  maxLossStreak 15  final $278
+
+  IS : rb4 rr4 body0.5 scap2.5 beNone r3% ret   +101.2%  CAGR  +11.2%  DD  -57.8%  WR 23.8%  PF 1.10  n  286  maxLossStreak 16  final $322
+  OOS: rb4 rr4 body0.5 scap2.5 beNone r3% ret   +101.0%  CAGR  +17.2%  DD  -49.9%  WR 24.0%  PF 1.17  n  204  maxLossStreak 15  final $322
+
+  IS : rb2 rr2 body0.0 scap0.0 beNone r2% ret    +19.9%  CAGR   +2.8%  DD  -70.9%  WR 36.1%  PF 1.02  n  621  maxLossStreak 23  final $192
+  OOS: rb2 rr2 body0.0 scap0.0 beNone r2% ret    +50.6%  CAGR   +9.7%  DD  -52.4%  WR 36.3%  PF 1.06  n  422  maxLossStreak 10  final $241
+
+  IS : rb4 rr4 body0.5 scap0.0 beNone r2% ret     +5.4%  CAGR   +0.8%  DD  -56.2%  WR 21.8%  PF 1.01  n  238  maxLossStreak 25  final $169
+  OOS: rb4 rr4 body0.5 scap0.0 beNone r2% ret    -22.9%  CAGR   -5.7%  DD  -54.1%  WR 19.7%  PF 0.89  n  173  maxLossStreak 15  final $123
+
+  IS : rb2 rr2 body0.0 scap0.0 beNone r3% ret     +8.8%  CAGR   +1.3%  DD  -85.4%  WR 36.1%  PF 1.01  n  621  maxLossStreak 23  final $174
+  OOS: rb2 rr2 body0.0 scap0.0 beNone r3% ret    +62.6%  CAGR  +11.7%  DD  -68.6%  WR 36.3%  PF 1.05  n  422  maxLossStreak 10  final $260
+
+── THE WALK-FORWARD PICK (selected on IS only) → its honest OOS ──
+  config: rb4 rr4 body0.5 scap2.5 beNone r2%
+  OOS: pick                               ret    +73.5%  CAGR  +13.3%  DD  -36.5%  WR 24.0%  PF 1.19  n  204  maxLossStreak 15  final $278
+
+── that pick, OUT-OF-SAMPLE per year ──
+  year         ret   trades
+  2022       -8.7%       47
+  2023      +19.4%       43
+  2024      +31.1%       40
+  2025       +4.7%       50
+  2026      +15.7%       21
+
+── benchmark ──
+  BUY&HOLD (OOS)                     ret   +149.8%  CAGR  +23.1%  DD  -24.4%  WR  0.0%  PF 0.00  n    0  maxLossStreak  0  final $400
+
+❌ Even the refined NY-ORB does NOT clear the OOS bar (PF≥1.3, n≥150, DD>-35%).

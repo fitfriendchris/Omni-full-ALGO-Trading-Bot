@@ -358,6 +358,9 @@ def main():
                     help="fraction banked at tp1 (rest runs to tp2)")
     ap.add_argument("--regime", action="store_true",
                     help="P3 regime filter: only trade with the HTF macro trend; skip chop")
+    ap.add_argument("--engine", default="seq", choices=["seq", "amd"],
+                    help="seq = sequential sweep/CHoCH/OTE; amd = Accumulation-Manipulation-Distribution")
+    ap.add_argument("--amd-killzone", action="store_true", help="AMD: restrict to London/NY killzones")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -386,6 +389,12 @@ def main():
         print("  [Regime filter ON] HTF-trend aligned, chop skipped")
 
     evaluator = None
+    if args.engine == "amd":
+        from ict_amd import evaluate as amd_evaluate, AMDConfig
+        amd_cfg = AMDConfig(symbol="XAUUSD", use_killzone=args.amd_killzone)
+        evaluator = lambda h, l, now_ts: amd_evaluate(h, l, cfg=amd_cfg, now_ts=now_ts)
+        print(f"  [Engine: AMD] accumulation→manipulation→distribution"
+              + ("; killzones only" if args.amd_killzone else ""))
     if args.kronos:
         from kronos_filter import evaluate_with_kronos, KronosConfig
         kcfg = KronosConfig(min_win_prob=args.kronos_min_prob, mc_paths=args.kronos_paths)

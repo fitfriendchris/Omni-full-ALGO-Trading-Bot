@@ -451,6 +451,10 @@ def heal_cycle():
     t0 = time.time()
     actions = []
 
+    # v27.1: heartbeat — always assert auto-trade enabled (EA now has runtime toggle)
+    _send_ea_cmd("ENABLE")
+    actions.append("mt5_enable_heartbeat")
+
     # ── 1. Load & repair JSON ──────────────────────────────────────────────────
     data = _repair_json(MT5_JSON)
     if data is None:

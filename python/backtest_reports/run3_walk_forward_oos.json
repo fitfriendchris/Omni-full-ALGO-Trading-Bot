@@ -1,0 +1,20 @@
+{
+  "train": {
+    "signals": 99,
+    "wins": 79,
+    "losses": 20,
+    "win_rate_pct": 79.8,
+    "pnl_pct": 272.9,
+    "dd_pct": 6.9,
+    "pf": 8.69
+  },
+  "test": {
+    "signals": 25,
+    "wins": 25,
+    "losses": 0,
+    "win_rate_pct": 100.0,
+    "pnl_pct": 105.3,
+    "dd_pct": 0.0,
+    "pf": 999.0
+  }
+}

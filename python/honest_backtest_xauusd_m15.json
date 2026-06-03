@@ -1,7 +1,8 @@
 {
-  "generated_at": "2026-05-28T18:25:41.614910+00:00",
+  "generated_at": "2026-05-27T05:56:54.708586+00:00",
   "symbol": "XAUUSD",
-  "total_bars": 1800,
+  "timeframe": "M15",
+  "total_bars": 600,
   "raw_mode": {
     "total_signals": 0,
     "filled_trades": 0,
@@ -12,8 +13,7 @@
     "avg_loss_pips": 0.0,
     "avg_rr": 0.0,
     "expectancy_pips": 0.0,
-    "total_profit_pips": 0.0,
-    "trades": []
+    "total_profit_pips": 0.0
   },
   "reality_mode": {
     "total_signals": 0,
@@ -25,7 +25,6 @@
     "avg_loss_pips": 0.0,
     "avg_rr": 0.0,
     "expectancy_pips": 0.0,
-    "total_profit_pips": 0.0,
-    "trades": []
+    "total_profit_pips": 0.0
   }
 }

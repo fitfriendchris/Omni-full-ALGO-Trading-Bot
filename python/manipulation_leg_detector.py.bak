@@ -216,7 +216,7 @@ def _find_swing_lows(bars: List[Bar], lookback: int = 2,
 
 
 def _find_equal_levels(bars: List[Bar], tolerance: float,
-                       max_bars: int = 100) -> Tuple[List[Tuple[float, int]], List[Tuple[float, int]]]:
+                       max_bars: int = 100) -> Tuple[List[float], List[float]]:
     """
     Find equal highs and equal lows in the most recent `max_bars`.
     Returns (eq_highs, eq_lows) as deduplicated price levels.
@@ -234,10 +234,10 @@ def _find_equal_levels(bars: List[Bar], tolerance: float,
 
     eq_highs = []
     for key, touches in highs.items():
-        if len(touches) >= 2:  # CHANGED: 2+ touches (was 3+, too strict)
+        if len(touches) >= 3:
             avg = sum(touches) / len(touches)
             if all(abs(t - avg) <= tolerance for t in touches):
-                eq_highs.append((avg, len(touches)))
+                eq_highs.append(avg)
 
     # Cluster lows
     lows: dict = {}
@@ -247,10 +247,10 @@ def _find_equal_levels(bars: List[Bar], tolerance: float,
 
     eq_lows = []
     for key, touches in lows.items():
-        if len(touches) >= 2:  # CHANGED: 2+ touches (was 3+)
+        if len(touches) >= 3:
             avg = sum(touches) / len(touches)
             if all(abs(t - avg) <= tolerance for t in touches):
-                eq_lows.append((avg, len(touches)))
+                eq_lows.append(avg)
 
     return sorted(set(eq_highs), reverse=True), sorted(set(eq_lows))
 
@@ -307,22 +307,6 @@ def _find_pdh_pdl(bars: List[Bar]) -> Tuple[Optional[float], Optional[float]]:
     pdh = max(b.h for b in yesterday)
     pdl = min(b.l for b in yesterday)
     return pdh, pdl
-
-
-def _pool_re_touched(bars: List[Bar], level: float, pip_size: float,
-                     hours: int = 24) -> bool:
-    """Check if price touched (came within 1 pip of) a level in the last N hours."""
-    if not bars:
-        return False
-    now_ts = bars[-1].time
-    thresh = pip_size
-    for b in reversed(bars):
-        age_h = (now_ts - b.time) / 3600.0
-        if age_h > hours:
-            break
-        if abs(b.h - level) <= thresh or abs(b.l - level) <= thresh:
-            return True
-    return False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -462,7 +446,7 @@ def _check_sweep_rejection(bars: List[Bar], idx: int,
 
 def detect_manipulation_legs(bars: List[Bar],
                              pip_size: float = 0.01,
-                             min_recent_bars: int = 8) -> List[ManipulationLeg]:
+                             min_recent_bars: int = 50) -> List[ManipulationLeg]:
     """
     Scan the most recent `min_recent_bars` for ALL confirmed manipulation legs.
 
@@ -480,10 +464,10 @@ def detect_manipulation_legs(bars: List[Bar],
     # Build liquidity pools
     pools: List[LiquidityPool] = []
 
-    # 1. Swing highs/lows (lookback=4 for cleaner structural pivots)
-    swings_high = _find_swing_highs(bars, lookback=4,
+    # 1. Swing highs/lows
+    swings_high = _find_swing_highs(bars, lookback=2,
                                     start=len(bars) - min_recent_bars)
-    swings_low = _find_swing_lows(bars, lookback=4,
+    swings_low = _find_swing_lows(bars, lookback=2,
                                   start=len(bars) - min_recent_bars)
     for idx, price in swings_high:
         pools.append(LiquidityPool(price, "SWING_HIGH", idx))
@@ -493,10 +477,10 @@ def detect_manipulation_legs(bars: List[Bar],
     # 2. Equal highs/lows
     tol = atr_val * 0.15  # tolerance for equal levels
     eq_highs, eq_lows = _find_equal_levels(bars, tolerance=tol, max_bars=min_recent_bars)
-    for price, touches in eq_highs:
-        pools.append(LiquidityPool(price, "EQH", len(bars) - 1, touch_count=touches))
-    for price, touches in eq_lows:
-        pools.append(LiquidityPool(price, "EQL", len(bars) - 1, touch_count=touches))
+    for price in eq_highs:
+        pools.append(LiquidityPool(price, "EQH", len(bars) - 1))
+    for price in eq_lows:
+        pools.append(LiquidityPool(price, "EQL", len(bars) - 1))
 
     # 3. Asian range
     asian = _find_asian_range(bars, pip_size=pip_size)
@@ -516,36 +500,14 @@ def detect_manipulation_legs(bars: List[Bar],
     found: List[ManipulationLeg] = []
     checked_levels = set()  # avoid duplicate detections at same price
 
-    # ── POOL RANKING (recency + touch_count + level type) ──
-    now_ts = bars[-1].time if bars else 0
-    def pool_score(p: LiquidityPool) -> float:
-        age_h = (now_ts - (bars[p.bar_idx].time if p.bar_idx < len(bars) else now_ts)) / 3600.0
-        recency = max(0, 12.0 - age_h) / 12.0  # 0-1, peaks at last 12h
-        touch = min(p.touch_count, 5) / 5.0    # 0-1, bonus for 5+ touches
-        type_weight = {"PDH": 1.0, "PDL": 1.0,
-                       "ASIAN_HIGH": 0.9, "ASIAN_LOW": 0.9,
-                       "EQH": 0.8, "EQL": 0.8,
-                       "SWING_HIGH": 0.6, "SWING_LOW": 0.6}.get(p.kind, 0.5)
-        return recency * 3.0 + touch * 2.0 + type_weight
-
-    ranked_pools = sorted(pools, key=pool_score, reverse=True)
-
-    for pool in ranked_pools:  # scan highest-ranked pools first
-        # Dedup: levels within 1 pip are treated as same structural zone
-        key = round(pool.price / pip_size)
+    for pool in sorted(pools, key=lambda p: p.bar_idx, reverse=True):
+        key = round(pool.price / (pip_size * 0.1))
         if key in checked_levels:
             continue
         checked_levels.add(key)
 
-        # SESSION VALIDITY: only sweep pools created in current or prior session
-        # (prevents stale PDH from Monday being used Thursday without re-touch)
-        pool_age_h = (now_ts - (bars[pool.bar_idx].time if pool.bar_idx < len(bars) else now_ts)) / 3600.0
-        if pool_age_h > 48 and pool.kind in ("PDH", "PDL", "SWING_HIGH", "SWING_LOW"):
-            # Stale pool: require re-touch in last 24h
-            if not _pool_re_touched(bars, pool.price, pip_size, hours=24):
-                continue
-
         # Scan recent bars for a sweep of this level
+        # Use min_recent_bars as scan range, not hardcoded 20
         scan_start = max(len(bars) - min_recent_bars, 0)
         for i in range(scan_start, len(bars)):
             leg = _check_sweep_rejection(bars, i, pool.price, pool.kind,
@@ -563,7 +525,7 @@ def detect_manipulation_legs(bars: List[Bar],
 def get_primary_manipulation_leg(bars: List[Bar],
                                  bias_direction: str = "",
                                  pip_size: float = 0.01,
-                                 min_recent_bars: int = 8) -> ManipulationLeg:
+                                 min_recent_bars: int = 50) -> ManipulationLeg:
     """
     Return the SINGLE best manipulation leg for the current context.
 
@@ -672,64 +634,3 @@ def _self_test() -> None:
 
 if __name__ == "__main__":
     _self_test()
-
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Liquidity Heatmap: track which levels are "active" for current session
-# ──────────────────────────────────────────────────────────────────────────────
-
-@dataclass
-class LiquidityHeatmap:
-    """Snapshot of active liquidity zones for the current session."""
-    active_pools: List[LiquidityPool]    # pools touched/referenced in last 12h
-    hot_levels: List[Tuple[float, str]]  # (price, kind) ranked by activity
-    last_updated: float                  # timestamp
-
-
-def build_liquidity_heatmap(bars: List[Bar],
-                            pip_size: float = 0.01,
-                            lookback_hours: int = 12) -> LiquidityHeatmap:
-    """
-    Build a heatmap of liquidity pools that are active NOW.
-    
-    Active = pool was touched (within 1 pip) in the last `lookback_hours`.
-    Hot = pools that saw 2+ touches recently OR are PDH/PDL/Asian extremes.
-    """
-    if not bars:
-        return LiquidityHeatmap([], [], 0.0)
-    
-    now_ts = bars[-1].time
-    # Detect pools
-    legs = detect_manipulation_legs(bars, pip_size=pip_size, min_recent_bars=min(50, len(bars)))
-    
-    active = []
-    hot = []
-    
-    # Pool uniqueness via set
-    seen = set()
-    for leg in legs:
-        kind = leg.swept_kind
-        price = leg.swept_level
-        key = round(price / pip_size)
-        if key in seen:
-            continue
-        seen.add(key)
-        
-        pool = LiquidityPool(price=price, kind=kind, bar_idx=leg.start_idx,
-                             touch_count=1)
-        
-        # Check re-touch in last 12h
-        if _pool_re_touched(bars, price, pip_size, hours=lookback_hours):
-            active.append(pool)
-            hot.append((price, kind))
-        elif kind in ("PDH", "PDL", "ASIAN_HIGH", "ASIAN_LOW"):
-            hot.append((price, kind))
-    
-    return LiquidityHeatmap(
-        active_pools=active,
-        hot_levels=sorted(hot, key=lambda x: x[0], reverse=True),
-        last_updated=now_ts,
-    )
-
-

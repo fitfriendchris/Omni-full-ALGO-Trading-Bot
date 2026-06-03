@@ -1,0 +1,49 @@
+{
+  "regime": "bull_2024_2026",
+  "description": "Gold bull $2300-$3400",
+  "symbol": "XAUUSD",
+  "ltf_bars": 11430,
+  "signals_generated": 41,
+  "config": {
+    "execution_mode": "MARKET_ONLY",
+    "sl_cap_pips": 200.0,
+    "fill_window": 96,
+    "session": "LONDON",
+    "min_rr": 2.0,
+    "lookback": 50,
+    "stop_buffer_pips": 2.0,
+    "max_spread_pips": 50.0,
+    "stricter_slippage": true,
+    "min_bar_range_pips": 0.0,
+    "signal_strength_threshold": 0.6
+  },
+  "result": {
+    "start_equity": 10000.0,
+    "end_equity": 21257.046306084634,
+    "peak_equity": 21257.046306084634,
+    "total_trades": 41,
+    "wins": 34,
+    "losses": 7,
+    "win_rate_pct": 82.93,
+    "expectancy_usd": 173.17,
+    "expectancy_pips": 408.19,
+    "total_pnl_usd": 7100.05,
+    "total_pnl_pips": 16735.97,
+    "total_pnl_pct": 112.57,
+    "max_dd_pct": 3.2,
+    "max_consecutive_losses": 2,
+    "profit_factor": 14.21,
+    "kelly_fraction": 0.7709,
+    "sharpe_annualized": 16.92,
+    "avg_lot": 0.08,
+    "avg_sl_pips": 177.05,
+    "notes": [
+      "Execution: MARKET_ONLY",
+      "SL cap: 200.0 pips",
+      "Session: LONDON",
+      "Min RR: 2.0",
+      "Stricter slippage: True",
+      "Leverage: 100.0:1 | Risk per trade: 1.0%"
+    ]
+  }
+}

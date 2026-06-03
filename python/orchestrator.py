@@ -313,8 +313,24 @@ def run_cycle(
         _have_regime = False
         detect_regime = None  # type: ignore
 
-    # Pull MT5-wide metadata (amd_phase) once per cycle if using MT5BarFetcher
+    # Phase 4B: Market structure context — single source of truth for all structural data
+    try:
+        from market_structure_context import (
+            build_all_market_structures as _build_market_structure,
+            write_market_structure as _write_market_structure,
+        )
+        _HAVE_MSC = True
+    except Exception:
+        _HAVE_MSC = False
+        _build_market_structure = None  # type: ignore
+        _write_market_structure = None  # type: ignore
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Phase 4A: Pull MT5-wide metadata (amd_phase, data freshness) once
+    # ═══════════════════════════════════════════════════════════════════
     mt5_amd_phase = ""
+    _raw = {}
+    data_age_min = float("inf")
     try:
         if hasattr(fetcher, "_raw_data"):
             _raw = fetcher._raw_data()  # type: ignore
@@ -322,8 +338,65 @@ def run_cycle(
                 mt5_amd_phase = _raw.get("amd_phase", "")
                 if mt5_amd_phase:
                     log.info("MT5 EA amd_phase for cycle: %s", mt5_amd_phase)
+
+                # ── TIMESTAMP PARSER (P0.4) ──
+                ts_val = _raw.get("timestamp", 0)
+                ts_epoch: float = 0.0
+                if isinstance(ts_val, (int, float)) and ts_val > _Y2000_TS:
+                    ts_epoch = float(ts_val)
+                elif isinstance(ts_val, str):
+                    # MT5 exports: "2026.05.27 11:08:20"
+                    for fmt in ("%Y.%m.%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                        try:
+                            dt = datetime.strptime(ts_val.strip(), fmt).replace(
+                                tzinfo=timezone.utc)
+                            ts_epoch = dt.timestamp()
+                            break
+                        except ValueError:
+                            continue
+                    if ts_epoch == 0.0:
+                        log.error("CRITICAL: Could not parse MT5 timestamp string: %r", ts_val)
+                    else:
+                        log.info("Parsed MT5 string timestamp %s → %.0f", ts_val, ts_epoch)
+
+                if ts_epoch > _Y2000_TS:
+                    utc_now = datetime.now(timezone.utc).timestamp()
+                    data_age_min = (utc_now - ts_epoch) / 60.0
+                    
+                    # Broker time offset detection (UTC+3 common for MidasFX)
+                    if data_age_min < -100:  # timestamp in the future by >1.6h
+                        offset_h = round(abs(data_age_min) / 60.0)
+                        log.warning("MT5 timestamp appears UTC+%.0f; offsetting age calculation", offset_h)
+                        data_age_min = max(0.0, data_age_min + (offset_h * 60))
+                    elif data_age_min < 0:
+                        data_age_min = max(0.0, data_age_min)  # clamp negatives
+                    
+                    log.info("MT5 data age: %.1f minutes (ts=%s)", data_age_min, ts_val)
+                    if data_age_min > 5.0:
+                        log.error("CRITICAL STALE DATA: MT5 data is %.0f minutes old "
+                                  "(threshold 5 min). Signals will be generated on stale data.",
+                                  data_age_min)
+                    elif data_age_min < -60.0:
+                        # Server time is ahead of UTC (timezone offset) — common for MT5
+                        # Don't treat future timestamps as stale; MT5 runs on broker local time
+                        log.info("MT5 data timestamp appears ahead of UTC by ~%.0f min "
+                                 "(broker local time). Treating as fresh.", abs(data_age_min))
+                else:
+                    log.warning("MT5 timestamp missing or unparseable; cannot verify data freshness")
+
     except Exception:
-        pass
+        log.warning("MT5 _raw_data() fetch failed", exc_info=True)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Phase 4B: Build market_structure.json ONCE from fresh MT5 data
+    # ═══════════════════════════════════════════════════════════════════
+    msc_data: Optional[dict] = None
+    if _HAVE_MSC and _raw and _build_market_structure is not None:
+        try:
+            msc_data = _build_market_structure(_raw, list(watchlist))
+            log.info("built in-memory market_structure for %d symbols", len(watchlist))
+        except Exception:
+            msc_data = None
 
     for symbol in watchlist:
         try:
@@ -387,6 +460,8 @@ def run_cycle(
                 except Exception as _amd_err:
                     log.debug("amd scan skipped for %s: %s", symbol, _amd_err)
 
+            # Phase 4B already built msc_data at cycle start — pass into select_trade below
+
             # ═══════════════════════════════════════════════════════════════
             # Phase 4: Single-path confluence engine
             # ═══════════════════════════════════════════════════════════════
@@ -396,6 +471,8 @@ def run_cycle(
                 macro_bars=macro_bars,
                 amd_phase=amd_phase,
                 pip_size=pip_size_for(symbol),
+                market_structure=(msc_data.get("symbols", {}).get(symbol) if msc_data else None),
+                symbol=symbol,
             )
 
             # Optional proven engine advisory (does NOT emit separate signals)
@@ -545,6 +622,28 @@ def run_cycle(
     except Exception as e:
         errors.append(f"write_pine: {e}")
         log.exception("write_pine failed")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Phase 4B: Write market_structure.json — single source of truth
+    # ═══════════════════════════════════════════════════════════════════
+    if _HAVE_MSC and _build_market_structure is not None and _write_market_structure is not None:
+        try:
+            # Use raw MT5 data directly for freshest structure
+            raw_mt5 = {}
+            try:
+                if hasattr(fetcher, "_raw_data"):
+                    raw_mt5 = fetcher._raw_data()  # type: ignore
+            except Exception:
+                pass
+            if raw_mt5:
+                msc = _build_market_structure(raw_mt5, list(watchlist))
+                msc_path = PROJECT_ROOT / "shared" / "market_structure.json"
+                _write_market_structure(str(msc_path), msc)
+                written.append(str(msc_path))
+                log.info("market_structure.json written for %d symbols", len(watchlist))
+        except Exception as e:
+            errors.append(f"market_structure_context: {e}")
+            log.exception("market_structure_context build failed")
 
     return CycleResult(
         ts=ts_iso,

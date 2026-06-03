@@ -37,11 +37,11 @@ def _build_config(rules: dict, symbol: str = "") -> TrailConfig:
     ladder = tuple(tuple(pair) for pair in ladder_vals)
     kwargs = dict(
         atr_period                  = int(st.get("atr_period", 14)),
-        atr_mult_min                = float(st.get("atr_mult_min", 1.5)),
-        atr_mult_compress           = float(st.get("atr_mult_compress", 0.6)),
-        atr_mult_expand             = float(st.get("atr_mult_expand", 2.5)),
-        atr_mult_runner             = float(st.get("atr_mult_runner", 2.5)),
-        structure_buffer_pips       = float(st.get("structure_buffer_pips", 3.0)),
+        atr_mult_min                = float(st.get("atr_mult_min", 2.5)),
+        atr_mult_compress           = float(st.get("atr_mult_compress", 1.5)),
+        atr_mult_expand             = float(st.get("atr_mult_expand", 4.0)),
+        atr_mult_runner             = float(st.get("atr_mult_runner", 4.0)),
+        structure_buffer_pips       = float(st.get("structure_buffer_pips", 5.0)),
         liquidity_avoid_pips        = float(st.get("liquidity_avoid_pips", 3.0)),
         avoid_equal_levels          = bool(st.get("avoid_equal_levels", True)),
         profit_lock_ladder          = ladder,
@@ -50,8 +50,8 @@ def _build_config(rules: dict, symbol: str = "") -> TrailConfig:
         spread_atr_frac             = float(st.get("spread_atr_frac", 0.15)),
         close_on_opposing_choch_once_profitable = bool(
             st.get("close_on_opposing_choch_once_profitable", True)),
-        min_modify_pips             = float(st.get("min_modify_pips", 3.0)),
-        min_modify_atr_frac         = float(st.get("min_modify_atr_frac", 0.15)),
+        min_modify_pips             = float(st.get("min_modify_pips", 5.0)),
+        min_modify_atr_frac         = float(st.get("min_modify_atr_frac", 0.30)),
     )
     # Symbol-specific overrides from rules.json
     sym_key = symbol.upper().replace("/", "") + "_ADJUSTMENTS"
@@ -100,7 +100,7 @@ def _pip_size_for(symbol: str) -> float:
     if "JPY" in s:
         return 0.01
     if s in ("XAUUSD", "GOLD"):
-        return 0.01  # metals: 1 pip = $0.01 for gold
+        return 0.10  # metals: align to MT5 point*10 ($0.10 per pip)
     if s in ("XAGUSD", "SILVER"):
         return 0.001
     return 0.0001

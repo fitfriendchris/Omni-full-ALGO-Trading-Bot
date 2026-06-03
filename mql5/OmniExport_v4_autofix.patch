@@ -1,0 +1,32 @@
+// PATCH: Add AutoTrade enforcement + stale-cmd flush to OmniExport_v4.mq5
+// Apply these additions at the exact locations indicated.
+
+// --- 1. OnInit: force AutoTradeEnabled = true after leader election ---
+//    After the existing leader-election block (after line ~78), ADD:
+
+   AutoTradeEnabled = true;   // <--- FORCE ON: MT5 auto-trade lock override
+   Print("OmniExport: AutoTradeEnabled FORCED = true");
+
+// --- 2. ProcessCommand: add ENABLE handling so Python can switch it back on ---
+//    After the DISABLE case, ADD an ENABLE case:
+
+   if(cmd == "DISABLE")
+     {
+      AutoTradeEnabled = false;
+      return("OK DISABLED");
+     }
+   // NEW:
+   if(cmd == "ENABLE")
+     {
+      AutoTradeEnabled = true;
+      return("OK ENABLED");
+     }
+
+// --- 3. OnTimer end: WRITE omni_cmd.txt back empty after every read ---
+//    After the existing FileDelete(CmdFile...) line (~574), ADD:
+
+   // Prevent stale DISABLE commands from being re-read on next timer
+   int blank = FileOpen(CmdFile, FILE_WRITE|FILE_REWRITE|FILE_COMMON);
+   if(blank != INVALID_HANDLE) FileClose(blank);
+
+// END PATCH

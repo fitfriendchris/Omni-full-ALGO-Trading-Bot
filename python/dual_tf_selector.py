@@ -11,12 +11,16 @@ This is the heart of the OMNI-ICT bot. It implements the user's manual edge:
   6. Limit order pricing — entries at true OTE/STDV/Fib levels, never current price
 
 Confluence Conditions (must have at least MIN_CONFLUENCE of these):
-  C1. Price at/near a key STDV/OTE/Fib level of a confirmed manipulation leg
+C1. Price at/near a key STDV/OTE/Fib level of a confirmed manipulation leg
   C2. Unmitigated Order Block present in entry direction
   C3. Unmitigated Fair Value Gap present in entry direction
   C4. Liquidity sweep confirmed on the manipulation leg
   C5. BOS/CHoCH structure aligned with trade direction on LTF
   C6. Kill zone active (European 07:00-12:00 UTC) + AMD phase aligned
+  C7. Weekly bias aligned with trade direction
+  C8. Daily structure aligned with trade direction (PDH/PDL context)
+  C9. Cycle phase permits this trade type (ACCUMULATION = restricted)
+  C10. Session flow aligned (London→NY continuation)
 
 Entry Pricing:
   - For BULL: entry is the highest qualifying level <= current price
@@ -62,6 +66,10 @@ from stdv_ote_engine import (
     STDVOTEProfile, compute_profile,
     nearest_level, is_price_at_level,
     is_price_in_ote_zone, get_entry_candidates,
+)
+from micro_amd_detector import (
+    detect_micro_amd, MicroAMDResult, MicroPhase,
+    RedistributionEstimate,
 )
 
 log = logging.getLogger(__name__)
@@ -131,7 +139,7 @@ def _to_mld(bars):
 
 MIN_CONFLUENCE = 3              # minimum conditions to consider a signal
 MIN_CONFLUENCE_TO_TRADE = 3     # minimum to generate an actionable signal (relaxed for Chris frequency)
-MAX_CONFLUENCE = 6              # maximum conditions tracked
+MAX_CONFLUENCE = 8              # maximum conditions tracked (C1-C8)
 MIN_CONFIDENCE = 0.50           # minimum confidence to emit signal
 MIN_CONFIDENCE_OUTSIDE_KZ = 0.60  # relaxed: allow non-KZ trades with decent PA
 MIN_RR = 1.5                    # minimum risk-reward (2.0→1.5 for higher fill rate)
@@ -195,6 +203,11 @@ class TradeSelection:
     # Scale-in / runner management
     scale_action: str = "HOLD"    # HOLD | ADD | REDUCE | CLOSE
     scale_mult: float = 1.0       # position size multiplier for this signal
+
+    # Micro AMD cycle + redistribution estimate (new)
+    micro_amd: Optional[MicroAMDResult] = None
+    est_candles_to_poi: float = 0.0
+    redistribution_feasibility: float = 0.0
 
     @property
     def is_actionable(self) -> bool:
@@ -592,7 +605,9 @@ def select_trade(htf_bars: List[Bar], ltf_bars: List[Bar],
                  rules: Optional[dict] = None,
                  macro_bars: Optional[List[Bar]] = None,
                  amd_phase: str = "",
-                 pip_size: float = 0.01) -> TradeSelection:
+                 pip_size: float = 0.01,
+                 market_structure: Optional[dict] = None,
+                 symbol: str = "XAUUSD") -> TradeSelection:
     """
     Compute a TradeSelection using TRUE confluence counting.
 
@@ -688,6 +703,69 @@ def select_trade(htf_bars: List[Bar], ltf_bars: List[Bar],
     c6 = _check_c6_killzone_amd_aligned(kz_bonus, kz_reason, amd_permitted, amd_bonus, amd_reason)
     checks.append(c6)
 
+    # ── C7-C8: Micro AMD cycle + Redistribution estimate (NEW May 27 2026) ───
+    micro_amd = None
+    try:
+        micro_amd = detect_micro_amd(ltf_bars, symbol=symbol)
+    except Exception as e:
+        log.warning("micro_amd detection failed: %s", e)
+
+    if micro_amd and micro_amd.detected:
+        # C7: Micro AMD REDISTRIBUTION detected
+        c7 = ConfluenceCheck(
+            name="Micro AMD Redistribution",
+            met=True,
+            score=0.10,
+            reason=(
+                f"Micro AMD: {micro_amd.phase} {micro_amd.direction}, "
+                f"detected={micro_amd.detected}, conf={micro_amd.confidence}"
+            ),
+        )
+        checks.append(c7)
+
+        # C8: Redistribution feasible (can reach target in reasonable candles)
+        if micro_amd.redistribution:
+            re = micro_amd.redistribution
+            feasible = re.feasibility_score >= 0.50
+            c8 = ConfluenceCheck(
+                name="Redistribution Feasible",
+                met=feasible,
+                score=0.08 if feasible else 0.0,
+                reason=(
+                    f"{re.session_label}: ~{re.est_candles} candles to target "
+                    f"(feasibility={re.feasibility_score})"
+                ),
+            )
+            checks.append(c8)
+            base.est_candles_to_poi = re.est_candles
+            base.redistribution_feasibility = re.feasibility_score
+        else:
+            c8 = ConfluenceCheck(
+                name="Redistribution Feasible",
+                met=False,
+                score=0.0,
+                reason="No redistribution estimate available",
+            )
+            checks.append(c8)
+
+        base.micro_amd = micro_amd
+    else:
+        phase_str = micro_amd.phase if micro_amd else "UNKNOWN"
+        c7 = ConfluenceCheck(
+            name="Micro AMD Redistribution",
+            met=False,
+            score=0.0,
+            reason=f"Micro AMD not in redistribution phase ({phase_str})",
+        )
+        checks.append(c7)
+        c8 = ConfluenceCheck(
+            name="Redistribution Feasible",
+            met=False,
+            score=0.0,
+            reason="Awaiting micro AMD cycle completion",
+        )
+        checks.append(c8)
+
     # Count met conditions
     met_count = sum(1 for c in checks if c.met)
     base.confluence_count = met_count
@@ -698,7 +776,7 @@ def select_trade(htf_bars: List[Bar], ltf_bars: List[Bar],
     pre_conf = 0.45 + sum(c.score for c in checks if c.met and c.score > 0)
 
     # ── 8) Hard gates ─────────────────────────────────────────────────────────
-    # Gate 1: Minimum confluence
+# Gate 1: Minimum confluence
     if met_count < MIN_CONFLUENCE:
         base.reasons.append(f"INSUFFICIENT CONFLUENCE: {met_count}/{MIN_CONFLUENCE} minimum required")
         base.confidence = round(max(0.0, pre_conf), 3)
@@ -710,13 +788,92 @@ def select_trade(htf_bars: List[Bar], ltf_bars: List[Bar],
         pre_conf -= 0.15
         base.reasons.append(f"AMD phase not ideal: {amd_reason} (-0.15)")
 
-    # Gate 3: Outside kill zone requires 4+ confluences (relaxed from 5)
-    if not in_kz and met_count < 4:
-        base.reasons.append(f"Outside kill zone with only {met_count} confluences — need 4+ to trade")
+    # Gate 3: Outside kill zone requires 3+ confluences
+    if not in_kz and met_count < 3:
+        base.reasons.append(f"Outside kill zone with only {met_count} confluences — need 3+ to trade")
         base.confidence = round(max(0.0, pre_conf), 3)
         return base
 
-    # ── 9) Full confidence scoring with all bonuses ───────────────────────────
+    # ── 8B) Market Structure Layer (C7-C10) ───────────────────────────────────
+    msc_bonus = 0.0
+    weekly_dir = "NEUTRAL"
+    daily_dir = "NEUTRAL"
+    cycle_phase = "UNKNOWN"
+    cycle_day = 0
+    if market_structure:
+        msc_symbol = market_structure.get("symbols", {}).get(
+            market_structure.get("_symbol", ""), {}
+        ) if "symbols" in market_structure else market_structure
+        if not msc_symbol and "symbols" in market_structure:
+            # Try first symbol
+            first = next(iter(market_structure.get("symbols", {}).values()), {})
+            msc_symbol = first
+        
+        mtf = msc_symbol.get("mtf_alignment", {}) if isinstance(msc_symbol, dict) else {}
+        weekly_dir = msc_symbol.get("weekly", {}).get("direction", "NEUTRAL") if isinstance(msc_symbol, dict) else "NEUTRAL"
+        daily_dir = msc_symbol.get("daily", {}).get("direction", "NEUTRAL") if isinstance(msc_symbol, dict) else "NEUTRAL"
+        cycle = msc_symbol.get("cycle_phase", {}) if isinstance(msc_symbol, dict) else {}
+        cycle_phase = cycle.get("phase", "UNKNOWN") if isinstance(cycle, dict) else "UNKNOWN"
+        cycle_day = cycle.get("day_number", 0) if isinstance(cycle, dict) else 0
+        
+        # C7: Weekly bias — SOFT CONTEXT (was hard veto, downgraded May 27 2026)
+        # Weekly is macro context only. If it conflicts, require 4+ confluence
+        # on M15 micro structure, but DO NOT hard-reject valid local setups.
+        weekly_aligned = (weekly_dir == bias.direction)
+        if weekly_dir != "NEUTRAL" and not weekly_aligned:
+            base.reasons.append(
+                f"WEEKLY CONTEXT VETO: weekly={weekly_dir} opposes trade={bias.direction} — "
+                f"requires 4+ confluence / micro AMD to proceed"
+            )
+            # Penalty applied later if met_count < 4
+            msc_bonus -= 0.15
+        elif weekly_aligned:
+            msc_bonus += 0.08
+            base.reasons.append(f"Weekly bias {weekly_dir} aligned (+0.08)")
+        
+        # C8: Daily bias aligned — PRIMARY macro filter (promoted)
+        daily_aligned = (daily_dir == bias.direction)
+        if daily_dir != "NEUTRAL" and daily_aligned:
+            msc_bonus += 0.10
+            base.reasons.append(f"Daily bias {daily_dir} PRIMARY aligned (+0.10)")
+        elif daily_dir != "NEUTRAL" and not daily_aligned:
+            # Daily conflict: harder penalty than weekly, but still soft
+            msc_bonus -= 0.20
+            base.reasons.append(f"Daily bias {daily_dir} CONFLICTS — strong caution (-0.20)")
+        
+        # C9: Cycle phase
+        if cycle_phase == "DISTRIBUTION":
+            msc_bonus += 0.05
+            base.reasons.append(f"Cycle phase DISTRIBUTION day {cycle_day} — favorable (+0.05)")
+        elif cycle_phase == "MANIPULATION":
+            msc_bonus += 0.0
+            base.reasons.append(f"Cycle phase MANIPULATION day {cycle_day} — wait for confirmation")
+        elif cycle_phase == "ACCUMULATION":
+            msc_bonus -= 0.10
+            base.reasons.append(f"Cycle phase ACCUMULATION day {cycle_day} — restricted (-0.10)")
+        
+        # C10: MTF alignment grade
+        mtf_grade = mtf.get("grade", "C") if isinstance(mtf, dict) else "C"
+        mtf_score = mtf.get("score", 0) if isinstance(mtf, dict) else 0
+        if mtf_grade == "A+":
+            msc_bonus += 0.10
+            base.reasons.append(f"MTF alignment A+ score={mtf_score} (+0.10)")
+        elif mtf_grade == "A":
+            msc_bonus += 0.05
+            base.reasons.append(f"MTF alignment A score={mtf_score} (+0.05)")
+        elif mtf_grade == "CONFLICT":
+            base.reasons.append(f"MTF alignment CONFLICT score={mtf_score} — caution")
+            msc_bonus -= 0.15
+    
+    # After market structure bonuses, apply weekly veto correction:
+    # If weekly opposes direction AND met_count < 4, penalize further
+    if weekly_dir != "NEUTRAL" and weekly_dir != bias.direction and met_count < 4:
+        base.reasons.append(f"Weekly veto active with only {met_count} confluence — signal suppressed")
+        # This effectively blocks weak signals but allows A+ setups with micro AMD
+        pre_conf = max(0.0, pre_conf - 0.15)
+
+    # Apply market structure bonuses to pre_conf
+    pre_conf += msc_bonus
     conf = pre_conf
 
     # Quality bonus

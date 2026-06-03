@@ -105,18 +105,17 @@ class MarketContext:
 @dataclass
 class TrailConfig:
     atr_period:        int   = 14
-    atr_mult_min:      float = 1.5
-    atr_mult_compress: float = 0.6
-    atr_mult_expand:   float = 2.5
-    atr_mult_runner:   float = 2.5
-    structure_buffer_pips: float = 3.0
+    atr_mult_min:      float = 2.5
+    atr_mult_compress: float = 1.5
+    atr_mult_expand:   float = 4.0
+    atr_mult_runner:   float = 4.0
+    structure_buffer_pips: float = 5.0
     profit_lock_ladder: Tuple[Tuple[float, float], ...] = (
-        (0.5, 0.0),   # breakeven early
-        (1.0, 0.25),  # lock 1/4 at 1R
-        (2.0, 0.50),  # lock half at 2R
-        (3.0, 0.70),  # lock 70% at 3R
-        (5.0, 0.85),  # lock 85% at 5R
-        (7.0, 0.95),  # lock 95% at 7R
+        (1.0, 0.50),  # allow 50% give-back from peak at 1R (was 0.0 = lock at peak)
+        (2.5, 0.30),  # 2.5R: allow 30% give-back from peak
+        (5.0, 0.25),  # 5R: allow 25% give-back
+        (7.0, 0.20),  # 7R: allow 20% give-back
+        (10.0, 0.15), # 10R: allow 15% give-back
     )
     tight_equity_threshold: float = 5.0
     tight_mult_compress:    float = 0.8
@@ -124,13 +123,13 @@ class TrailConfig:
     liquidity_avoid_pips: float = 3.0
     avoid_equal_levels:   bool  = True
     close_on_opposing_choch_once_profitable: bool = True
-    min_modify_pips:     float = 3.0
-    min_modify_atr_frac: float = 0.15
+    min_modify_pips:     float = 25.0   # v27.1: $2.50 move minimum for XAUUSD
+    min_modify_atr_frac: float = 0.50   # v27.1: 50% ATR hysteresis — only move on structural move
 
     # V2.2 — discrete OB-step trail parameters
     ob_step_enabled:     bool  = True
     ob_step_buffer_pips: float = 2.0   # pip buffer behind OB body for new SL
-    ob_step_min_r:       float = 1.0   # only step once in profit
+    ob_step_min_r:       float = 2.5   # v27.1: only step after TP2+ structural profit
 
 
 @dataclass

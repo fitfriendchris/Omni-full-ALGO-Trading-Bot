@@ -57,6 +57,45 @@ try:
 except Exception as _e:
     _ST_OK = False
 
+# Trade journal (optional — graceful degrade)
+try:
+    from trade_memory import TradeMemory
+    _trade_memory = TradeMemory()
+except Exception:
+    _trade_memory = None
+
+
+def _journal_close(symbol: str, ticket: int, volume: float, result: str, reason: str,
+                   pos: dict, state: "TraderState"):
+    """Record a closed trade to persistent memory so the learning engine sees it."""
+    if _trade_memory is None:
+        return
+    try:
+        profit = float(pos.get("profit", 0))
+        st = state.active_trades.get(str(ticket), {})
+        entry_price = float(pos.get("open_price", 0))
+        sl_price    = float(pos.get("sl", 0))
+        tp1_price   = float(st.get("tp1", 0))
+        tp2_price   = float(st.get("tp2", 0))
+        tp3_price   = float(st.get("tp3", 0))
+        direction   = "BUY" if pos.get("type", "").upper() == "BUY" else "SELL"
+        # Use trade_id from state if we have it, else generate one
+        trade_id = st.get("trade_id", "")
+        if trade_id and trade_id in _trade_memory.trades:
+            _trade_memory.record_close(
+                trade_id=trade_id,
+                close_price=entry_price,  # approximate; best effort
+                profit_usd=profit,
+                r_multiple=profit / max(abs(entry_price - sl_price), 1e-9) if sl_price else 0,
+                close_reason=reason,
+            )
+            _trade_memory.save()
+            log.info("JOURNAL-CLOSE %s ticket %s profit %.2f reason %s", symbol, ticket, profit, reason)
+        else:
+            log.debug("JOURNAL-SKIP no trade_id for ticket %s", ticket)
+    except Exception as e:
+        log.debug("journal_close error: %s", e)
+
 # MT5 data
 # NOTE: mt5_connector no longer exports load_mt5_data — auto_trader does.
 # Keep mt5_connector fallback but auto_trader is the canonical source.
@@ -182,10 +221,16 @@ class TrailingManager(BaseAgent):
 
         state = self._state
 
-        # Ensure ticket is tracked in state
+        # Ensure ticket is tracked in state with peak_r tracking
         if ticket_str not in state.active_trades:
             state.active_trades[ticket_str] = {}
         state.active_trades[ticket_str]["last_profit"] = pos.get("profit", 0)
+        # Persist highest R seen so smart_trail peak_protection floors correctly
+        risk = abs(open_price - current_sl)
+        if risk > 0 and current_price != 0:
+            current_r = (current_price - open_price) / risk if pos_type == "BUY" else (open_price - current_price) / risk
+            prev_peak = state.active_trades[ticket_str].get("highest_r_seen", 0.0)
+            state.active_trades[ticket_str]["highest_r_seen"] = max(prev_peak, current_r)
 
         # Per-symbol info
         sym_info = charts.get(symbol, {})
@@ -232,54 +277,13 @@ class TrailingManager(BaseAgent):
                         new_tp = 0
                         log.info("%s TP2 hit — runner released %.2f lots | %s", symbol, close_vol, result)
 
-            # Early exit — 0.3R adverse after 20min
-            if not tp1_taken and profit_in_r < -0.3:
-                try:
-                    entry_ts = float(setup.get("entry_ts", 0)) or time.time()
-                    mins_open = (time.time() - entry_ts) / 60
-                    if mins_open > 20:
-                        log.info("%s BUY early exit %.2fR after %.0fmin", symbol, profit_in_r, mins_open)
-                        result = close_position(ticket, volume)
-                        return "closed"
-                except Exception:
-                    pass
+            # REMOVED: Early exit -0.3R after 20min — eliminated per Chris Protocol §5, §6, §10
+            # NO BREAKEVEN, NO EARLY EXIT. SL stays static at original level.
+            # Position holds until TP1, TP2, TP3, opposing CHoCH, or hard SL.
 
-            # ── Legacy profit-lock trails ───────────────────────────
-            if profit_in_r >= 0.4 and current_sl < open_price:
-                candidate = open_price + pip_size
-                if candidate > new_sl:
-                    new_sl = candidate
-                    log.info("%s BUY 0.4R: SL → breakeven %.5f", symbol, new_sl)
-
-            if profit_in_r >= 1.0 and current_sl < open_price + risk * 0.5:
-                candidate = open_price + risk * 0.5
-                if candidate > new_sl:
-                    new_sl = candidate
-                    log.info("%s BUY 1R: lock 0.5R profit SL %.5f", symbol, new_sl)
-
-            if profit_in_r >= 2.0 and current_sl < open_price + risk * 1.2:
-                candidate = open_price + risk * 1.2
-                if candidate > new_sl:
-                    new_sl = candidate
-                    log.info("%s BUY 2R: lock 1.2R profit SL %.5f", symbol, new_sl)
-
-            if profit_in_r >= 3.0:
-                # Tight trail — regime-aware
-                _regime = "DEFAULT"
-                try:
-                    _regime = self._rules.get("current_regime", "DEFAULT")
-                except Exception:
-                    pass
-                _width = 0.20 if _regime == "VOLATILE" else (0.4 if _regime == "TRENDING" else 0.35)
-                candidate = current_price - risk * _width
-                if candidate > new_sl:
-                    new_sl = candidate
-                    log.info("%s BUY 3R: tight trail %.5f [regime=%s]", symbol, new_sl, _regime)
-
-                # Progressive trail beyond 3R
-                prog = current_price - risk * 0.3
-                if prog > new_sl:
-                    new_sl = prog
+            # ── Smart trail profit-lock only ────────────────────────
+            # V2.2: smart_trailing_stop.py handles all breakeven / lock / trail
+            # via ATR / structure / momentum / peak_r layers in the overlay below.
 
         elif pos_type == "SELL":
             profit_in_r = (open_price - current_price) / risk
@@ -304,50 +308,11 @@ class TrailingManager(BaseAgent):
                         new_tp = 0
                         log.info("%s SELL TP2 hit — runner released %.2f lots | %s", symbol, close_vol, result)
 
-            if not tp1_taken and profit_in_r < -0.3:
-                try:
-                    entry_ts = float(setup.get("entry_ts", 0)) or time.time()
-                    mins_open = (time.time() - entry_ts) / 60
-                    if mins_open > 20:
-                        log.info("%s SELL early exit %.2fR after %.0fmin", symbol, profit_in_r, mins_open)
-                        result = close_position(ticket, volume)
-                        return "closed"
-                except Exception:
-                    pass
+            # REMOVED: Early exit -0.3R after 20min — this kills valid setups during manipulation
+            # Chris's rule: hold until SL hit or TP3. No early exits.
 
-            if profit_in_r >= 0.4 and current_sl > open_price:
-                candidate = open_price - pip_size
-                if candidate < new_sl:
-                    new_sl = candidate
-                    log.info("%s SELL 0.4R: SL → breakeven %.5f", symbol, new_sl)
-
-            if profit_in_r >= 1.0 and current_sl > open_price - risk * 0.5:
-                candidate = open_price - risk * 0.5
-                if candidate < new_sl:
-                    new_sl = candidate
-                    log.info("%s SELL 1R: lock 0.5R profit SL %.5f", symbol, new_sl)
-
-            if profit_in_r >= 2.0 and current_sl > open_price - risk * 1.2:
-                candidate = open_price - risk * 1.2
-                if candidate < new_sl:
-                    new_sl = candidate
-                    log.info("%s SELL 2R: lock 1.2R profit SL %.5f", symbol, new_sl)
-
-            if profit_in_r >= 3.0:
-                _regime = "DEFAULT"
-                try:
-                    _regime = self._rules.get("current_regime", "DEFAULT")
-                except Exception:
-                    pass
-                _width = 0.20 if _regime == "VOLATILE" else (0.4 if _regime == "TRENDING" else 0.35)
-                candidate = current_price + risk * _width
-                if candidate < new_sl:
-                    new_sl = candidate
-                    log.info("%s SELL 3R: tight trail %.5f [regime=%s]", symbol, new_sl, _regime)
-
-                prog = current_price + risk * 0.3
-                if prog < new_sl:
-                    new_sl = prog
+            # ── Smart trail profit-lock only ────────────────────────
+            # V2.2: smart_trailing_stop.py handles all breakeven / lock / trail
 
         # ── Smart trail overlay ───────────────────────────────────
         # This is where ATR / structure / momentum layers tighten SL further

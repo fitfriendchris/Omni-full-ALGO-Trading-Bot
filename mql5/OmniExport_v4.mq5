@@ -14,6 +14,7 @@ input string CmdFile         = "omni_cmd.txt";
 input string ResultFile      = "omni_result.txt";
 input int    MagicNumber     = 20250411;
 input bool   AutoTradeEnabled = true;   // MUST set true to enable live trading
+bool         _runtimeAutoTrade = true;   // v27.1: runtime toggle via ENABLE/DISABLE cmd
 // Leader-election: when the EA is attached to multiple charts only one
 // instance does the export — others stand down and just refresh their
 // claim if the leader dies. Set to false to disable (not recommended).
@@ -111,7 +112,7 @@ void OnTimer()
       if(!_isLeader) return;   // standby instances do nothing else
      }
    ExportData();
-   if(AutoTradeEnabled) CheckCommands();
+   CheckCommands();   // v27.1: always read pipe — runtime gate inside handlers
   }
 
 void OnTick() {}
@@ -300,7 +301,7 @@ void ExportData()
    FileWriteString(fh, "\"session\":\""+session+"\",\n");
    FileWriteString(fh, "\"amd_phase\":\""+amd+"\",\n");
    FileWriteString(fh, "\"gmt_time\":\""+gmtStr+"\",\n");
-   FileWriteString(fh, "\"auto_trade_enabled\":"+IntegerToString(AutoTradeEnabled?1:0)+",\n");
+   FileWriteString(fh, "\"auto_trade_enabled\":"+IntegerToString(_runtimeAutoTrade?1:0)+",\n");
 
    // ── Account ──────────────────────────────────────────────────────
    // AccountInfo* returns empty/0 for ~10-30s after broker connect.
@@ -589,6 +590,7 @@ string ProcessCommand(string cmd)
 
    if(action=="OPEN" && n>=8)
      {
+      if(!_runtimeAutoTrade) return "ERROR|auto_trade_disabled";
       string sym   =parts[1];
       string type  =parts[2];
       double price =StringToDouble(parts[3]);
@@ -620,6 +622,7 @@ string ProcessCommand(string cmd)
 
    if(action=="CLOSE" && n>=3)
      {
+      if(!_runtimeAutoTrade) return "ERROR|auto_trade_disabled";
       ulong ticket=StringToInteger(parts[1]);
       if(!PositionSelectByTicket(ticket)) return "ERROR|position not found";
       MqlTradeRequest req={}; MqlTradeResult res={};
@@ -636,6 +639,7 @@ string ProcessCommand(string cmd)
 
    if(action=="MODIFY" && n>=6)
      {
+      if(!_runtimeAutoTrade) return "ERROR|auto_trade_disabled";
       ulong ticket=StringToInteger(parts[1]);
       double newSL=StringToDouble(parts[4]);
       double newTP=StringToDouble(parts[5]);
@@ -649,6 +653,7 @@ string ProcessCommand(string cmd)
 
    if(action=="CANCEL" && n>=2)
      {
+      if(!_runtimeAutoTrade) return "ERROR|auto_trade_disabled";
       ulong ticket=StringToInteger(parts[1]);
       MqlTradeRequest req={}; MqlTradeResult res={};
       req.action=TRADE_ACTION_REMOVE; req.order=ticket;
@@ -670,6 +675,20 @@ string ProcessCommand(string cmd)
       for(int i = 0; i < nAll;  i++) SymbolSelect(allSymbols[i],     true);
       ExportData();
       return "OK|reload_charts done|"+MyChartId();
+     }
+
+   if(action=="ENABLE")
+     {
+      _runtimeAutoTrade = true;
+      Print("OmniExport: AUTO-TRADE ENABLED via remote command");
+      return "OK|auto_trade_enabled|1";
+     }
+
+   if(action=="DISABLE")
+     {
+      _runtimeAutoTrade = false;
+      Print("OmniExport: AUTO-TRADE DISABLED via remote command");
+      return "OK|auto_trade_disabled|0";
      }
 
    return "ERROR|unknown action: "+action;

@@ -71,6 +71,7 @@ ACTIVE_ACC_FILE = HERE / "active_account.txt"
 WATCHDOG_STATE  = LOG_DIR / "watchdog_state.json"
 ALERTS_PATH     = LOG_DIR / "alerts.json"
 HALT_PATH       = HERE / "HALT"
+JOURNAL_PATH    = LOG_DIR / "journal.json"  # Zella Trade Scribe integration
 
 WEBAPP_URL      = os.getenv("OMNI_WEBAPP_URL", "")   # public HTTPS URL for Mini App
 
@@ -159,8 +160,8 @@ def _main_kb() -> dict:
         ],
         [
             {"text": "🎯 Signals",   "callback_data": "cb:signals"},
+            {"text": "📓 Journal",   "callback_data": "cb:journal_today"},
             {"text": "⚙️ Settings",  "callback_data": "cb:settings"},
-            {"text": "📋 Log",       "callback_data": "cb:log"},
         ],
         [
             {"text": "🛑 Halt",      "callback_data": "cb:halt"},
@@ -171,6 +172,24 @@ def _main_kb() -> dict:
     if WEBAPP_URL:
         rows.append([{"text": "📱 Open Dashboard", "web_app": {"url": WEBAPP_URL}}])
     return {"inline_keyboard": rows}
+
+
+def _journal_kb() -> dict:
+    return {"inline_keyboard": [
+        [
+            {"text": "📓 Today", "callback_data": "cb:journal_today"},
+            {"text": "📅 Week", "callback_data": "cb:journal_week"},
+            {"text": "📊 Streak", "callback_data": "cb:journal_streak"},
+        ],
+        [
+            {"text": "🎯 Setups", "callback_data": "cb:journal_setups"},
+            {"text": "📅 Calendar", "callback_data": "cb:journal_calendar"},
+            {"text": "📤 Export", "callback_data": "cb:journal_export"},
+        ],
+        [
+            {"text": "⬅️ Main Menu", "callback_data": "cb:dashboard"},
+        ],
+    ]}
 
 
 def _back_kb() -> dict:
@@ -265,6 +284,20 @@ def _dispatch_callback(cb_id: str, data: str, chat_id: int, msg_id: int) -> None
 
     elif data == "cb:help":
         edit_message(chat_id, msg_id, cmd_help(), reply_markup=_back_kb())
+
+    # ── Journal callbacks (Zella Trade Scribe integration) ─────────
+    elif data == "cb:journal_today":
+        edit_message(chat_id, msg_id, cmd_journal_today(), reply_markup=_journal_kb())
+    elif data == "cb:journal_week":
+        edit_message(chat_id, msg_id, cmd_journal_week(), reply_markup=_journal_kb())
+    elif data == "cb:journal_streak":
+        edit_message(chat_id, msg_id, cmd_journal_streak(), reply_markup=_journal_kb())
+    elif data == "cb:journal_setups":
+        edit_message(chat_id, msg_id, cmd_journal_setups(), reply_markup=_journal_kb())
+    elif data == "cb:journal_calendar":
+        edit_message(chat_id, msg_id, cmd_journal_calendar(), reply_markup=_journal_kb())
+    elif data == "cb:journal_export":
+        edit_message(chat_id, msg_id, cmd_journal_export(chat_id), reply_markup=_journal_kb())
 
     elif data == "cb:halt":
         reply = cmd_halt(chat_id)
@@ -516,6 +549,7 @@ def cmd_dashboard(acc_id: str = "") -> str:
     # Active trades
     at = state.get("active_trades", {})
     trades_lines = []
+    trades = list(at.values()) if isinstance(at, dict) else (at if isinstance(at, list) else [])
     if isinstance(at, dict):
         for t in list(at.values())[:4]:
             sym  = t.get("symbol", "?")
@@ -775,6 +809,116 @@ def cmd_performance(acc_id: str = "") -> str:
     if total_trades == 0:
         lines.append("\n<i>No completed trades yet.</i>")
     return "\n".join(lines)
+
+
+# ── Zella Trade Scribe Journal Commands ───────────────────────────────────────
+
+def _journal_data() -> dict:
+    """Load the formatted journal.json from LOG_DIR."""
+    if not JOURNAL_PATH.exists():
+        return {}
+    try:
+        return _json(JOURNAL_PATH) or {}
+    except Exception:
+        return {}
+
+
+def cmd_journal_today() -> str:
+    d = _journal_data()
+    if not d:
+        return "📓 Journal not initialized.\nRun: <code>cd ~/Omni-full-ALGO-Trading-Bot/journal &\u0026 python3 journal_sync.py</code>"
+    s = d.get("summary", {})
+    lines = [
+        "<b>📓 Today's Journal</b>",
+        f"Trades: {s.get('total_trades', 0)}  |  Win Rate: {s.get('win_rate', 0):.1f}%",
+        f"P\u0026L: ${s.get('total_pnl', 0):+.2f}  |  Profit Factor: {s.get('profit_factor', 0):.2f}",
+        f"Streak: {s.get('current_streak', 0)}  |  Max Drawdown: ${s.get('max_drawdown', 0):.2f}",
+        "",
+        "Tap 📅 Calendar or 🎯 Setups for details.",
+    ]
+    return "\n".join(lines)
+
+
+def cmd_journal_week() -> str:
+    d = _journal_data()
+    if not d:
+        return "📓 Journal not initialized."
+    metrics = d.get("day_metrics", [])
+    lines = ["<b>📅 7-Day Heatmap</b>\n"]
+    for m in metrics[-7:]:
+        pnl = m.get("pnl", 0)
+        emoji = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
+        lines.append(f"{emoji} {m.get('date')}  {m.get('trades', 0)}tr  ${pnl:+.2f}  WR {m.get('win_rate', 0):.0f}%")
+    if not lines[1:]:
+        lines.append("No trades this week.")
+    return "\n".join(lines)
+
+
+def cmd_journal_streak() -> str:
+    d = _journal_data()
+    if not d:
+        return "📓 Journal not initialized."
+    s = d.get("summary", {})
+    streak = s.get("current_streak", 0)
+    best   = s.get("best_streak", 0)
+    worst  = s.get("worst_streak", 0)
+    lines = [
+        "<b>🔥 Streak Analysis</b>",
+        f"Current: {streak}  ({'winning' if streak > 0 else 'losing' if streak < 0 else 'neutral'})",
+        f"Best:    {best}W",
+        f"Worst:   {abs(worst)}L",
+    ]
+    return "\n".join(lines)
+
+
+def cmd_journal_setups() -> str:
+    d = _journal_data()
+    if not d:
+        return "📓 Journal not initialized."
+    s = d.get("summary", {})
+    setups = s.get("best_setups", {})
+    if not setups:
+        return "<b>🎯 Best Setups</b>\n\nNo enough data yet."
+    lines = ["<b>🎯 Best Setups</b>"]
+    for name, stats in sorted(setups.items(), key=lambda x: x[1].get("win_rate", 0), reverse=True):
+        wr = stats.get("win_rate", 0)
+        pf = stats.get("profit_factor", 0)
+        emoji = "🟢" if wr >= 60 else "🟡" if wr >= 40 else "🔴"
+        lines.append(f"{emoji} <b>{name}</b>  WR {wr:.0f}%  PF {pf:.2f}")
+    return "\n".join(lines)
+
+
+def cmd_journal_calendar() -> str:
+    return cmd_journal_week()  # alias
+
+
+def cmd_journal_export(chat_id) -> str:
+    """Send the journal.json file as a document."""
+    if not JOURNAL_PATH.exists():
+        return "📓 No journal file to export."
+    # Send via multipart form — simplified inline
+    import urllib.request
+    url = f"https://api.telegram.org/bot{TOKEN}/sendDocument"
+    boundary = "----WebKitFormBoundary"
+    content = []
+    content.append(f"--{boundary}")
+    content.append(f'Content-Disposition: form-data; name="chat_id"')
+    content.append("")
+    content.append(str(chat_id))
+    content.append(f"--{boundary}")
+    content.append(f'Content-Disposition: form-data; name="document"; filename="journal.json"')
+    content.append("Content-Type: application/json")
+    content.append("")
+    content.append(JOURNAL_PATH.read_text())
+    content.append(f"--{boundary}--")
+    body = "\r\n".join(content).encode()
+    req = urllib.request.Request(url, data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        urllib.request.urlopen(req, timeout=30)
+        return "📤 Journal exported!"
+    except Exception as e:
+        return f"❌ Export failed: {e}"
 
 
 def cmd_risk(acc_id: str = "") -> str:
@@ -1343,6 +1487,12 @@ def cmd_help() -> str:
         "/risk      — current risk settings &amp; limits\n"
         "/status    — service health &amp; PIDs\n"
         "/log &lt;service&gt; — last 20 lines of log\n\n"
+        "<b>📓 Journal</b>\n"
+        "/journal        — today's trading journal\n"
+        "/journal week   — 7-day heatmap\n"
+        "/journal streak — win/loss streaks\n"
+        "/journal setups — best setup performance\n"
+        "/journal export — send journal.json\n\n"
         "<b>⚙️ Settings</b>\n"
         "/settings                — view all settings &amp; current values\n"
         "/set risk LOW|MODERATE|HIGH\n"
@@ -1365,6 +1515,9 @@ def cmd_help() -> str:
         "/switch &lt;id&gt;  — change active account\n"
         "/addaccount — add new MT5 account (guided)\n"
         "/deleteaccount &lt;id&gt; — remove account\n\n"
+        "/pause  — stop new entries\n"
+        "/resume — resume entries\n"
+        "/status — protocol override state\n"
         "/help — this message"
     )
 
@@ -1660,7 +1813,49 @@ def _dispatch(text: str, chat_id) -> str:
         arg = parts[1] if len(parts) > 1 else ""
         return cmd_paper(arg)
 
+    # ── Zella Trade Scribe Journal ──
+    if cmd == "journal":
+        arg = parts[1] if len(parts) > 1 else "today"
+        if arg == "today":    return None  # handled with keyboard below
+        if arg == "week":     return cmd_journal_week()
+        if arg == "streak":   return cmd_journal_streak()
+        if arg == "setups":   return cmd_journal_setups()
+        if arg == "export":   return cmd_journal_export(chat_id)
+        return cmd_journal_today()
+
+    # ── Protocol v27.0 Manual Override Commands ──
+    if cmd == "pause":
+        _override("STOP_NEW_ENTRIES", "ALL")
+        return "⏸ <b>PAUSED</b> — No new entries until /resume"
+    if cmd == "resume":
+        _override("", "")
+        return "▶️ <b>RESUMED</b> — Normal trading"
+    if cmd == "force_buy":
+        return _override("FORCE_BULLISH", parts[1] if len(parts)>1 else "ALL") or "🟢 FORCE_BULLISH active"
+    if cmd == "force_sell":
+        return _override("FORCE_BEARISH", parts[1] if len(parts)>1 else "ALL") or "🔴 FORCE_BEARISH active"
+    if cmd == "status":
+        return _override_status()
+
     return f"Unknown command: <code>/{cmd}</code>\nSend /help for the full list."
+
+def _override(cmd: str, scope: str):
+    import json
+    p = Path.home() / "Omni-full-ALGO-Trading-Bot" / "shared" / "manual_override.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, 'w') as f:
+        json.dump({"active": bool(cmd), "command": cmd, "scope": scope}, f)
+
+def _override_status() -> str:
+    import json
+    p = Path.home() / "Omni-full-ALGO-Trading-Bot" / "shared" / "manual_override.json"
+    if not p.exists():
+        return "✅ No active override"
+    with open(p) as f:
+        o = json.load(f)
+    if not o.get('active'):
+        return "✅ No active override"
+    return f"🔒 OVERRIDE ACTIVE: {o.get('command')} ({o.get('scope')})"
 
 
 # ── Single-instance lock ──────────────────────────────────────────────────────
@@ -1828,6 +2023,9 @@ def main() -> None:
                 continue
             if cmd_lower == "trades":
                 send(chat_id, cmd_trades(acc), reply_markup=_trades_kb(acc))
+                continue
+            if cmd_lower == "journal":
+                send(chat_id, cmd_journal_today(), reply_markup=_journal_kb())
                 continue
 
             try:

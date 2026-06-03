@@ -921,7 +921,14 @@ def place_order(symbol: str, direction: str, order_type: str,
                 price: float, sl: float, tp: float,
                 volume: float, comment: str) -> str:
     """Place a pending or market order."""
+    if sl is None or sl == 0:
+        log.critical("PLACE_ORDER_NO_SL: %s %s @ %.5f — SL is %s| aborting", symbol, order_type, price, sl)
+        return "ERROR|NO_SL"
+    if tp is None or tp == 0:
+        log.critical("PLACE_ORDER_NO_TP: %s %s @ %.5f — TP is %s| aborting", symbol, order_type, price, tp)
+        return "ERROR|NO_TP"
     cmd = f"OPEN|{symbol}|{order_type}|{price:.5f}|{sl:.5f}|{tp:.5f}|{volume:.2f}|{comment}"
+    log.info("PLACE_ORDER: %s %s @ %.5f SL=%.5f TP=%.5f LOT=%.2f", symbol, order_type, price, sl, tp, volume)
     return send_command(cmd)
 
 
@@ -1049,6 +1056,26 @@ def close_position(ticket: int, volume: float = 0) -> str:
     vol_str = f"{volume:.2f}" if volume > 0 else ""
     cmd = f"CLOSE|{ticket}|||||{vol_str}|"
     return send_command(cmd)
+
+
+def _journal_entry(symbol: str, ticket: str, reason: str, state: "TraderState"):
+    """§17 — Write a terse trade journal entry after significant events."""
+    try:
+        JP = Path.home() / "Omni-full-ALGO-Trading-Bot" / "python" / "trade_journal.jsonl"
+        JP.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "symbol": symbol,
+            "ticket": ticket,
+            "reason": reason,
+            "equity": getattr(state, "equity", 0),
+            "win_streak": getattr(state, "win_streak", 0),
+            "loss_streak": getattr(state, "loss_streak", 0),
+        }
+        with open(JP, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
 
 
 def modify_position(ticket: int, sl: float, tp: float) -> str:
@@ -1262,6 +1289,7 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                 f"({state.winning_trades}W/{state.losing_trades}L)\n"
                 f"Balance: <b>${_acc.get('balance',0):,.2f}</b>"
             )
+            _journal_entry(_closed_symbol, ticket, f"CLOSED WIN {exit_level} | +${profit:.2f} | R={r_multiple:.2f}", state)
         else:
             state.loss_streak  += 1
             state.win_streak    = 0
@@ -1286,6 +1314,7 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                 f"({state.winning_trades}W/{state.losing_trades}L)\n"
                 f"Balance: <b>${_acc.get('balance',0):,.2f}</b>"
             )
+            _journal_entry(_closed_symbol, ticket, f"CLOSED LOSS {exit_level} | ${profit:.2f} | R={r_multiple:.2f}", state)
 
         state.total_trades  += 1
         state.total_profit  += profit
@@ -1397,6 +1426,18 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
         if risk == 0:
             continue
 
+        # §10c — track peak R on every tick for smart_trail / peak_protection
+        profit_in_r = 0.0
+        if pos_type == "BUY":
+            profit_in_r = (current_price - open_price) / risk
+        elif pos_type == "SELL":
+            profit_in_r = (open_price - current_price) / risk
+        _prev_peak = state.active_trades[ticket_str].get("highest_r_seen", 0.0)
+        _new_peak = max(_prev_peak, profit_in_r)
+        if _new_peak > _prev_peak:
+            state.active_trades[ticket_str]["highest_r_seen"] = _new_peak
+            log.debug(f"{symbol} R peak {_prev_peak:.2f}→{_new_peak:.2f}R")
+
         new_sl = current_sl
         new_tp = current_tp
 
@@ -1430,7 +1471,7 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
             except Exception as _pe:
                 log.debug(f"pyramid eval (BUY) error: {_pe}")
 
-            # Partial TP1: close 65% when price hits first target — bank the majority immediately
+            # Partial TP1: close 50% when price hits first target — bank the majority immediately
             if not tp1_taken and tp1 > 0 and current_price >= tp1:
                 close_vol = round(volume * 0.50, 2)
                 if close_vol >= min_lot:
@@ -1443,8 +1484,14 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                     if close_ok:
                         state.active_trades[ticket_str]["tp1_taken"] = True
                         tp1_taken = True
-                        # Move SL to break-even immediately after TP1 hit
-                        new_sl = max(new_sl, open_price + pip_size)
+                        # §16c — do NOT move SL to break-even at TP1; that is
+                        # the #1 reason good trades get stopped on normal retraces.
+                        # The runner SL stays at original SL until TP2 triggers a
+                        # deliberate +1R lock or smart_trail decides to step it via
+                        # structural OB above breakeven.
+                        state.active_trades[ticket_str]["t1_timestamp"] = time.time()
+                        state.active_trades[ticket_str]["t1_profit_r"] = profit_in_r
+                        new_sl = current_sl  # STAY at original SL
                         # Advance hard TP on MT5 to TP2 so the runner doesn't auto-close at TP1
                         if tp2 > 0 and tp2 > current_tp:
                             new_tp = tp2
@@ -1454,28 +1501,48 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                             f"Closed 50% @ {current_price:.5g} | +${close_vol * (current_price - open_price) * 10000:.2f} approx\n"
                             f"Runner active ({volume - close_vol:.2f} lots) → TP2: {tp2:.5g}"
                         )
+                        _journal_entry(symbol, ticket_str, f"TP1 partial 50% @ {current_price}", state)
 
-            # Partial TP2: close 25% of original when price hits second target
+            # Partial TP2: close 30% of original when price hits second target —
+            # BE locked at +1R ONLY after TP2 sustains for 2 min (grace period).
+            # Prevents a brief wick to TP2 from locking +1R prematurely.
             if tp1_taken and not tp2_taken and tp2 > 0 and current_price >= tp2:
-                close_vol = round(volume * 0.25, 2)
-                if close_vol >= min_lot:
-                    if ticket_str.isdigit():
-                        result = close_position(int(ticket_str), close_vol)
-                    else:
-                        result = "PAPER|partial_tp2"
-                    close_ok = result.startswith("OK") or result.startswith("PAPER")
-                    log.info(f"{symbol} TP2 hit — closed 25% ({close_vol} lots) | {result}")
-                    if close_ok:
-                        state.active_trades[ticket_str]["tp2_taken"] = True
-                        tp2_taken = True
-                        # Runner: remove fixed TP3 — let smart trail manage it freely
-                        new_tp = 0
-                        log.info(f"{symbol} TP2 hit — runner released, smart trail managing")
-                        send_telegram(
-                            f"💰 <b>TP2 HIT — {symbol} BUY</b>\n"
-                            f"Closed 25% @ {current_price:.5g}\n"
-                            f"Runner released ({volume - close_vol:.2f} lots) — trailing to TP3: {tp3:.5g}"
-                        )
+                _grace_until = state.active_trades[ticket_str].get("tp2_grace_until")
+                if _grace_until is None:
+                    state.active_trades[ticket_str]["tp2_grace_until"] = time.time() + 120
+                    log.info(f"{symbol} TP2 first touch → grace period started (120s)")
+                    # Do NOT TP2-close yet; wait for grace to expire on next tick(s)
+                elif time.time() >= _grace_until:
+                    close_vol = round(volume * 0.30, 2)
+                    if close_vol >= min_lot:
+                        if ticket_str.isdigit():
+                            result = close_position(int(ticket_str), close_vol)
+                        else:
+                            result = "PAPER|partial_tp2"
+                        close_ok = result.startswith("OK") or result.startswith("PAPER")
+                        log.info(f"{symbol} TP2 grace done — closed 30% ({close_vol} lots) | {result}")
+                        if close_ok:
+                            state.active_trades[ticket_str]["tp2_taken"] = True
+                            tp2_taken = True
+                            # +1R lock only after grace + price still above TP2
+                            # DELETED: new_sl was moved to BE+1R here (reactive SL bug)
+                            # Runner: remove fixed TP3 — let smart trail manage it freely
+                            new_tp = 0
+                            log.info(f"{symbol} TP2 confirmed — runner released, smart trail managing")
+                            # §17 journal
+                            _journal_entry(symbol, ticket_str, f"TP2 partial 30% @ {current_price}", state)
+                            send_telegram(
+                                f"💰 <b>TP2 HIT — {symbol} BUY</b>\n"
+                                f"Closed 30% @ {current_price:.5g}\n"
+                                f"Runner released ({volume - close_vol:.2f} lots) — trailing to TP3: {tp3:.5g}"
+                            )
+                else:
+                    log.debug(f"{symbol} TP2 inside grace period ({int(_grace_until - time.time())}s left)")
+            # If price drops back below TP2 before grace expires — cancel the grace so
+            # the trade has to re-touch before we try again.
+            if tp1_taken and not tp2_taken and state.active_trades[ticket_str].get("tp2_grace_until") and current_price < tp2:
+                log.info(f"{symbol} TP2 grace CANCELLED — price retraced below {tp2} before lock")
+                state.active_trades[ticket_str].pop("tp2_grace_until", None)
 
             # Emergency exit: SL may not have fired via EA — close runaway losses
             if not tp1_taken and profit_in_r < -1.2:
@@ -1490,9 +1557,9 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                 except Exception:
                     pass
 
-            # Early loss cut — if trade is moving against us and has shown no progress,
-            # exit before reaching full SL. Saves capital vs waiting for full stop.
-            if not tp1_taken and profit_in_r < -0.3:
+            # §16c_relaxed  BUY early loss cut — raised threshold from -0.3R to -0.6R
+            # to avoid stopping structurally valid trades on normal M15 noise.
+            if not tp1_taken and profit_in_r < -0.6:
                 entry_time_str = setup.get("entry_time", "")
                 try:
                     import time as _time
@@ -1506,37 +1573,13 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                 except Exception:
                     pass
 
-            # Trail SL to break-even + 1 pip at 0.4R (tightened from 0.5R for faster protection)
-            if profit_in_r >= 0.4 and current_sl < open_price:
-                new_sl = max(new_sl, open_price + pip_size)
-                if new_sl > current_sl:
-                    log.info(f"{symbol} BUY 0.5R: Moving SL to break-even ({new_sl:.5f})")
-
-            # Lock 0.5R profit at 1R — tightened from 0.3R to protect gains faster
-            if profit_in_r >= 1.0 and current_sl < open_price + risk * 0.5:
-                new_sl = max(new_sl, open_price + risk * 0.5)
-                if new_sl > current_sl:
-                    log.info(f"{symbol} BUY 1R: Locking 0.5R profit in SL ({new_sl:.5f})")
-
-            # Trail SL to lock 1.2R profit at 2R move
-            if profit_in_r >= 2.0 and current_sl < open_price + risk * 1.2:
-                new_sl = max(new_sl, open_price + risk * 1.2)
-                if new_sl > current_sl:
-                    log.info(f"{symbol} BUY 2R: Locking 1.2R profit in SL ({new_sl:.5f})")
-
-            # Tight trail at 3R — width varies by AI regime
-            if profit_in_r >= 3.0:
-                _trail_width = 0.20 if _regime == "VOLATILE" else (0.4 if _regime == "TRENDING" else 0.35)
-                tight = current_price - risk * _trail_width
-                if tight > new_sl:
-                    new_sl = tight
-                    log.info(f"{symbol} BUY 3R: Tight trail ({new_sl:.5f}) [regime={_regime}]")
-
-            # Progressive trail beyond 3R: trail 0.3R behind price
-            if profit_in_r > 3.0:
-                prog = current_price - risk * 0.3
-                if prog > new_sl:
-                    new_sl = prog
+            # §10d_breakeven — DO NOT move SL to breakeven before TP1.
+            # This was the #1 source of premature exits: normal M15 retraces
+            # after small profits would stop the trade before it ever reached
+            # the structural target.  Only deliberate +1R lock (after TP2 grace)
+            # or smart_trail may move the SL.
+            # [PROTOCOL v27.0] Legacy hardcoded profit-lock trails DISABLED.
+            # smart_trail overlay + protocol partial-close plan now manage all SL moves.
 
             # Distribution phase exit: trim on H1 exhaustion or M15 CHoCH against position
             if profit_in_r >= 1.0 and not setup.get("dist_exit_1_done"):
@@ -1587,8 +1630,12 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                     if close_ok:
                         state.active_trades[ticket_str]["tp1_taken"] = True
                         tp1_taken = True
-                        # Move SL to break-even immediately after TP1 hit
-                        new_sl = min(new_sl, open_price - pip_size)
+                        # §16c — do NOT move SL to break-even at TP1; runner SL stays
+                        # at original SL until TP2 triggers a deliberate +1R lock
+                        # (with safety cooldown — see below).
+                        state.active_trades[ticket_str]["t1_timestamp"] = time.time()
+                        state.active_trades[ticket_str]["t1_profit_r"] = profit_in_r
+                        new_sl = current_sl  # STAY at original SL
                         if tp2 > 0 and tp2 < current_tp:
                             new_tp = tp2
                             log.info(f"{symbol} Advancing MT5 TP to TP2 ({new_tp:.5f})")
@@ -1598,27 +1645,43 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                             f"Runner active ({volume - close_vol:.2f} lots) → TP2: {tp2:.5g}"
                         )
 
-            # Partial TP2: close 25% of original, leave 25% runner to TP3
+            # Partial TP2: close 30% of original, runner 20% — BE locked at +1R
+            # with grace period so we don't lock +1R on a brief wick.
             if tp1_taken and not tp2_taken and tp2 > 0 and current_price <= tp2:
-                close_vol = round(volume * 0.25, 2)
-                if close_vol >= min_lot:
-                    if ticket_str.isdigit():
-                        result = close_position(int(ticket_str), close_vol)
-                    else:
-                        result = "PAPER|partial_tp2"
-                    close_ok = result.startswith("OK") or result.startswith("PAPER")
-                    log.info(f"{symbol} TP2 hit — closed 25% ({close_vol} lots) | {result}")
-                    if close_ok:
-                        state.active_trades[ticket_str]["tp2_taken"] = True
-                        tp2_taken = True
-                        # Runner: remove fixed TP3 — let smart trail manage it freely
-                        new_tp = 0
-                        log.info(f"{symbol} TP2 hit — runner released, smart trail managing")
-                        send_telegram(
-                            f"💰 <b>TP2 HIT — {symbol} SELL</b>\n"
-                            f"Closed 25% @ {current_price:.5g}\n"
-                            f"Runner released ({volume - close_vol:.2f} lots) — trailing to TP3: {tp3:.5g}"
-                        )
+                _grace_until = state.active_trades[ticket_str].get("tp2_grace_until")
+                if _grace_until is None:
+                    state.active_trades[ticket_str]["tp2_grace_until"] = time.time() + 120
+                    log.info(f"{symbol} TP2 first touch → grace period started (120s)")
+                elif time.time() >= _grace_until:
+                    close_vol = round(volume * 0.30, 2)
+                    if close_vol >= min_lot:
+                        if ticket_str.isdigit():
+                            result = close_position(int(ticket_str), close_vol)
+                        else:
+                            result = "PAPER|partial_tp2"
+                        close_ok = result.startswith("OK") or result.startswith("PAPER")
+                        log.info(f"{symbol} TP2 grace done — closed 30% ({close_vol} lots) | {result}")
+                        if close_ok:
+                            state.active_trades[ticket_str]["tp2_taken"] = True
+                            tp2_taken = True
+                            # +1R lock only after grace + price still beyond TP2
+                            # DELETED: new_sl was moved to BE+1R here (reactive SL bug)
+                            # Runner: remove fixed TP3 — let smart trail manage it freely
+                            new_tp = 0
+                            log.info(f"{symbol} TP2 confirmed — runner released, smart trail managing")
+                            # §17 journal
+                            _journal_entry(symbol, ticket_str, f"TP2 partial 30% @ {current_price}", state)
+                            send_telegram(
+                                f"💰 <b>TP2 HIT — {symbol} SELL</b>\n"
+                                f"Closed 30% @ {current_price:.5g}\n"
+                                f"Runner released ({volume - close_vol:.2f} lots) — trailing to TP3: {tp3:.5g}"
+                            )
+                else:
+                    log.debug(f"{symbol} TP2 inside grace period ({int(_grace_until - time.time())}s left)")
+            # If price pulls back above TP2 before grace expires — cancel grace
+            if tp1_taken and not tp2_taken and state.active_trades[ticket_str].get("tp2_grace_until") and current_price > tp2:
+                log.info(f"{symbol} TP2 grace CANCELLED — price retraced above {tp2} before lock")
+                state.active_trades[ticket_str].pop("tp2_grace_until", None)
 
             # Emergency exit: SL may not have fired via EA — close runaway losses
             if not tp1_taken and profit_in_r < -1.2:
@@ -1633,7 +1696,8 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                 except Exception:
                     pass
 
-            if not tp1_taken and profit_in_r < -0.3:
+            # §16c_relaxed  SELL early loss cut — raised threshold from -0.3R to -0.6R
+            if not tp1_taken and profit_in_r < -0.6:
                 try:
                     import time as _time
                     entry_ts = float(setup.get("entry_ts", 0)) or _time.time()
@@ -1646,36 +1710,8 @@ def manage_open_trades(state: TraderState, data: dict, memory=None):
                 except Exception:
                     pass
 
-            if profit_in_r >= 0.4 and current_sl > open_price:
-                new_sl = min(new_sl, open_price - pip_size)
-                if new_sl < current_sl:
-                    log.info(f"{symbol} SELL 0.4R: Moving SL to break-even ({new_sl:.5f})")
-
-            # Lock 0.5R profit at 1R — tightened from 0.3R
-            if profit_in_r >= 1.0 and current_sl > open_price - risk * 0.5:
-                new_sl = min(new_sl, open_price - risk * 0.5)
-                if new_sl < current_sl:
-                    log.info(f"{symbol} SELL 1R: Locking 0.5R profit in SL ({new_sl:.5f})")
-
-            # Lock 1.2R profit at 2R move
-            if profit_in_r >= 2.0 and current_sl > open_price - risk * 1.2:
-                new_sl = min(new_sl, open_price - risk * 1.2)
-                if new_sl < current_sl:
-                    log.info(f"{symbol} SELL 2R: Locking 1.2R profit in SL ({new_sl:.5f})")
-
-            # Tight trail at 3R — width varies by AI regime
-            if profit_in_r >= 3.0:
-                _trail_width = 0.20 if _regime == "VOLATILE" else (0.4 if _regime == "TRENDING" else 0.35)
-                tight = current_price + risk * _trail_width
-                if tight < new_sl:
-                    new_sl = tight
-                    log.info(f"{symbol} SELL 3R: Tight trail ({new_sl:.5f}) [regime={_regime}]")
-
-            # Progressive trail beyond 3R
-            if profit_in_r > 3.0:
-                prog = current_price + risk * 0.3
-                if prog < new_sl:
-                    new_sl = prog
+            # [PROTOCOL v27.0] Legacy hardcoded profit-lock trails DISABLED for SELL.
+            # smart_trail overlay + protocol partial-close plan manage all SL moves.
 
             # Distribution phase exit: trim on H1 exhaustion or M15 CHoCH against position
             if profit_in_r >= 1.0 and not setup.get("dist_exit_1_done"):
@@ -2139,6 +2175,16 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
     if _sess_losses >= 3:
         log.debug(f"{symbol}: session {session} has {_sess_losses} consecutive losses — raising confidence bar")
 
+    # v27.1 — ONE ACTIVE TRADE PER KILLZONE: if any live position is already open
+    # in this same session/killzone, block the duplicate.  Prevents orphan clustering.
+    _open_session = [
+        t for t in (state.active_trades or {}).values()
+        if t.get("session") == session and t.get("live")
+    ]
+    if _open_session:
+        log.info(f"{symbol}: BLOCKED — already have live trade in {session} killzone ({len(_open_session)} open)")
+        return False
+
     # Session-aware confidence threshold — Asia requires higher bar; streak penalty adds 10 pts per tier above 3
     # _live_min_conf reads learned_parameters.json (regime-aware) and never undercuts the FREQ floor.
     effective_min_conf = _live_min_conf(session)
@@ -2228,6 +2274,12 @@ def execute_setup(setup, equity: float, state: TraderState, sym_info: dict,
     _sym_losses = state.sym_loss_streak.get(symbol, 0)
     if _sym_losses >= 2:
         log.debug(f"{symbol}: {_sym_losses} consecutive losses today — symbol paused")
+        return False
+
+    # v27.1 — GLOBAL max-concurrent guard: never exceed 3 open positions (paper or live)
+    _open_live = sum(1 for t in (state.active_trades or {}).values() if t.get("live"))
+    if _open_live >= 5:
+        log.info(f"{symbol}: BLOCKED — max 5 concurrent open trades reached ({_open_live})")
         return False
 
     # Apply adaptive confidence from trade memory
@@ -2812,6 +2864,15 @@ def main():
             # ── Update peak equity ─────────────────────────────────────
             if equity > state.peak_equity:
                 state.peak_equity = equity
+            # ── Telemetry persist (§17 state persistence) ────────────────
+            try:
+                from killswitch import persist_peak, persist_partial
+                for _tk, _tr in state.active_trades.items():
+                    _cur_r = getattr(_tr, 'peak_r', 0)
+                    if _cur_r > 0:
+                        persist_peak(str(_tk), float(_cur_r))
+            except Exception as _pte:
+                log.debug(f'persist_peak error: {_pte}')
 
             # ── Daily reset (exactly once per UTC date) ────────────────
             reset_daily_if_new_day(state, equity)
@@ -3028,6 +3089,28 @@ def main():
                             _seen_sym[_key] = _s
                     high_conf = list(_seen_sym.values())
 
+                    # ═════════════════════════════════════════════════════
+                    # ═─  KILLSWITCH + PROTOCOL v27.0 GUARD ─══════════════
+                    # ═════════════════════════════════════════════════════
+                    try:
+                        from killswitch import guard as _killswitch_guard
+                        _ks = _killswitch_guard(equity)
+                        if _ks.get("halt"):
+                            log.warning(f"KILLSWITCH: {_ks.get('reason')} — skipping scan")
+                            time.sleep(30)
+                            continue
+                        if _ks.get("override_active"):
+                            log.info(f"MANUAL OVERRIDE: {_ks.get('override_command')} — scanning only")
+                    except Exception as _kse:
+                        log.debug(f"killswitch check error: {_kse}")
+
+                    # ── Symbol restriction: XAUUSD only ────────────────────
+                    _xau_setups = [s for s in high_conf if "XAU" in s.symbol]
+                    if _xau_setups:
+                        if len(high_conf) > len(_xau_setups):
+                            log.info(f"SYMBOL_FILTER: dropped {len(high_conf) - len(_xau_setups)} non-XAU setups")
+                        high_conf = _xau_setups
+
                     for setup in high_conf:
                         if open_count >= MAX_OPEN_TRADES:
                             break
@@ -3058,6 +3141,43 @@ def main():
                         prices = {p["symbol"]: p for p in data.get("prices", [])}
                         if setup.symbol in prices:
                             sym_info["bid"] = prices[setup.symbol].get("bid", 0)
+
+                        # ═════════════════════════════════════════════════════
+                        # ═─  PROTOCOL v27.0 GATE  ─═══════════════════════════
+                        # ═════════════════════════════════════════════════════
+                        protocol_signal = {
+                            "symbol": setup.symbol,
+                            "direction": setup.direction,
+                            "entry_price": setup.entry_price,
+                            "sl": setup.sl_price,
+                            "tp": (setup.tp3_price or setup.tp2_price or setup.tp1_price),
+                            "session": getattr(setup, "session", ""),
+                            "entry_type": getattr(setup, "entry_type", ""),
+                            "aggression": getattr(setup, "aggression", "normal"),
+                            "h4_bias": getattr(setup, "tf_bias", ""),
+                            "confidence": getattr(setup, "confidence", 0),
+                            "rr_ratio": getattr(setup, "rr_ratio", 0),
+                            "sweep_confirmed": getattr(setup, "liq_swept", False),
+                        }
+                        try:
+                            from protocol_evaluator import evaluate as _protocol_evaluate
+                            _verdict = _protocol_evaluate(protocol_signal, data, data.get("account", {}))
+                            if not _verdict.get("trade"):
+                                log.info(f"PROTOCOL_BLOCKED: {setup.symbol} {setup.direction} — {_verdict.get('reason')} conf={_verdict.get('confidence')} model={_verdict.get('model')}")
+                                continue
+                            # Override TP levels from protocol plan
+                            _plan = _verdict.get("partial_plan", [])
+                            for _tp in _plan:
+                                if _tp.get("label") == "TP1":
+                                    setup.tp1_price = _tp["target_price"]
+                                elif _tp.get("label") == "TP2":
+                                    setup.tp2_price = _tp["target_price"]
+                                elif _tp.get("label") == "TP3":
+                                    setup.tp3_price = _tp["target_price"]
+                            log.info(f"PROTOCOL_PASS: {setup.symbol} {setup.direction} | conf={_verdict.get('confidence')}/10 model={_verdict.get('model')} session={_verdict.get('session')} rr={_verdict.get('risk', {}).get('rr')} plan={[_tp['label'] for _tp in _plan]}")
+                        except Exception as _e_gate:
+                            log.warning(f"PROTOCOL_GATE_ERR: {_e_gate} — allowing (fail-open)")
+                        # ═════════════════════════════════════════════════════
 
                         success = execute_setup(setup, equity, state, sym_info, memory=memory)
                         if success:

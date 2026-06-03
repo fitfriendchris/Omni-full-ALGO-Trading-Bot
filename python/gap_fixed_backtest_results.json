@@ -1,0 +1,29 @@
+{
+  "timestamp": "2026-05-28T23:00:53.238972+00:00",
+  "reality": {
+    "signals": 296,
+    "filled": 142,
+    "wins": 118,
+    "losses": 24,
+    "win_rate_pct": 83.1,
+    "avg_win_pips": 57.4,
+    "avg_loss_pips": -102.0,
+    "avg_rr": 0.56,
+    "expectancy_pips": 28.5,
+    "total_gross_pips": 4327.9,
+    "total_net_pips": 4043.9
+  },
+  "raw": {
+    "signals": 296,
+    "filled": 296,
+    "wins": 165,
+    "losses": 131,
+    "win_rate_pct": 55.7,
+    "avg_win_pips": 24.0,
+    "avg_loss_pips": -207.1,
+    "avg_rr": 0.12,
+    "expectancy_pips": -78.3,
+    "total_gross_pips": -23170.2,
+    "total_net_pips": -23170.2
+  }
+}

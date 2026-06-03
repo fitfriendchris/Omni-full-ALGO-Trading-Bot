@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-05-28T02:55:10.097236+00:00",
+  "bars": 300,
+  "raw": {
+    "mode": "RAW",
+    "signals": 0,
+    "filled": 0,
+    "no_fills": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate_pct": 0,
+    "avg_win_pips": 0,
+    "avg_loss_pips": 0,
+    "avg_rr": 0,
+    "total_gross_pips": 0,
+    "total_net_pips": 0,
+    "expectancy_pips": 0,
+    "trades": []
+  },
+  "reality": {
+    "mode": "REALITY",
+    "signals": 0,
+    "filled": 0,
+    "no_fills": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate_pct": 0,
+    "avg_win_pips": 0,
+    "avg_loss_pips": 0,
+    "avg_rr": 0,
+    "total_gross_pips": 0,
+    "total_net_pips": 0,
+    "expectancy_pips": 0,
+    "trades": []
+  },
+  "methodology": {
+    "data_source": "MT5 H1 XAUUSD bars",
+    "entry_logic": "LIMIT ONLY at FVG/OB level",
+    "fill_simulation": "Price must retrace to FVG within 20 bars",
+    "commission": "$10.0/lot",
+    "slippage": "0.5 pips",
+    "spread": "3.5 pips",
+    "lot_size": 0.01,
+    "risk_per_trade": "1.0%"
+  }
+}

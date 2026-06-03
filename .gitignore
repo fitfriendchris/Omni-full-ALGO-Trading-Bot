@@ -70,3 +70,5 @@ python/data/
 
 # launchd plists contain tokens — never track
 *.plist
+.venv*
+.venv-kronos/

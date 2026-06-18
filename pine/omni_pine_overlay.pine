@@ -10,7 +10,7 @@ tpCol   = input.color(color.new(color.green,   0),  "TP color")
 lineW   = input.int(2, "Line width", minval=1, maxval=5)
 
 // ── Signals ───────────────────────────────
-// [0] XAUUSD-M15-1781747217444122-BEAR
+// [0] XAUUSD-M15-1781747544468883-BEAR
 if barstate.islast
     line.new(bar_index - 50, 4122.97, bar_index, 4122.97, color=bearCol, width=lineW)
     line.new(bar_index - 50, 4135.31732, bar_index, 4135.31732, color=slCol, style=line.style_dashed, width=1)

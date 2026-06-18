@@ -1,0 +1,33 @@
+{
+  "folders": [
+    {
+      "path": ".",
+      "name": "OMNI Trading Bot"
+    }
+  ],
+  "settings": {
+    "mcp": {
+      "servers": {
+        "hermes": {
+          "command": "/Users/yuhfriendchris/.local/bin/hermes",
+          "args": ["acp"],
+          "type": "stdio"
+        }
+      }
+    },
+    "python.analysis.typeCheckingMode": "basic",
+    "python.defaultInterpreterPath": "/opt/homebrew/bin/python3",
+    "files.exclude": {
+      "**/__pycache__": true,
+      "**/*.pyc": true,
+      "**/.git": true
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "github.copilot",
+      "github.copilot-chat",
+      "ms-python.python"
+    ]
+  }
+}

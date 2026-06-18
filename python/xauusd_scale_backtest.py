@@ -207,7 +207,8 @@ def calc_lot_size(equity: float, risk_pct: float, entry: float, sl: float,
     # XAUUSD: P&L per lot per $1 move = $100
     # P&L = sl_dist * 100 * lots
     lots = risk_amt / (sl_dist * XAUUSD_PPL)
-    lots = math.floor(lots / 0.01) * 0.01
+    # FIX: use round() instead of math.floor() to avoid systematically under-sizing positions
+    lots = round(lots / 0.01) * 0.01
     return max(min_lot, min(lots, max_lot))
 
 
@@ -587,7 +588,7 @@ def run_backtest(cfg: ScaleConfig, h1_bars: List[Bar], d1_bars: List[Bar]) -> di
         # ── Manage open trades ────────────────────────────────────────────
         still_open = []
         for tr in open_trades:
-            future = bars_asc[idx: idx + 120]
+            future = bars_asc[idx + 1: idx + 121]  # honest: cannot act until NEXT bar
             res    = simulate_trade(tr, future)
             if res["exit_reason"] not in ("NOT_FILLED",):
                 # Finalize the trade

@@ -1,0 +1,105 @@
+{
+  "phase": "Market Analysis",
+  "project": "XAUUSD Breakout Strategy (2:1 R:R, 5% monthly target)",
+  "date": "2026-06-08",
+  "symbol": "XAUUSD",
+  "timeframe_primary": "M15",
+  "timeframe_bias": "H4",
+  "current_market_state": {
+    "bias_weekly": "BEAR",
+    "bias_daily": "BEAR",
+    "regime": "TRENDING_LOW_VOL",
+    "adx": 37,
+    "current_price_zone": "~5006 (Q2 discount area)",
+    "prior_week_high": 4545.69,
+    "prior_week_low": 4311.58,
+    "key_liquidity_above": "5044-5045 (daily high / equal highs)",
+    "key_liquidity_below": "4973-4311 (daily low / prior week low)",
+    "active_fvg_bear": "4331.47-4332.87 (unmitigated, but far from price)",
+    "weekly_bear_ob": "4632.615 mid (price well below)",
+    "trading_session_recommended": "LONDON (08:00-13:00 UTC) + NY_AM (13:00-17:00 UTC)",
+    "confidence_note": "Bear bias with low vol = breakout setups more likely after consolidation in discount"
+  },
+  "existing_infrastructure": {
+    "omni_project_path": "/Users/yuhfriendchris/Omni-full-ALGO-Trading-Bot",
+    "mt5_bridge": "Wine on macOS, Common/Files JSON bridge",
+    "broker": "MidasFX Live, 1:1000 leverage",
+    "paper_mode": false,
+    "primary_symbols": ["XAUUSD", "XAGUSD"],
+    "current_live_config": {
+      "session": "EUROPEAN 07:00-12:00 UTC",
+      "min_threshold": 0.5,
+      "base_risk_pct": 1.25,
+      "max_open_trades": 3,
+      "min_rr": 2.0,
+      "magic": 20250411
+    }
+  },
+  "proven_backtest_baseline": {
+    "source": "run2_2yr_london_proven.json",
+    "period": "May 2024-May 2026",
+    "regime": "bull_2024_2026 (Gold $2300-$3400)",
+    "execution": "MARKET_ONLY with stricter_slippage",
+    "session": "LONDON",
+    "signals_generated": 41,
+    "trades_taken": 41,
+    "win_rate": "82.93%",
+    "total_return_pct": "+112.57% (2yr)",
+    "max_drawdown_pct": "3.2%",
+    "profit_factor": 14.21,
+    "avg_lot": 0.08,
+    "avg_sl_pips": 177.05,
+    "sharpe_annualized": 16.92,
+    "monthly_cagr_equivalent": "~4.0%",
+    "key_note": "This is ICT/SMC confluence, NOT breakout — provides infrastructure baseline"
+  },
+  "scale_backtest_comparison": {
+    "source": "xauusd_scale_results.json",
+    "period": "Jun-Aug 2024 (3 months)",
+    "best_label": "Max-Growth",
+    "return_raw": "+1600%",
+    "win_rate": "27.3%",
+    "max_drawdown": "40.79%",
+    "trades": 22,
+    "expectancy_r": 22.64,
+    "warning": "Fantasy numbers — only 22 trades, survivorship bias on compounding, no realistic fill modeling",
+    "decision": "NOT a valid baseline. Scale engine will be SEPARATE from breakout strategy."
+  },
+  "honest_backtest_status": {
+    "source": "honest_backtest_xauusd_m15.json",
+    "status": "ZERO SIGNALS over 600 bars",
+    "issue": "M15 honest backtest not configured correctly for XAUUSD — likely session/timing mismatch",
+    "requirement": "New breakout strategy MUST include its own honest backtest with commission + slippage + limit fill sim"
+  },
+  "user_trading_profile": {
+    "style": "Discretionary ICT/SMC trader",
+    "manual_edge": "H4 AMD cycle, H1 liquidity, M1-M15 FVG after BOS/CHoCH",
+    "position_sizing_preference": "Aggressive, 1:1000 leverage, compounding",
+    "setup_frequency_expectation": "A+ setups every 3-5 days (max 2 weeks)",
+    "bot_role": "Scan/detect/alert/execute HIS decisions — never override judgment"
+  },
+  "phase_deliverables": {
+    "market_regime_identified": "TRENDING_LOW_VOL on XAUUSD — breakout strategies perform well after low-vol consolidation, especially in discount zones during bearish structure",
+    "session_recommendation": "LONDON open (08:00-13:00 UTC) — highest vol + highest proven backtest stats; avoid ASIAN for breakout entries",
+    "risk_target_analysis": "5% monthly = ~60% annual. Proven ICT baseline gives ~40% annual with 3.2% DD. Breakout strategy must close this gap via higher frequency (2-3x more trades). Conservative target: 3-5% monthly; aggressive: 8-12% monthly with higher DD.",
+    "honest_validation_decision": "ALL backtests MUST run MARKET execution with $0.30 spread + commission + slippage. Limit fill simulation required. Report both raw and reality-adjusted.",
+    "technical_requirements": [
+      "H4 bias filter (must align with breakout direction)",
+      "M15 breakout detection (range expansion, ATR confirmation)",
+      "2:1 minimum R:R hard coded",
+      "Session-aware: only LONDON + NY_AM",
+      "ATR-based SL (not fixed pips) for adaptive sizing",
+      "Breakout invalidation: close back inside range + 1 ATR",
+      "Max 3 concurrent trades",
+      "Compound risk sizing: 2% base, scale to 5% on win streaks"
+    ]
+  },
+  "decisions_passed_to_next_phase": [
+    "Strategy type: H4-bias-confirmed M15 breakout (NOT ICT/SMC confluence — complement to existing OMNI)",
+    "Signal frequency target: 8-15 setups/month (2-3x existing ICT baseline)",
+    "Honest backtest gate: must show >50% win rate and <10% max DD in reality-adjusted mode before any live consideration",
+    "Leverage: 1:1000 (as currently configured), but position sizing capped at 5% risk absolute",
+    "Breakout definition: 20-bar range + ATR(14) > 1.5x average + volume spike",
+    "Invalidation: close back inside 20-bar range + 1 ATR within 3 bars"
+  ]
+}

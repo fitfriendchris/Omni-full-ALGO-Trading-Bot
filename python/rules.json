@@ -607,15 +607,30 @@
     "liquidity_avoid_pips": 3.0,
     "avoid_equal_levels": true,
     "profit_lock_ladder": [
-      [1.0, 0.50],
-      [2.5, 0.30],
-      [5.0, 0.25],
-      [7.0, 0.20],
-      [10.0, 0.15]
+      [
+        1.0,
+        0.5
+      ],
+      [
+        2.5,
+        0.3
+      ],
+      [
+        5.0,
+        0.25
+      ],
+      [
+        7.0,
+        0.2
+      ],
+      [
+        10.0,
+        0.15
+      ]
     ],
     "close_on_opposing_choch_once_profitable": true,
     "min_modify_pips": 25.0,
-    "min_modify_atr_frac": 0.50,
+    "min_modify_atr_frac": 0.5,
     "max_entry_drift_pct": 0.3,
     "early_protection": {
       "at_0.5R": "move SL to entry + 1 pip (guarantee non-loss)",
@@ -776,11 +791,11 @@
       "target_tp3": "weekly_structure_extreme_or_6R",
       "max_lot": 0.01,
       "notes": "Gold -- primary instrument. London + NY only; Asia requires 85 conf (sweeps only). TP to opposing liquidity, trail at 2-3.5x ATR, lock profits at +0.5R.",
-    "equity_gate": {
-      "min_equity_usd": 100,
-      "message": "Gold requires $100 min equity (current: available).",
-      "override_confidence": 50
-    }
+      "equity_gate": {
+        "min_equity_usd": 100,
+        "message": "Gold requires $100 min equity (current: available).",
+        "override_confidence": 50
+      }
     },
     "NAS100": {
       "preferred_sessions": [
@@ -797,11 +812,11 @@
     "XAGUSD": {
       "min_confidence": 75,
       "notes": "Silver -- thin and prone to false sweeps; require highest bar",
-    "equity_gate": {
-      "min_equity_usd": 75,
-      "message": "Silver requires $75 min equity (current: available).",
-      "override_confidence": 75
-    }
+      "equity_gate": {
+        "min_equity_usd": 75,
+        "message": "Silver requires $75 min equity (current: available).",
+        "override_confidence": 75
+      }
     },
     "US30": {
       "min_confidence": 70,
@@ -836,40 +851,82 @@
     "min_confluence_to_consider": 3,
     "min_confluence_to_trade": 4,
     "max_confluence": 6,
-    "min_confidence": 0.50,
-    "min_confidence_outside_killzone": 0.80,
+    "min_confidence": 0.5,
+    "min_confidence_outside_killzone": 0.8,
     "min_rr": 2.0,
     "tp_rr": 3.0,
     "entry_pricing": "limit_at_ote_stdv",
     "sl_placement": "beyond_manipulation_leg_wick",
     "tp_placement": "opposing_liquidity_or_stdv_maxexp",
     "kill_zones_utc": [
-      {"name": "LONDON_OPEN", "start": 7, "end": 10, "weight": 1.0},
-      {"name": "NY_OPEN", "start": 12, "end": 15, "weight": 0.85},
-      {"name": "SILVER_BULLET", "start": 13, "end": 17, "weight": 0.80},
-      {"name": "FULL_DAY", "start": 7, "end": 17, "weight": 1.0, "comment": "London + European + NY + Silver Bullet combined window for max trade frequency"}
+      {
+        "name": "LONDON_OPEN",
+        "start": 7,
+        "end": 10,
+        "weight": 1.0
+      },
+      {
+        "name": "NY_OPEN",
+        "start": 12,
+        "end": 15,
+        "weight": 0.85
+      },
+      {
+        "name": "SILVER_BULLET",
+        "start": 13,
+        "end": 17,
+        "weight": 0.8
+      },
+      {
+        "name": "FULL_DAY",
+        "start": 7,
+        "end": 17,
+        "weight": 1.0,
+        "comment": "London + European + NY + Silver Bullet combined window for max trade frequency"
+      }
     ],
     "stdv_config": {
       "divisor": 4.0,
-      "levels": ["CE", "OTE", "OTE_0.63", "OTE_0.65", "OTE_0.79", "OTE_0.886", "Reaccum", "Reversal", "MaxExp3", "MaxExp4", "MaxExp5"],
-      "fib_ratios": [0.0, 0.50, 0.63, 0.65, 0.705, 0.79, 0.886, 1.0]
+      "levels": [
+        "CE",
+        "OTE",
+        "OTE_0.63",
+        "OTE_0.65",
+        "OTE_0.79",
+        "OTE_0.886",
+        "Reaccum",
+        "Reversal",
+        "MaxExp3",
+        "MaxExp4",
+        "MaxExp5"
+      ],
+      "fib_ratios": [
+        0.0,
+        0.5,
+        0.63,
+        0.65,
+        0.705,
+        0.79,
+        0.886,
+        1.0
+      ]
     },
     "confluence_weights": {
-      "C1_OTE_LEVEL": 0.10,
-      "C2_OB_PRESENT": 0.10,
-      "C3_FVG_PRESENT": 0.10,
-      "C4_SWEEP_CONFIRMED": 0.10,
-      "C5_STRUCTURE_ALIGNED": 0.10,
-      "C6_KILLZONE_AMD": 0.10
+      "C1_OTE_LEVEL": 0.1,
+      "C2_OB_PRESENT": 0.1,
+      "C3_FVG_PRESENT": 0.1,
+      "C4_SWEEP_CONFIRMED": 0.1,
+      "C5_STRUCTURE_ALIGNED": 0.1,
+      "C6_KILLZONE_AMD": 0.1
     },
     "confidence_formula": {
       "base": 0.45,
-      "per_confluence": 0.10,
+      "per_confluence": 0.1,
       "high_quality_leg_bonus": 0.05,
       "ote_zone_bonus": 0.05,
       "amd_distribution_bonus": 0.05,
       "triple_alignment_bonus": 0.05,
-      "outside_kz_penalty": -0.10,
+      "outside_kz_penalty": -0.1,
       "no_leg_penalty": -0.15
     },
     "notes": "Single-path engine: manipulation leg -> STDV/OTE -> confluence count (min 3 of 6) -> kill zone gate -> AMD alignment -> limit order entry. Proven engine is advisory only (+0.10 max boost). No separate signals from old deterministic engine."
@@ -1001,9 +1058,23 @@
     "default": 0.0
   },
   "signal_agent": {
-  "adx_min": 20,
-  "adx_exception_conf": 0.85,
-  "macro_veto_low_equity": true,
-  "macro_veto_equity_threshold": 50.0
+    "adx_min": 20,
+    "adx_exception_conf": 0.85,
+    "macro_veto_low_equity": true,
+    "macro_veto_equity_threshold": 50.0
+  },
+  "orb_signals": {
+    "enabled": true,
+    "symbol": "XAUUSD",
+    "timeframe": "H1",
+    "risk_pct": 0.02,
+    "rr": 4.0,
+    "range_bars": 4,
+    "body_atr": 0.5,
+    "stop_cap_atr": 2.5,
+    "open_hour_utc": 13,
+    "long_only": true,
+    "paper_mode": false,
+    "note": "Validated NY-Open ORB: PF 2.05, +344% OOS. 33% win rate with 4R winners. LONG ONLY."
   }
 }

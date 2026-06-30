@@ -3,7 +3,7 @@
 #
 # Double-click from Finder (on macOS) to run. This script:
 #   1. cd's into the project directory (wherever this file lives).
-#   2. Activates the venv if present (venv/bin/activate).
+#   2. Activates the venv if present (.venv/bin/activate).
 #   3. Ensures logs/ exists.
 #   4. Starts python/watchdog.py, which spawns:
 #        - server          (uvicorn, http://127.0.0.1:8787)
@@ -29,10 +29,10 @@ echo "project: $DIR"
 echo "time:    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # Activate venv if present
-if [ -f "$DIR/venv/bin/activate" ]; then
+if [ -f "$DIR/.venv/bin/activate" ]; then
   # shellcheck disable=SC1091
-  source "$DIR/venv/bin/activate"
-  echo "venv:    $DIR/venv"
+  source "$DIR/.venv/bin/activate"
+  echo "venv:    $DIR/.venv"
 fi
 
 # Ensure log directory

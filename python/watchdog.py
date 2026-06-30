@@ -50,7 +50,7 @@ LOG_DIR = PROJECT_ROOT / "logs"
 STATE_FILE = LOG_DIR / "watchdog_state.json"
 # Always use the venv Python so child services get all installed packages
 # (uvicorn, fastapi, etc.). Fall back to sys.executable if venv not found.
-_venv_py = PROJECT_ROOT / "venv" / "bin" / "python3"
+_venv_py = PROJECT_ROOT / ".venv" / "bin" / "python3"
 PY = str(_venv_py) if _venv_py.exists() else sys.executable
 
 
